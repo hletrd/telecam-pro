@@ -1026,7 +1026,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                         state.nativeLogEiSupported &&
                             me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
                         state.controls.logEiOffsetStops,
-                    ),
+                    ) + if (state.cameraReady && state.photoSessionOutputs.rawLog) " RAW" else "",
                     color = CameraColors.Accent,
                     style = MaterialTheme.typography.labelMedium,
                 )

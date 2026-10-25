@@ -18,6 +18,7 @@ internal data class ShaderLocations(
     val uSourceHlg: Int,
     val uSourceLog: Int,
     val uSourceLogHeadroom: Int,
+    val uSourceWide: Int,
     val uPeaking: Int,
     val uPeakThreshold: Int,
     val uPeakColor: Int,
@@ -48,6 +49,7 @@ internal fun resolveShaderLocations(
         uSourceHlg = uniform(ShaderBindings.U_SOURCE_HLG),
         uSourceLog = uniform(ShaderBindings.U_SOURCE_LOG),
         uSourceLogHeadroom = uniform(ShaderBindings.U_SOURCE_LOG_HEADROOM),
+        uSourceWide = uniform(ShaderBindings.U_SOURCE_WIDE),
         uPeaking = uniform(ShaderBindings.U_PEAKING),
         uPeakThreshold = uniform(ShaderBindings.U_PEAK_THRESHOLD),
         uPeakColor = uniform(ShaderBindings.U_PEAK_COLOR),
@@ -212,6 +214,7 @@ class FlipRenderer internal constructor(
     private var uSourceHlg = 0
     private var uSourceLog = 0
     private var uSourceLogHeadroom = 0
+    private var uSourceWide = 0
     private var uPeaking = 0
     private var uPeakThreshold = 0
     private var uPeakColor = 0
@@ -243,6 +246,7 @@ class FlipRenderer internal constructor(
     private var sourceHlg = false
     private var sourceLog = false
     private var sourceLogHeadroom = 1f
+    private var sourceWide = false
     // Rotation the camera SurfaceTexture transform already bakes into the sampled image (the sensor
     // orientation). It is NOT re-applied to texcoords (stMatrix does that), but it DOES decide the
     // displayed aspect: a ~90° sensor rotation swaps the shown width/height. Combined with rotationDeg
@@ -313,6 +317,7 @@ class FlipRenderer internal constructor(
             uSourceHlg = locations.uSourceHlg
             uSourceLog = locations.uSourceLog
             uSourceLogHeadroom = locations.uSourceLogHeadroom
+            uSourceWide = locations.uSourceWide
             uPeaking = locations.uPeaking
             uPeakThreshold = locations.uPeakThreshold
             uPeakColor = locations.uPeakColor
@@ -363,6 +368,20 @@ class FlipRenderer internal constructor(
             android.util.Log.i("FlipRenderer", "sourceLog -> $enabled (uniformLoc=$uSourceLog)")
         }
         sourceLog = enabled
+    }
+
+    /**
+     * Whether the accepted session's S-Log3 source is the EXPERIMENTAL RAW log developer's, whose
+     * primaries are S-Gamut3.Cine rather than the ISP's sRGB. Route state like [setSourceLog].
+     */
+    fun setSourceWide(enabled: Boolean) {
+        if (
+            sourceWide != enabled &&
+            me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        ) {
+            android.util.Log.i("FlipRenderer", "sourceWide -> $enabled (uniformLoc=$uSourceWide)")
+        }
+        sourceWide = enabled
     }
 
     /**
@@ -480,6 +499,7 @@ class FlipRenderer internal constructor(
         GLES20.glUniform1i(uSourceHlg, if (sourceHlg) 1 else 0)
         GLES20.glUniform1i(uSourceLog, if (sourceLog) 1 else 0)
         GLES20.glUniform1f(uSourceLogHeadroom, sourceLogHeadroom)
+        GLES20.glUniform1i(uSourceWide, if (sourceWide) 1 else 0)
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
         GLES20.glUniform1f(uPeakThreshold, peakThreshold)
         GLES20.glUniform3f(uPeakColor, peakR, peakG, peakB)

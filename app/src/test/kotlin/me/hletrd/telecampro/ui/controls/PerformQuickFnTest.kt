@@ -123,6 +123,7 @@ class PerformQuickFnTest {
         override fun onToggleGammaAssist(enabled: Boolean) = hit("onToggleGammaAssist")
         override fun onLogEiOffset(stops: Int) = hit("onLogEiOffset($stops)")
         override fun onToggleGyroLog(enabled: Boolean) = hit("onToggleGyroLog($enabled)")
+        override fun onToggleRawLog(enabled: Boolean) = hit("onToggleRawLog($enabled)")
         override fun onFrameLines(type: FrameLineType) = hit("onFrameLines($type)")
         override fun onGridType(type: GridType) = hit("onGridType($type)")
         override fun onToggleLevel(enabled: Boolean) = hit("onToggleLevel($enabled)")

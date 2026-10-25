@@ -1054,8 +1054,12 @@ internal fun transferSourceCaption(
     transfer: ColorTransfer,
     nativeLogCurveSupported: Boolean,
     tenBitNativeLogSession: Boolean = false,
+    // Accepted truth (PhotoSessionOutputs.rawLog): the EXPERIMENTAL RAW log developer made the
+    // frames, not the ISP, so the ISP-source captions below would misname where the curve came from.
+    rawLogSession: Boolean = false,
 ): Int? = when {
     transfer == ColorTransfer.SDR -> null
+    transfer.isLog && rawLogSession -> R.string.video_raw_log_source
     transfer.isLog && nativeLogCurveSupported && tenBitNativeLogSession -> R.string.video_native_log_source_10bit
     transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
     else -> R.string.video_tone_mapped_source

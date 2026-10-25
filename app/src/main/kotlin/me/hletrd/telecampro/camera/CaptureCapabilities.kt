@@ -259,6 +259,20 @@ data class CameraCaps(
      */
     val p010OutputSizes: List<Size> = emptyList(),
     val p010StandardAdvertised: Boolean = false,
+    /**
+     * Whether the EXPERIMENTAL RAW log developer ([RawLogBridge]) understands this camera's RAW: a
+     * RAW_SENSOR size, a Bayer CFA ([RawDevelopMath.bayerPhase]), a ForwardMatrix1 or ColorMatrix1, a
+     * white level, and a reference illuminant with a known temperature. PMA110 rear cameras: BGGR,
+     * white 1023, illuminant 1 = D65 / 2 = Standard A, a real ColorMatrix pair and a placeholder
+     * ForwardMatrix pair (dumpsys 2026-10-25; see RawDevelopMath).
+     */
+    val rawLogDevelopable: Boolean = false,
+    /**
+     * The RAW_SENSOR stream's advertised minimum frame duration at [rawSize] (0 = unavailable) — the
+     * cadence half of [rawLogSupported]. PMA110 cameras 2/3/4: 33.33 ms (30 fps), matching the
+     * measured 29.8 fps RAW-only stream.
+     */
+    val rawMinFrameDurationNs: Long = 0L,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
@@ -537,6 +551,17 @@ data class CameraCaps(
                             )
                             ?.isNotEmpty() == true
                     }.getOrDefault(false),
+                // Same defensive rule: an odd vendor value degrades to "no RAW log", never a failed read.
+                rawLogDevelopable = rawSize != null && runCatching {
+                    RawDevelopMath.bayerPhase(chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)) != null &&
+                        (chars.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1) != null ||
+                            chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1) != null) &&
+                        chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) != null &&
+                        RawDevelopMath.illuminantCct(chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1)) != null
+                }.getOrDefault(false),
+                rawMinFrameDurationNs = rawSize?.let { size ->
+                    runCatching { map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, size) }.getOrNull()
+                } ?: 0L,
             )
         }
     }

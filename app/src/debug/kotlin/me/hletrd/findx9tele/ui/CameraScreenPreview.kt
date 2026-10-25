@@ -109,6 +109,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onToggleGammaAssist(enabled: Boolean) = Unit
     override fun onLogEiOffset(stops: Int) = Unit
     override fun onToggleGyroLog(enabled: Boolean) = Unit
+    override fun onToggleRawLog(enabled: Boolean) = Unit
     override fun onFrameLines(type: FrameLineType) = Unit
     override fun onAfSpotSize(size: me.hletrd.telecampro.camera.AfSpotSize) = Unit
     override fun onToggleFacePriorityAf(enabled: Boolean) = Unit

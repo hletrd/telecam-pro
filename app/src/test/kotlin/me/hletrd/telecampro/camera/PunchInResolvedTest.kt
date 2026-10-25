@@ -156,7 +156,7 @@ class TenBitSessionWantedTest {
         logTransfers.forEach {
             assertFalse("$it native", tenBitSessionWanted(videoMode = true, transfer = it, nativeLogCurveSupported = true))
             assertTrue("$it native", nativeLogSessionWanted(true, it, nativeLogCurveSupported = true))
-            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, it, nativeLogCurveSupported = true))
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, it, nativeLogCurveSupported = true, rawLogWanted = false))
         }
     }
 
@@ -165,7 +165,7 @@ class TenBitSessionWantedTest {
         listOf(false, true).forEach { supported ->
             assertFalse(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SDR, nativeLogCurveSupported = supported))
             assertFalse(nativeLogSessionWanted(true, ColorTransfer.SDR, supported))
-            assertEquals(VideoSessionShape.SDR, videoSessionShape(true, ColorTransfer.SDR, supported))
+            assertEquals(VideoSessionShape.SDR, videoSessionShape(true, ColorTransfer.SDR, supported, rawLogWanted = false))
         }
     }
 
@@ -176,7 +176,7 @@ class TenBitSessionWantedTest {
             listOf(false, true).forEach { supported ->
                 assertFalse("photo asked for 10-bit with $it", tenBitSessionWanted(false, it, supported))
                 assertFalse("photo asked for native log with $it", nativeLogSessionWanted(false, it, supported))
-                assertEquals(VideoSessionShape.SDR, videoSessionShape(false, it, supported))
+                assertEquals(VideoSessionShape.SDR, videoSessionShape(false, it, supported, rawLogWanted = false))
             }
         }
     }
@@ -189,27 +189,27 @@ class TenBitSessionWantedTest {
     @Test
     fun shapeBoundariesMatchWhatTheSessionActuallyChanges() {
         assertEquals(
-            videoSessionShape(true, ColorTransfer.SLOG3, true),
-            videoSessionShape(true, ColorTransfer.LOGC3, true),
+            videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false),
+            videoSessionShape(true, ColorTransfer.LOGC3, true, rawLogWanted = false),
         )
         // O-Log2 (2026-10-15) is one more GL encode of the same S-Log3 ISP transport: no reopen.
         assertEquals(
-            videoSessionShape(true, ColorTransfer.SLOG3, true),
-            videoSessionShape(true, ColorTransfer.OLOG2, true),
+            videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false),
+            videoSessionShape(true, ColorTransfer.OLOG2, true, rawLogWanted = false),
         )
         // All three phone-maker logs (O-Log2 / O-Log / Mi-Log) are one more GL encode of that
         // transport: the native ISP curve stays S-Log3, so switching among logs never reopens...
         for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
-            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, flavor, true))
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, flavor, true, rawLogWanted = false))
             // ...and on the GL fallback each shares the 10-bit HLG10 source shape like the other logs.
-            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, flavor, false))
+            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, flavor, false, rawLogWanted = false))
         }
-        assertTrue(videoSessionShape(true, ColorTransfer.SDR, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
-        assertTrue(videoSessionShape(true, ColorTransfer.HLG, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
+        assertTrue(videoSessionShape(true, ColorTransfer.SDR, true, rawLogWanted = false) != videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false))
+        assertTrue(videoSessionShape(true, ColorTransfer.HLG, true, rawLogWanted = false) != videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false))
         // Fallback camera: log and HLG share the 10-bit shape, exactly the pre-native behaviour.
         assertEquals(
-            videoSessionShape(true, ColorTransfer.HLG, false),
-            videoSessionShape(true, ColorTransfer.SLOG3_CINE, false),
+            videoSessionShape(true, ColorTransfer.HLG, false, rawLogWanted = false),
+            videoSessionShape(true, ColorTransfer.SLOG3_CINE, false, rawLogWanted = false),
         )
     }
 }

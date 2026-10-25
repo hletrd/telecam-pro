@@ -1171,9 +1171,13 @@ class CameraViewModel private constructor(
                 // commit and this post is kept by the engine, so the packet's `rawWanted` would
                 // revert only the chip and the pending request — and then persist that.
                 val liveRawWanted = engine.currentRawWanted()
+                // RAW log intent rolls back with its transaction, and a newer direct write survives
+                // in the engine: mirror the engine's live value, never re-derive it here.
+                val liveRawLog = engine.currentRawLogEnabled()
                 _state.update {
                     it.copy(
                         mode = rollback.mode,
+                        rawLog = liveRawLog,
                         transfer = if (pipelineOwned) rollback.transfer else it.transfer,
                         videoCodec = if (pipelineOwned) rollback.videoCodec else it.videoCodec,
                         lens = rollback.lens,
@@ -1853,6 +1857,7 @@ class CameraViewModel private constructor(
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
         engine.setGammaAssist(e.gammaAssist)
         engine.setGyroLogEnabled(e.gyroLog)
+        engine.setRawLogEnabled(e.rawLog)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
         engine.setDriveMode(e.driveMode)
@@ -1937,6 +1942,7 @@ class CameraViewModel private constructor(
                 audioScene = e.audioScene,
                 gammaAssist = e.gammaAssist,
                 gyroLog = e.gyroLog,
+                rawLog = e.rawLog,
                 frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
                 audioRoute = audioInputStatus(e.audioInputPreference).route,
@@ -2035,6 +2041,7 @@ class CameraViewModel private constructor(
             quickButtonAction = s.quickButtonAction,
             gammaAssist = s.gammaAssist,
             gyroLog = s.gyroLog,
+            rawLog = s.rawLog,
             frameLines = s.frameLines,
             preserveLensSelection = s.preserveLensSelection,
             preserveTeleconverter = s.preserveTeleconverter,
@@ -3030,6 +3037,15 @@ class CameraViewModel private constructor(
         if (rejectIfRecording()) return
         engine.setGyroLogEnabled(enabled)
         _state.update { it.copy(gyroLog = enabled, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onToggleRawLog(enabled: Boolean) {
+        // It replaces the session (a RAW-only stream), so it is refused mid-take like every other
+        // session-shape door; the engine reopens only when the resolved shape actually flips.
+        if (rejectIfRecording()) return
+        engine.setRawLogEnabled(enabled)
+        _state.update { it.copy(rawLog = enabled, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 

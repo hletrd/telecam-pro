@@ -67,6 +67,8 @@ class CameraController internal constructor(
     }
 
     private val manager = context.getSystemService(CameraManager::class.java)
+    // The RAW log developer's gyro needs a SensorManager; application context, never the activity.
+    private val appContext: Context = context.applicationContext
     private var startupTraceOwner: StartupTrace.Owner? = startupTraceOwner
     // Measured per-device HAL quirks (multi-device 2026-08-01); gates the vendor TC session type.
     private var deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
@@ -172,8 +174,20 @@ class CameraController internal constructor(
     private var p010BridgeSize: android.util.Size? = null
     private var p010Bridge: P010InputBridge? = null
     private var p010BridgeRefused = false
-    // The surface the CURRENT session's repeating request targets: the bridge's P010 reader when the
-    // bridge configured, else the GL input Surface itself. Camera-thread confined.
+    // EXPERIMENTAL RAW log (RawLogBridge): the GL input stream size the engine resolved RAW log for,
+    // or null. Set once per open(). Same refusal rule as the P010 bridge, one step earlier in the
+    // precedence: built per configure attempt, and once an attempt with it fails the retry lands on
+    // the SAME rung through the native-log path (P010 bridge, then 8-bit) — a HAL that declines a
+    // RAW-only session costs the operator the experiment, never a still reader or the clip.
+    private var rawLogStream: android.util.Size? = null
+    private var rawLogBridge: RawLogBridge? = null
+    private var rawLogRefused = false
+    // The RAW log session's gyro EIS (RawLog.kt RawEisConfig), null = off. Written by the engine from
+    // any thread (synchronously, so the next configure sees it), read on the camera thread.
+    @Volatile private var rawEis: RawEisConfig? = null
+    // The surface the CURRENT session's repeating request targets: the RAW log bridge's RAW reader or
+    // the P010 bridge's reader when one configured, else the GL input Surface itself. Camera-thread
+    // confined.
     private var cameraOutputSurface: Surface? = null
     // Log EI offset (NativeLogCurve.kt): the curve for the ACHIEVED factor the repeating request's
     // wire carries, rebuilt only when that factor moves (camera-thread confined). k = 1 reuses
@@ -237,6 +251,15 @@ class CameraController internal constructor(
      * worth its cost over a ten-bit source).
      */
     @Volatile var tenBitNativeLogConfigured = false
+        private set
+
+    /**
+     * Whether the session that actually CONFIGURED streams RAW into the [RawLogBridge] — accepted
+     * truth the engine pushes to GL as the wide-gamut S-Log3 source decode (`setSourceWide`) and as
+     * the missing buffer transform. A refused RAW-only session leaves the same rung on the native-log
+     * path, so intent cannot answer it.
+     */
+    @Volatile var rawLogConfigured = false
         private set
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
@@ -341,6 +364,9 @@ class CameraController internal constructor(
         // No default, same rule as the route terms: an open path that forgot it would silently keep
         // a supported route on eight bits.
         tenBitNativeLogStream: android.util.Size?,
+        // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
+        // same rule: an open path that forgot it would silently drop the operator's RAW log.
+        rawLogStream: android.util.Size?,
         highSpeedFps: Int = 0,
         // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
         // that forgot one compiled and silently opened with stabilization off, the TC hints off,
@@ -393,6 +419,8 @@ class CameraController internal constructor(
         this.nativeLogCurvePoints = if (this.nativeLogCurve) nativeLogToneCurve(caps.maxCurvePoints) else null
         this.p010BridgeSize = tenBitNativeLogStream.takeIf { this.nativeLogCurve }
         this.p010BridgeRefused = false
+        this.rawLogStream = rawLogStream
+        this.rawLogRefused = false
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -574,11 +602,27 @@ class CameraController internal constructor(
 
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
     private fun CaptureRequest.Builder.applyVideoStab() {
-        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStabHalMode)
+        // A RAW log session with the app's gyro EIS runs the HAL stabilization OFF — which on this HAL
+        // is what disengages OIS (result ois=1 under vstab=2, measured 2026-10-25). Two reasons, both
+        // physics: the HAL's EIS works on ISP output and never reaches RAW, and its OIS compensates as
+        // if no converter were there — through the inverting Keplerian converter the image moves by
+        // −M·f per radian, so an OIS adding −f moves it FURTHER (×(M+1)/M), and no OIS samples are
+        // published to let the EIS subtract it. With OIS off the EIS model is exact.
+        val mode = if (rawLogBridge != null && rawEis != null) {
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        } else {
+            videoStabHalMode
+        }
+        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, mode)
+        if (rawLogBridge != null && rawEis != null) {
+            // vstab OFF alone left the result reading ois=1 (measured 2026-10-25): ask for OIS OFF
+            // explicitly — the one LENS_OPTICAL_STABILIZATION_MODE value these cameras advertise.
+            set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+        }
         // Vendor mirror only where its semantics were measured (DeviceProfile, review 2026-08-01):
         // another ColorOS handset would accept the tag with never-measured effects.
         if (deviceProfile.vendorOplusRequestHints) {
-            runCatching { set(vendorVideoStabKey, videoStabHalMode) }
+            runCatching { set(vendorVideoStabKey, mode) }
         }
     }
 
@@ -724,6 +768,21 @@ class CameraController internal constructor(
         teleconverterMagnification = magnification
     }
 
+    /**
+     * The RAW log route's gyro EIS configuration (null = off). Takes effect on the live bridge at its
+     * next frame and re-issues the repeating request, because whether the HAL's OIS may run depends on
+     * it ([applyVideoStab]).
+     */
+    internal fun setRawEis(config: RawEisConfig?) {
+        if (rawEis == config) return
+        rawEis = config
+        postToCamera {
+            val bridge = rawLogBridge ?: return@postToCamera
+            bridge.setEis(config)
+            startPreview()
+        }
+    }
+
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
     fun setVideoStabMode(controlMode: Int) {
         videoStabHalMode = controlMode
@@ -756,6 +815,7 @@ class CameraController internal constructor(
         // A previous FAILED attempt's bridge still owns the GL input Surface as its producer; release
         // it before this attempt connects either a new bridge or the camera stream to that Surface.
         closeP010Bridge()
+        closeRawLogBridge()
 
         // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
@@ -797,11 +857,31 @@ class CameraController internal constructor(
 
         val configs = ArrayList<OutputConfiguration>()
 
+        // EXPERIMENTAL RAW log first: the session's ONLY output is the RAW stream the developer reads
+        // (no HLG profile, no still readers — the developer, not the ISP, makes every frame), so the
+        // plan's HLG/JPEG/RAW terms below stand down while it is present.
+        val rawStream = rawLogStream
+        val rawBridge = if (rawStream != null && !rawLogRefused && !caps.lensFacingFront) {
+            runCatching {
+                val chars = rawChars ?: readRawCharacteristics() ?: error("no characteristics")
+                val rawSize = caps.rawSize ?: error("no RAW size")
+                val profile = RawDevelopProfile.from(chars, rawSize) ?: error("RAW not developable")
+                RawLogBridge.create(appContext, preview, rawStream, profile).also { it.setEis(rawEis) }
+            }.onFailure { failure ->
+                rawLogRefused = true
+                if (BuildConfig.DEBUG) Log.w(TAG, "RAW log bridge refused; native log: ${failure.message}")
+            }.getOrNull()
+        } else {
+            null
+        }
+        rawLogBridge = rawBridge
+        val sessionHlg = useHlg && rawBridge == null
+
         // Ten-bit native log: the same rung, with the GL stream carried as P010 (STANDARD profile)
         // through the bridge instead of the 8-bit PRIVATE SurfaceTexture stream. Never with HLG10
         // (that rung is the GL-log fallback for curve-less cameras, which never resolve a size).
         val bridgeSize = p010BridgeSize
-        val bridge = if (bridgeSize != null && !p010BridgeRefused && nativeLogCurve && !useHlg) {
+        val bridge = if (rawBridge == null && bridgeSize != null && !p010BridgeRefused && nativeLogCurve && !useHlg) {
             runCatching { P010InputBridge.create(preview, bridgeSize.width, bridgeSize.height) }
                 .onFailure { failure ->
                     p010BridgeRefused = true
@@ -812,16 +892,16 @@ class CameraController internal constructor(
             null
         }
         p010Bridge = bridge
-        val cameraOut = bridge?.cameraSurface ?: preview
+        val cameraOut = rawBridge?.cameraSurface ?: bridge?.cameraSurface ?: preview
         cameraOutputSurface = cameraOut
 
         val previewCfg = OutputConfiguration(cameraOut).apply {
             selection.physicalId?.let { setPhysicalCameraId(it) }
-            if (useHlg) setDynamicRangeProfile(DynamicRangeProfiles.HLG10)
+            if (sessionHlg) setDynamicRangeProfile(DynamicRangeProfiles.HLG10)
         }
         configs.add(previewCfg)
 
-        if (useJpeg) {
+        if (useJpeg && rawBridge == null) {
             // The LOGICAL multicamera can't allocate the full-size JPEG blob (device-observed
             // gralloc "SnapAlloc: ValidateDescriptor invalid" — the image never arrives and the
             // shot dies), so stills there come as YUV and the app encodes them itself (the save
@@ -875,7 +955,7 @@ class CameraController internal constructor(
             }
         }
 
-        if (useRaw) caps.rawSize?.let { size ->
+        if (useRaw && rawBridge == null) caps.rawSize?.let { size ->
             val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
             reader.setOnImageAvailableListener({ onImage(it, isRaw = true) }, handler)
             rawReader = reader
@@ -892,11 +972,12 @@ class CameraController internal constructor(
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
-                    hlgConfigured = useHlg
+                    hlgConfigured = sessionHlg
                     nativeLogConfigured = nativeLogCurve
                     tenBitNativeLogConfigured = p010Bridge != null
+                    rawLogConfigured = rawLogBridge != null
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$sessionHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, rawLog=${rawLogBridge != null}, jpeg=${jpegReader != null}, raw=${rawReader != null}, hiRes=$hiResReaderActive)")
                     }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
@@ -925,6 +1006,7 @@ class CameraController internal constructor(
                                 rawReaderPresent = rawReader != null,
                                 hiResReaderPresent = hiResReaderActive,
                                 p010BridgePresent = p010Bridge != null,
+                                rawLogPresent = rawLogBridge != null,
                             ),
                         )
                         SessionStartDelivery.ERROR ->
@@ -937,6 +1019,15 @@ class CameraController internal constructor(
                     // would throw, convert into a spurious onError, and race the replacement
                     // controller's own bring-up (2026-07-30 review L5).
                     if (closed) return
+                    // A failed RAW log attempt retries the SAME rung on the native-log path: the
+                    // RAW-only shape was the experiment, not the rung.
+                    if (rawLogBridge != null) {
+                        rawLogRefused = true
+                        if (BuildConfig.DEBUG) Log.w(TAG, "Session configure failed with RAW log at fallback $attempt; retrying native log")
+                        runCatching { configureSession(onReady, onError) }
+                            .onFailure { onError.onError(it) }
+                        return
+                    }
                     // A failed BRIDGE attempt retries the SAME rung on the 8-bit SurfaceTexture: the
                     // P010 shape is the only difference, so dropping a still reader for it would
                     // punish the operator for a ten-bit experiment the HAL declined.
@@ -983,6 +1074,13 @@ class CameraController internal constructor(
         StartupTrace.mark(startupTraceOwner, "createCaptureSession")
         val sessionAdmitted = runNativeAcquisition {
             runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+                if (rawLogBridge != null) {
+                    // Same rung, native log, exactly as onConfigureFailed above.
+                    rawLogRefused = true
+                    if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession threw with RAW log at fallback $attempt; retrying native log: ${failure.message}")
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                    return@onFailure
+                }
                 if (p010Bridge != null) {
                     // Same rung, 8-bit, exactly as onConfigureFailed above.
                     p010BridgeRefused = true
@@ -1016,6 +1114,14 @@ class CameraController internal constructor(
     private fun closeP010Bridge() {
         val owned = p010Bridge ?: return
         p010Bridge = null
+        cameraOutputSurface = null
+        owned.close()
+    }
+
+    /** Releases the current attempt's [RawLogBridge], if any. Camera-thread confined. */
+    private fun closeRawLogBridge() {
+        val owned = rawLogBridge ?: return
+        rawLogBridge = null
         cameraOutputSurface = null
         owned.close()
     }
@@ -1203,8 +1309,10 @@ class CameraController internal constructor(
         var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                // The P010 bridge's reader when it configured, else the GL input Surface.
+                // The RAW log or P010 bridge's reader when one configured, else the GL input Surface.
                 addTarget(cameraOutputSurface ?: preview)
+                // The RAW developer applies the frame's own lens-shading map (RAW is pre-shading).
+                if (rawLogBridge != null) applyRawLogKeys()
                 // Pseudo-ZSL streaming (cycle 8): the LOGICAL photo route keeps its full-res YUV
                 // still reader on the repeating request so the zero-lag ring is always warm
                 // (S4a device-measured: no fps/stability/thermal cost). The cached fast-path
@@ -1253,6 +1361,9 @@ class CameraController internal constructor(
                     // Pair this repeating result with its ring frame (EXIF/admission truth for the
                     // pseudo-ZSL serve path). Same camera thread as the reader listener.
                     if (zslTargetAttached && !zslStreamingBroken) zslRingAttachResult(result)
+                    // The RAW developer's white balance, black level, shading map and crop zoom come
+                    // from the frame results, exactly as the ISP would have taken them.
+                    rawLogBridge?.onResult(result)
                     result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { rz ->
                         // Change-gated: this callback runs 30-60 Hz and the GL compensation only
                         // needs FRESH values while the HAL is actually ramping — forwarding a
@@ -2704,6 +2815,7 @@ class CameraController internal constructor(
                         // After the device: the camera no longer feeds the bridge reader, and closing
                         // the writer frees the GL input Surface for the next controller's producer.
                         releaseOwned { closeP010Bridge() }
+                        releaseOwned { closeRawLogBridge() }
                         session = null
                         device = null
                         jpegReader = null
@@ -2956,11 +3068,14 @@ internal fun acceptedPhotoSessionOutputs(
     rawReaderPresent: Boolean,
     hiResReaderPresent: Boolean,
     p010BridgePresent: Boolean = false,
+    rawLogPresent: Boolean = false,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
-    hlg = plan.useHlg,
+    // A RAW log session never carries the HLG10 profile, whatever the plan asked for.
+    hlg = plan.useHlg && !rawLogPresent,
     tenBitNativeLog = p010BridgePresent,
+    rawLog = rawLogPresent,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).
     hiRes = processedReaderPresent && hiResReaderPresent,

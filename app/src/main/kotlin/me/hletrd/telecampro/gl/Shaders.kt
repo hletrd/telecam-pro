@@ -11,6 +11,7 @@ internal object ShaderBindings {
     const val U_SOURCE_HLG = "uSourceHlg"
     const val U_SOURCE_LOG = "uSourceLog"
     const val U_SOURCE_LOG_HEADROOM = "uSourceLogHeadroom"
+    const val U_SOURCE_WIDE = "uSourceWide"
     const val U_PEAKING = "uPeaking"
     const val U_PEAK_THRESHOLD = "uPeakThreshold"
     const val U_PEAK_COLOR = "uPeakColor"
@@ -29,6 +30,7 @@ internal object ShaderBindings {
         U_SOURCE_HLG,
         U_SOURCE_LOG,
         U_SOURCE_LOG_HEADROOM,
+        U_SOURCE_WIDE,
         U_PEAKING,
         U_PEAK_THRESHOLD,
         U_PEAK_COLOR,
@@ -79,6 +81,12 @@ internal object ShaderBindings {
  */
 object Shaders {
 
+    /** A row-major 3×3 as a GLSL `mat3(...)` literal, which GLSL reads column by column. */
+    internal fun mat3Literal(rowMajor: DoubleArray): String {
+        val columnMajor = (0 until 9).map { i -> rowMajor[(i % 3) * 3 + i / 3] }
+        return "mat3(" + columnMajor.joinToString(", ") { "%.10f".format(java.util.Locale.ROOT, it) } + ")"
+    }
+
     val VERTEX = """
         uniform mat4 ${ShaderBindings.U_MVP};
         uniform mat4 ${ShaderBindings.U_TEX_MATRIX};
@@ -105,6 +113,9 @@ object Shaders {
         // lifted back (slog3(k * x)). The decode slog3Inverse(code) is already scene-linear k * x —
         // the inverse needs no k — so k is the ceiling of that decode's domain [0, k]. 1 = no offset.
         uniform float ${ShaderBindings.U_SOURCE_LOG_HEADROOM};
+        // 1 when the S-Log3 source (uSourceLog) is the EXPERIMENTAL RAW log developer's: S-Log3 over
+        // linear S-Gamut3.Cine, NOT the ISP's sRGB primaries (camera/RawLogBridge.kt).
+        uniform int ${ShaderBindings.U_SOURCE_WIDE};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3, 6 = O-Log2, 7 = O-Log (V1), 8 = Mi-Log (all BT.2020),
                                  // 3 = vacant (retired de-log branch)
@@ -121,6 +132,8 @@ object Shaders {
         varying vec2 vTexCoord;
 
         const vec3 LUMA = vec3(0.2627, 0.6780, 0.0593); // Rec.2020 luma weights
+        // Linear S-Gamut3.Cine -> BT.709 (LogProfiles.REC709_FROM_SG3C; GLSL mat3 is column-major).
+        const mat3 REC709_FROM_SG3C = ${mat3Literal(LogProfiles.REC709_FROM_SG3C)};
         const float SDR_EOTF_GAMMA = ${SdrToHlgMapping.SDR_EOTF_GAMMA};
         const float BT2408_HLG_SCALE = ${SdrToHlgMapping.NORMALIZED_DISPLAY_LIGHT_SCALE};
         const float HLG_SYSTEM_GAMMA = ${SdrToHlgMapping.HLG_SYSTEM_GAMMA};
@@ -159,9 +172,17 @@ object Shaders {
         // sensor-clip range the curve was programmed over (1.0 = clip), and BT.1886-encode it, so the
         // later sourceLinear() BT.1886 decode returns exactly that linear value. Peaking neighbours
         // come through here too, or a decoded centre against raw log neighbours would fabricate edges.
+        // A RAW-developed source (uSourceWide) decodes to S-Gamut3.Cine; only HERE, for the display
+        // rendition every consumer below reads, is it expressed in BT.709 and clipped to it.
+        vec3 wideDisplaySample(vec3 c) {
+            vec3 lin = clamp(REC709_FROM_SG3C * (slog3Inverse(c) * uSourceLogHeadroom), 0.0, 1.0);
+            return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
+        }
+
         vec3 sampleSource(vec2 uv) {
             vec3 c = texture2D(uTexture, uv).rgb;
             if (uSourceLog == 0) return c;
+            if (uSourceWide == 1) return wideDisplaySample(c);
             vec3 lin = clamp(slog3Inverse(c) * uSourceLogHeadroom, 0.0, 1.0);
             return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
         }
@@ -215,10 +236,23 @@ object Shaders {
             return pow(sceneLight, vec3(HLG_SYSTEM_GAMMA)) / BT2408_HLG_SCALE;
         }
 
+        // A RAW-developed source for the LOG encode branches: the S-Gamut3.Cine decode expressed in
+        // linear BT.709 with NO clamp at all. Components below 0 are the colours outside BT.709 that
+        // the developer kept; every branch's gamut matrix is linear, so toSGamut3Cine() returns the
+        // developed S-Gamut3.Cine value exactly and the other targets get their true coordinates —
+        // the log never passes THROUGH a 709 clip (owner direction 2026-10-25). Brightness
+        // simulation multiplies like nativeSceneLinear's; encoder draws pass gain 1.
+        vec3 wideSceneLinear(vec2 uv) {
+            vec3 lin = REC709_FROM_SG3C * (slog3Inverse(texture2D(uTexture, uv).rgb) * uSourceLogHeadroom);
+            if (uDigitalGain > 1.001) lin *= uDigitalGain;
+            return lin;
+        }
+
         // Linear input of the LOG encode branches (codes 2/4/5/6/7/8). Without an EI offset — and on
         // every non-native stream — this IS the historical sourceLinear(base) path, byte for byte;
         // with one, the unclamped native scene-linear above (`base` keeps its clamp for display).
         vec3 logInputLinear(vec3 color) {
+            if (uSourceLog == 1 && uSourceWide == 1) return wideSceneLinear(vTexCoord);
             if (uSourceLog == 0 || uSourceLogHeadroom <= 1.0) return sourceLinear(color);
             return nativeSceneLinear(vTexCoord);
         }

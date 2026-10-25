@@ -29,6 +29,18 @@ me/hletrd/telecampro/camera/VendorTagInspector$*
 # stubs throw on the host). Its gate, tenBitNativeLogBridgeSupported, stays a host-tested A function.
 me/hletrd/telecampro/camera/P010InputBridge
 me/hletrd/telecampro/camera/P010InputBridge$*
+# EXPERIMENTAL RAW log developer: ImageReader/HandlerThread/EGL14/GLES30 glue, RawDevelopProfile's
+# CameraCharacteristics reads, and the CaptureRequest.Builder key helper (android.jar stubs throw on
+# the host). Its colour/geometry math (RawDevelopMath) and gates (RawLog) stay host-tested A.
+me/hletrd/telecampro/camera/RawLogBridge
+me/hletrd/telecampro/camera/RawLogBridge$*
+me/hletrd/telecampro/camera/RawDevelopProfile
+me/hletrd/telecampro/camera/RawDevelopProfile$*
+me/hletrd/telecampro/camera/RawLogBridgeKt
+# RAW log gyro capture: SensorManager registration and SensorEvent integration on a HandlerThread
+# (android.jar stubs throw on the host). Its math (RawEisMath) stays host-tested A.
+me/hletrd/telecampro/stab/RawEisGyro
+me/hletrd/telecampro/stab/RawEisGyro$*
 # RendererAssists depends on concrete GlPipeline (ctor throws on host: EGL stubs); a renderer-sink
 # interface seam would convert it to A — deferred, tracked in docs/TESTING.md future work.
 me/hletrd/telecampro/camera/RendererAssists

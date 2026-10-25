@@ -1559,6 +1559,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         state.transfer,
         me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
         tenBitNativeLogSession = state.cameraReady && state.photoSessionOutputs.tenBitNativeLog,
+        rawLogSession = state.cameraReady && state.photoSessionOutputs.rawLog,
     )?.let { stringResource(it) }
     val makerCaption = transferMakerCaption(state.transfer)?.let { stringResource(it) }
     Captioned(listOfNotNull(makerCaption, sourceCaption).joinToString("\n").ifEmpty { null }) {
@@ -1572,6 +1573,28 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             tenBitEncodeAvailable = state.tenBitEncodeAvailable,
             nativeLogFlavor = state.nativeLogFlavor,
         )
+    }
+    // EXPERIMENTAL RAW log (camera/RawLog.kt): directly under the Sony log it develops into, and only
+    // where it can act (rawLogSettingVisible: S-Log3/S-Log3.Cine on a RAW-developable camera at a
+    // rate the RAW stream sustains). Its caption carries the honesty limits; a second line appears
+    // only when the operator asked for it and the ACCEPTED session still is not RAW log (a refused
+    // RAW-only session falls back to native log on the same rung). Locked while recording: it
+    // replaces the session.
+    val rawLogCaps = state.caps
+    if (rawLogCaps != null &&
+        me.hletrd.telecampro.camera.rawLogSettingVisible(state.transfer, rawLogCaps, state.videoFrameRate.encoderRate)
+    ) {
+        val inactive = state.rawLog && state.cameraReady && !state.photoSessionOutputs.rawLog
+        val rawCaption = stringResource(R.string.caption_raw_log) +
+            if (inactive) "\n" + stringResource(R.string.caption_raw_log_inactive) else ""
+        Captioned(rawCaption) {
+            ToggleRow(
+                label = stringResource(R.string.label_raw_log),
+                checked = state.rawLog,
+                onCheckedChange = actions::onToggleRawLog,
+                enabled = recordingMutable,
+            )
+        }
     }
     // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it
     // can act (logEiOffsetSettingVisible). Locked while recording like Gamma — it moves the wire

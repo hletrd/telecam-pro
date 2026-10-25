@@ -632,17 +632,25 @@ fun tenBitSessionWanted(
 /**
  * The session SHAPE a video transfer asks for. Any change of shape needs a session reopen (the
  * 10-bit one changes the stream profile and drops the still readers; the native-log one changes the
- * repeating request's tone map and the GL source decode, both bound to the accepted session);
+ * repeating request's tone map and the GL source decode, both bound to the accepted session; the
+ * EXPERIMENTAL RAW log one replaces every camera output with the RAW stream its developer reads);
  * moving between transfers of the SAME shape — S-Log3 ↔ S-Log3.Cine ↔ LogC3 ↔ the phone-maker log — is a
- * GL-only change, because every native-log transfer programs the same S-Log3 transport curve.
+ * GL-only change, because every native-log transfer programs the same S-Log3 transport curve. RAW
+ * log is resolved by the caller ([rawLogSessionWanted] needs the route and the frame rate) and wins
+ * over native log: S-Log3 ↔ S-Log3.Cine inside it stays GL-only, while a move to LogC3 or a
+ * phone-maker log leaves it and so reopens.
  */
-enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT }
+enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT, RAW_LOG }
 
 fun videoSessionShape(
     videoMode: Boolean,
     transfer: ColorTransfer,
     nativeLogCurveSupported: Boolean,
+    // No default (the route-term rule): a shape comparison that forgot it would miss a RAW-log
+    // flip and keep the old session's outputs under the new intent.
+    rawLogWanted: Boolean,
 ): VideoSessionShape = when {
+    rawLogWanted -> VideoSessionShape.RAW_LOG
     nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.NATIVE_LOG
     tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.TEN_BIT
     else -> VideoSessionShape.SDR
@@ -1656,6 +1664,11 @@ data class PhotoSessionOutputs(
     // P010InputBridge (native log on a measured route) — a refused bridge lands the SAME rung on the
     // 8-bit SurfaceTexture, so intent cannot answer "how many bits does this native log have".
     val tenBitNativeLog: Boolean = false,
+    // True only when the ACCEPTED session streams RAW into the EXPERIMENTAL RAW log developer
+    // (RawLogBridge) — a refused RAW-only session retries the same rung on the native-log path, so
+    // only the session that configured can say which source the file is developed from. Such a
+    // session has no still readers by construction.
+    val rawLog: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }
@@ -2072,6 +2085,9 @@ data class CameraUiState(
     // Optional Gyroflow .gcsv sidecar per video take (Documents/TeleCamPro). No viewfinder chrome:
     // the Video menu row is its only surface, and a failed sidecar is one status line.
     val gyroLog: Boolean = false,
+    // Operator intent for the EXPERIMENTAL RAW log route (Video tab). Whether a session actually
+    // develops from RAW is accepted truth: photoSessionOutputs.rawLog.
+    val rawLog: Boolean = false,
     // Delivery-framing markers over the viewfinder.
     val frameLines: FrameLineType = FrameLineType.OFF,
     // Battery % and free storage for the OSD info pill (refreshed by a slow ticker; -1 = unknown).

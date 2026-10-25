@@ -271,6 +271,12 @@ class CameraEngine internal constructor(
     // and publish thread, so neither REC timing nor the GL/encoder/recorder lanes ever wait on it.
     // The operator's intent is read once per take at REC admission.
     @Volatile private var gyroLogEnabled = false
+    // Operator intent for the EXPERIMENTAL RAW log route (RawLog.kt). The session takes it only when
+    // [rawLogWanted] resolves true for the installed route, transfer and frame rate. Part of
+    // OpticsSnapshot: a shape-flipping toggle rides its transaction and rolls back with it, while a
+    // non-flipping one is a direct write counted here so an older rollback keeps it.
+    @Volatile private var rawLogEnabled = false
+    private var rawLogEnabledDirectWrites = 0L
     private val gyroLog = me.hletrd.telecampro.video.GyroLogRecorder(context) {
         onStatus?.invoke(CameraStatusMessage.GYRO_LOG_NOT_SAVED.status())
     }
@@ -695,6 +701,12 @@ class CameraEngine internal constructor(
         /** DNG intent is a ROUTE input, so it rolls back with the route it selected (AGG-4). */
         val rawWanted: Boolean,
         val rawWantedDirectWrites: Long,
+        /**
+         * RAW log intent is a SESSION-SHAPE input like the transfer, so a rolled-back toggle must not
+         * leave it standing for the next unrelated reopen to pick up (review 2026-10-25).
+         */
+        val rawLogEnabled: Boolean,
+        val rawLogEnabledDirectWrites: Long,
     )
 
     // The RAW-loss facts commitOpticsReady computed for one exact accepted session (identity, not
@@ -810,6 +822,8 @@ class CameraEngine internal constructor(
         hiResConfigured = acceptedCameraSession?.hiResConfigured ?: false,
         rawWanted = rawWanted,
         rawWantedDirectWrites = rawWantedDirectWrites,
+        rawLogEnabled = rawLogEnabled,
+        rawLogEnabledDirectWrites = rawLogEnabledDirectWrites,
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
@@ -885,7 +899,14 @@ class CameraEngine internal constructor(
             rendererAssists.setSourceHlg(expectedController.hlgConfigured)
             // Same accepted-session rule for the native ISP log curve: GL must decode S-Log3 only
             // from frames the CONFIGURED session's repeating request actually tone-mapped that way.
-            rendererAssists.setSourceLog(expectedController.nativeLogConfigured)
+            // A RAW log session's frames are S-Log3 too — developed in-app over S-Gamut3.Cine primaries
+            // and missing the camera's buffer transform, so the decode and the orientation both
+            // follow the same accepted truth.
+            rendererAssists.setSourceLog(expectedController.nativeLogConfigured || expectedController.rawLogConfigured)
+            rendererAssists.setSourceWide(
+                expectedController.rawLogConfigured,
+                me.hletrd.telecampro.gl.SourceTransformEmulation.rearTransformFor(caps?.sensorOrientation ?: 0),
+            )
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }
@@ -971,7 +992,8 @@ class CameraEngine internal constructor(
             transaction.before.videoMode,
             transaction.before.transfer,
             nativeLogSupported,
-        ) != videoSessionShape(videoMode, transfer, nativeLogSupported)
+            rawLogWanted(selection, caps, transaction.before.videoMode, transaction.before.transfer),
+        ) != videoSessionShape(videoMode, transfer, nativeLogSupported, rawLogWanted(selection, caps))
         if ((resolvedHiResStill() != transaction.before.hiResConfigured || sessionTransferChanged) &&
             ownsOpticsTransaction(transaction) && !paused && recorder == null
         ) {
@@ -1207,6 +1229,13 @@ class CameraEngine internal constructor(
             restoredRoute = restored.route,
             rawForcesStandalone = activeDeviceProfile().rawRequiresStandalone,
         )
+        // A toggle that did not flip the session shape was a direct write (no transaction to roll
+        // back with), so it survives an older door's rollback exactly as a direct DNG write does.
+        rawLogEnabled = keepNewerDirectWrite(
+            current = rawLogEnabled,
+            baseline = before.rawLogEnabled,
+            directWriteSinceBaseline = rawLogEnabledDirectWrites != before.rawLogEnabledDirectWrites,
+        )
         val opticsPublication = OpticsRollbackPublication(
             mode = restored.mode,
             transfer = restoredVideoPipeline.requestedTransfer,
@@ -1315,6 +1344,7 @@ class CameraEngine internal constructor(
             // both the live GL generation and RendererAssists replay snapshot from the frozen value.
             rendererAssists.setPunchInResolved(effects.punchInResolved)
             effects.controller?.setTeleconverterMagnification(effects.teleconverterMagnification)
+            effects.controller?.setRawEis(rawEisFor(caps))
             effects.controller?.setPinAutoFps(effects.videoMode, effects.generation)
 
             if (!owned()) return
@@ -2303,6 +2333,8 @@ class CameraEngine internal constructor(
             after = m,
         )
         videoStabMode = m
+        // The RAW log EIS level rides the same setting (the HAL's own EIS never reaches RAW).
+        controller?.setRawEis(rawEisFor(caps))
         if (!requiresReconfigure) return
         stabilizationOverrides?.apply?.invoke() ?: applyStabilization()
         // CONTROL_VIDEO_STABILIZATION_MODE is advertised as a session key on the Find X9 Ultra tele.
@@ -2768,6 +2800,7 @@ class CameraEngine internal constructor(
             // Same pre-configure resolve as the dual-open path: this sequential fallback must not
             // silently drop an admitted hi-res session (or keep one video mode denies).
             ctrl.hiResStill = resolvedHiResStill(sel, c)
+            ctrl.setRawEis(rawEisFor(c))
             ctrl.open(
                 selection = sel,
                 caps = c,
@@ -2778,6 +2811,7 @@ class CameraEngine internal constructor(
                 tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
+                rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -3126,6 +3160,7 @@ class CameraEngine internal constructor(
             teleconverterMode = routeTeleconverter
             teleconverterDeclaration = declaration
             controller?.setTeleconverterMagnification(declaration.magnification)
+            controller?.setRawEis(rawEisFor(caps))
             // MR recall / settings restore EXITS the front camera in this same atomic publication:
             // recalled packets are rear-route optics (lens band, TC state, unified/lens-local zoom
             // semantics — facing itself is deliberately never persisted), so applying one while
@@ -3310,8 +3345,11 @@ class CameraEngine internal constructor(
         )
         // Session-shape boundary (SDR / native log / 10-bit), against the installed route's caps.
         val nativeLogSupported = nativeLogCurveSupported(caps)
-        val sessionShapeChanged = videoSessionShape(videoMode, transfer, nativeLogSupported) !=
-            videoSessionShape(videoMode, activeTransfer, nativeLogSupported)
+        val sessionShapeChanged = videoSessionShape(
+            videoMode, transfer, nativeLogSupported, rawLogWanted(selection, caps, videoMode, transfer),
+        ) != videoSessionShape(
+            videoMode, activeTransfer, nativeLogSupported, rawLogWanted(selection, caps, videoMode, activeTransfer),
+        )
         val publish = { publishVideoPipelineLocked(targetPipeline) }
         if (sessionShapeChanged && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
@@ -3733,8 +3771,43 @@ class CameraEngine internal constructor(
      */
     fun setVideoFrameRate(r: VideoFrameRate) {
         val before = desiredHighSpeedFps()
+        val rawLogBefore = rawLogWanted(selection, caps)
         videoFrameRate = r
-        if (desiredHighSpeedFps() != before) reopenForSession()
+        // RAW log is the one shape a frame rate can flip (its RAW stream tops out at the advertised
+        // RAW cadence, 30 fps on PMA110), so a crossing reopens like a transfer change.
+        // Both are BARE doors: the rate was written above, so the baseline must be snapshotted after
+        // that write (currentOpticsReconfiguration's baselinePrecedesMutation = false, AGG3-7), never
+        // through beginOpticsTransaction, which would claim a pre-write baseline and take the
+        // RESTORE_ROLLBACK path on a preflight failure.
+        if (desiredHighSpeedFps() != before ||
+            (rawLogWanted(selection, caps) != rawLogBefore && recorder == null)
+        ) {
+            reopenForSession()
+        }
+    }
+
+    /**
+     * Operator intent for the EXPERIMENTAL RAW log route. A change that flips the resolved session
+     * shape reopens (the RAW-only session replaces every camera output); refused while recording,
+     * like every session-shape door.
+     */
+    fun setRawLogEnabled(enabled: Boolean) {
+        if (rawLogEnabled == enabled) return
+        if (recorder != null) {
+            onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status())
+            return
+        }
+        val before = rawLogWanted(selection, caps)
+        val after = rawLogWanted(selection, caps, enabled = enabled)
+        if (after == before) {
+            synchronized(this) {
+                rawLogEnabled = enabled
+                rawLogEnabledDirectWrites++
+            }
+            return
+        }
+        // Published inside the transaction, atomically with Not-Ready, like every reopen door.
+        reopenForSession(beginOpticsTransaction { rawLogEnabled = enabled }.first)
     }
 
     /** Open Gate: record the full 4:3 sensor readout. Switches [videoSize] to a 4:3 size and re-picks it. */
@@ -4100,6 +4173,7 @@ class CameraEngine internal constructor(
         teleconverterDeclaration = normalizedDeclaration
         if (previous.magnification == normalizedDeclaration.magnification) return
         controller?.setTeleconverterMagnification(normalizedDeclaration.magnification)
+        controller?.setRawEis(rawEisFor(caps))
         // The Loupe Overview's pretend-field scale follows the selected converter (the hint marks
         // the magnified view against the PRE-CONVERTER world) — re-resolve so a profile change with
         // the finder already visible resizes the hint without waiting for a door.
@@ -4149,6 +4223,9 @@ class CameraEngine internal constructor(
      * after the rollback committed is newer than the frozen packet's `rawWanted`.
      */
     internal fun currentRawWanted(): Boolean = rawWanted
+
+    /** The live RAW log intent after a rollback (same live-read rule as [currentRawWanted]). */
+    internal fun currentRawLogEnabled(): Boolean = rawLogEnabled
 
     /**
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
@@ -4757,6 +4834,7 @@ class CameraEngine internal constructor(
                 // session included) — the controller only re-checks the standalone/advertised
                 // halves defensively at its reader seam.
                 next.hiResStill = resolvedHiResStill(sel, c)
+                next.setRawEis(rawEisFor(c))
                 next.open(
                     selection = sel,
                     caps = c,
@@ -4767,6 +4845,7 @@ class CameraEngine internal constructor(
                     tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
+                    rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
@@ -8356,6 +8435,43 @@ class CameraEngine internal constructor(
             rendererAssists.setTeleFinderResolved(resolved)
         }
     }
+
+    /**
+     * Whether the EXPERIMENTAL RAW log route applies to [sel]/[c] for [mode]/[t] at the selected frame
+     * rate ([rawLogSessionWanted] over [rawLogSupported]); false without a route.
+     */
+    private fun rawLogWanted(
+        sel: TeleSelection?,
+        c: CameraCaps?,
+        mode: Boolean = videoMode,
+        t: ColorTransfer = transfer,
+        enabled: Boolean = rawLogEnabled,
+    ): Boolean {
+        if (sel == null || c == null) return false
+        return rawLogSessionWanted(
+            videoMode = mode,
+            transfer = t,
+            enabled = enabled,
+            supported = rawLogSupported(
+                caps = c,
+                standalone = sel.physicalId == null,
+                rawRequiresStandalone = deviceProfile.rawRequiresStandalone,
+                fps = videoFrameRate.encoderRate,
+            ),
+        )
+    }
+
+    /**
+     * The RAW log gyro EIS for route [c] under the current Stabilization level and converter
+     * declaration ([rawEisConfigFor]); only a RAW log session's bridge consumes it.
+     */
+    private fun rawEisFor(c: CameraCaps?): RawEisConfig? = c?.let {
+        rawEisConfigFor(videoStabMode, teleconverterMode, teleconverterMagnification, it.sensorOrientation, it.nativeFocalInImageWidths)
+    }
+
+    /** The GL input stream size for the RAW log developer on [sel]/[c], or null ([rawLogWanted]). */
+    private fun rawLogStreamFor(sel: TeleSelection, c: CameraCaps, stream: Size): Size? =
+        stream.takeIf { rawLogWanted(sel, c) }
 
     /**
      * The GL input stream size for the ten-bit native-log bridge on route [c], or null when the

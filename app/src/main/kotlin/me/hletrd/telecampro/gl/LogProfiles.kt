@@ -158,6 +158,32 @@ internal object LogProfiles {
     const val SG3C_B_FROM_G = 0.1292809048
     const val SG3C_B_FROM_B = 0.8337616753
 
+    /**
+     * Linear-light S-Gamut3.Cine -> BT.709 (D65→D65), row-major: the exact inverse of the SG3C_*
+     * matrix above, for a source whose primaries ARE S-Gamut3.Cine (the EXPERIMENTAL RAW log
+     * developer, camera/RawLogBridge.kt). Computed, not typed, so it cannot drift from its forward
+     * twin; LogProfilesTest pins the round trip. Its output legitimately goes NEGATIVE for colours
+     * outside BT.709 — the Shaders.kt wide path keeps those values for the gamut branches, which map
+     * them back exactly, and clamps only the display rendition.
+     */
+    val REC709_FROM_SG3C: DoubleArray = invert3(
+        doubleArrayOf(
+            SG3C_R_FROM_R, SG3C_R_FROM_G, SG3C_R_FROM_B,
+            SG3C_G_FROM_R, SG3C_G_FROM_G, SG3C_G_FROM_B,
+            SG3C_B_FROM_R, SG3C_B_FROM_G, SG3C_B_FROM_B,
+        ),
+    )
+
+    private fun invert3(m: DoubleArray): DoubleArray {
+        val det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) +
+            m[2] * (m[3] * m[7] - m[4] * m[6])
+        return doubleArrayOf(
+            (m[4] * m[8] - m[5] * m[7]) / det, (m[2] * m[7] - m[1] * m[8]) / det, (m[1] * m[5] - m[2] * m[4]) / det,
+            (m[5] * m[6] - m[3] * m[8]) / det, (m[0] * m[8] - m[2] * m[6]) / det, (m[2] * m[3] - m[0] * m[5]) / det,
+            (m[3] * m[7] - m[4] * m[6]) / det, (m[1] * m[6] - m[0] * m[7]) / det, (m[0] * m[4] - m[1] * m[3]) / det,
+        )
+    }
+
     // Linear-light BT.709 -> ARRI Wide Gamut 3 (D65→D65, rows sum to 1).
     const val AWG3_R_FROM_R = 0.6313210225
     const val AWG3_R_FROM_G = 0.2708007273

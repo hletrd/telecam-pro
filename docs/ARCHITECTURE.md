@@ -59,6 +59,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
+| `RawLog.kt` | EXPERIMENTAL RAW log gates, pure and host-tested: `rawLogTransfer` (S-Log3 / S-Log3.Cine only), `rawStreamSustains` (the RAW stream's advertised minimum frame duration against the selected rate), `rawLogSupported` (developable rear camera + the PMA110 RAW route law), `rawLogSessionWanted`, and `rawLogSettingVisible` for the Video-tab row. |
+| `RawDevelopMath.kt` | The RAW developer's colour and geometry math, pure and host-tested: Bayer phase, the DNG mired interpolation between the two calibrations, the ForwardMatrix path and the ColorMatrix + Bradford path (chosen by `forwardMatrixInformative`, which rejects PMA110's identical sRGB-placeholder ForwardMatrix pair), the composed camera → S-Gamut3.Cine matrix, and the even-aligned aspect/zoom crop. |
+| `RawLogBridge.kt` | EXPERIMENTAL RAW log developer: RAW_SENSOR `ImageReader` → its own EGL ES 3 thread → R16UI upload → Malvar-He-Cutler demosaic + the frame's lens-shading map + WB gains + neutral highlight clamp + one camera → S-Gamut3.Cine matrix into RGBA16F → linear-light zoom/aspect resample + S-Log3 → an RGBA1010102 window surface on the GL input Surface, stamped with the sensor timestamp. `RawDevelopProfile` resolves the static characteristics once. Built per configure attempt ahead of the P010 bridge; closed after the device in teardown. |
 | `NumericBounds.kt` | Fail-open clamp against a finite, ordered vendor range: a transiently malformed HAL range returns the requested value instead of throwing on the camera thread. |
 | `ProcessedSnapshotBudget.kt` | Android-free, process-wide admission budget for every retained processed still snapshot: one running save plus one waiting full-resolution snapshot across SINGLE, BURST, AEB, timelapse, and Engine replacement. Sequence drives additionally retain their per-Engine completion chaining for order. |
 | `StillPublicationDispatcher.kt` | Per-Engine closeable facade over one process-lifetime finite owner for every completed DNG publication: two daemon workers plus two queued tails. RAW-only shots transfer directly; mixed-output shots queue only a lightweight transfer behind processed-sibling completion before entering the same owner. `transferCompletedDngFromCameraCallback` is the tested production composition of actual formats, processed-queue truth, ordered Engine enqueue, process dispatch, and retained recovery. Accepted work retains exact family/callback identity across Engine replacement; overflow/shutdown/transfer rejection never publishes inline or deletes complete bytes, and launch recovery owns the private row. |
@@ -97,9 +100,12 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MotionInversion.kt` | Pure sign-of-motion evidence classifier with conservative `UNJUDGEABLE` behavior and epoch-safe publication. |
 | `AtomicOwnerSlot.kt` | Identity-owned atomic slot for replaceable native-resource facades: a late completion may replace only the exact object it stopped, so a stale generation cannot displace its replacement. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. One config per GL generation (Java EGL cannot create the `EGL_KHR_no_config_context` context a per-surface choice needs): RGBA1010102 on a `DeviceProfile.tenBitNativeLogBridge` profile (or the DEBUG flag), else RGBA8888; `tenBitConfig` reports which one a ten-bit request actually got. |
+| `SourceTransformEmulation.kt` | Re-applies the buffer transform a non-camera producer cannot carry: AOSP GLConsumer's own flip/rot90 matrices, post-multiplied onto the SurfaceTexture matrix while the RAW log developer's EGL frames are the accepted source (`rearTransformFor` = the camera service's rear-sensor rule). Pure and host-tested against GLConsumer's composition order. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Source-aware standard/HLG/native-S-Log3 decode (S-Log3 decoded at sample time via `sampleSource`, `LogProfiles.slog3Inverse` its host-tested twin) plus BT.2408-9 HLG and S-Log3/LogC3/O-Log2 mappings, peaking/zebra, and punch-in. The per-device phone-maker logs (2026-10-15) are shader codes 6 (OPPO O-Log2, official two-segment white-paper curve with the Rt = 0.01 correction), 7 (OPPO O-Log V1 under OPPO's DCTL exposure convention) and 8 (Xiaomi Mi-Log), all BT.2020; the de-log inverse stays removed, shader code 3 stays vacant, and Gamma Assist is a preview-only log-curve bypass. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. Its explicit motion-evidence reset clears timestamped gyro history without changing an already-armed sensor-registration intent. |
+| `RawEisMath.kt` | RAW log gyro-EIS math, pure and host-tested: quaternion integration and slerp, the rear device→camera axis map from sensor orientation, the effective focal in sensor pixels (NEGATIVE ×M through the inverting Keplerian converter), the per-row-band output→developed homography `T_tex·K·(Rᵀ_real·V)·K⁻¹·T_out`, the window-fit check, and the margin-bounded causal smoother. |
+| `RawEisGyro.kt` | RAW log gyro capture: `TYPE_GYROSCOPE` at 200 Hz on its own thread, mapped to camera axes and integrated allocation-free into a timestamped orientation ring in the SensorEvent clock (= the camera's REALTIME `SENSOR_TIMESTAMP`); `orientationAt(t)` interpolates or briefly extrapolates. Owned by `RawLogBridge` while EIS is configured. |
 | **capture/** | |
 | `StillSnapshot.kt` | YUV_420_888→NV21 repack (row-wise arraycopy fast paths + generic fallback) and lazy JPEG encode for logical-camera stills, which cannot use the HAL JPEG path. |
 | `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then every completed DNG publication crosses to the process-finite still-publication owner. Mixed-output ordering is preserved by queueing only the transfer behind processed completion. Hi-res shots take the passthrough-JPEG lane (`writePassthroughJpeg`): the HAL's PIXELS go to disk verbatim — no decode/crop/pixel-rotate (a ~200MP pixel-upright pass is a guaranteed OOM) — and the capture rotation travels as the EXIF orientation tag; in-app review honors it when decoding. The bytes themselves are not verbatim: the shot's composed EXIF APP1 (the same shot attributes as the processed lanes, plus orientation and dimensions) is spliced in before the single write, seeded from the HAL's own APP1 with its identifying tags stripped (`PASSTHROUGH_PRIVACY_STRIPPED_TAGS`: the GPS directory, body/lens serials, owner name, unique image id, MakerNote; AGG5-51). |
@@ -1025,8 +1031,9 @@ Color-profile rendering happens in the fragment shader:
   `CameraEngine.tenBitNativeLogStreamFor` resolves a size (`tenBitNativeLogBridgeSupported`: the
   `DeviceProfile.tenBitNativeLogBridge` flag, the curve capability, (P010, STANDARD) advertised in
   the colour-space profiles, the GL input size among the P010 output sizes, not FRONT), the
-  controller configures a YCBCR_P010 `ImageReader` (STANDARD profile, dataspace BT.2020 / SMPTE-170M
-  label / full range) as the camera stream in place of the GL input Surface, and an `ImageWriter` on
+  controller configures a YCBCR_P010 `ImageReader` (STANDARD profile, dataspace JFIF — the matrix this
+  HAL actually encodes P010 with, whatever is requested; a BT.2020 tag made Adreno decode BT.601 bits
+  as BT.2020) as the camera stream in place of the GL input Surface, and an `ImageWriter` on
   the bridge's own thread attaches each buffer, zero-copy, to the GL input SurfaceTexture. JPEG and
   RAW readers stay (unlike HLG10, whose session must drop them on this HAL). Device facts: raw Y in
   GL at 94 distinct levels vs 27 for the same scene through an 8-bit stream; the SurfaceTexture
@@ -1037,6 +1044,32 @@ Color-profile rendering happens in the fragment shader:
   `PhotoSessionOutputs.tenBitNativeLog` carries the accepted answer to the Video tab caption.
   Not claimed: highlight latitude (the sensor clip is unchanged) or the stock O-Log2 pipeline (its
   2-exposure DOL + DRC usecase, which no third-party session entered in any measured shape).
+- **RAW log, EXPERIMENTAL** (`camera/RawLogBridge.kt`, `RawLog.kt`, `RawDevelopMath.kt`, measured
+  PMA110 2026-10-25): an operator toggle under Transfer, offered for S-Log3 / S-Log3.Cine on a
+  RAW-developable rear camera at a rate the RAW stream sustains (≤ 30 fps on PMA110, whose RAW is
+  advertised and measured at 33.3 ms). When `CameraEngine.rawLogStreamFor` resolves a size the
+  controller builds the bridge FIRST on each rung (RAW log → P010 → 8-bit) and the session's only
+  output is the RAW reader; a refusal retries the same rung on the native-log path. The developer
+  makes the frames the GL input SurfaceTexture receives, so preview, encoder, scopes and REC are
+  unchanged; the source decode gains `uSourceWide` (S-Log3 over S-Gamut3.Cine) and the log branches
+  read the decode UNclamped in linear BT.709, so S-Gamut3.Cine returns exactly and nothing is clipped
+  to 709. The missing camera buffer transform is re-applied by `SourceTransformEmulation`. Colour
+  follows the DNG spec: on PMA110 the ForwardMatrix pair is an identical sRGB placeholder, so the
+  ColorMatrix + Bradford path is used. `VideoSessionShape.RAW_LOG` is the reopen boundary (a frame-
+  rate change can cross it); `PhotoSessionOutputs.rawLog` is accepted truth for the caption and the
+  `RAW` OSD suffix. Device facts: RAW16 4096×3072 only stream on cam 4; HEVC Main10 2160×3840 at
+  29.9 fps (one startup gap); 5.7 % of a warm interior frame outside BT.709 kept (0 % on the native
+  path). Costs: no stills, no ISP noise reduction, 10-bit sensor range. **Stabilization is the app's
+  gyro EIS** (`stab/RawEisMath.kt`, `stab/RawEisGyro.kt`), driven by the existing Stabilization
+  setting (Standard 10 % / Active 20 % margin): pass 2 warps through 8 row-band homographies timed
+  by each band's exposure (rolling shutter), toward a causally smoothed virtual orientation that is
+  pushed back toward the real path until the window fits. Image motion per radian is +f bare and
+  −M·f through the inverting converter; the session runs HAL video stabilization AND
+  `LENS_OPTICAL_STABILIZATION_MODE` OFF while it does (vstab OFF alone left `ois=1`), because a
+  bare-lens OIS moves the converted image the wrong way and publishes no samples to subtract.
+  Measured per frame (cam 4, RAW10 4096×3072): upload 2.4 ms CPU (rows the demosaic reads only,
+  through two PBOs), develop call 4.2 ms CPU, pass 1 ~4.1 ms + pass 2 ~1.7 ms GPU, gyro thread ~4 %
+  of a core; process CPU 56 % in preview vs 46 % for native log.
 - **Log EI offset** (`ManualControls.logEiOffsetStops`, 0..3, default 0 = byte-identical; UNVERIFIED
   on device, `FIELD_CHECKS.md` A17): on a native-log session's REPEATING request only, `applyExposure`
   cuts the final wire exposure by k = 2^N — AE-OFF: ISO ÷ k (rounded up), the ISO floor's refusal

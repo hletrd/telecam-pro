@@ -42,6 +42,14 @@ internal data class RendererConfig(
      */
     val sourceLogHeadroom: Float = 1f,
     /**
+     * Whether the accepted session's S-Log3 source is the EXPERIMENTAL RAW log developer's
+     * (S-Gamut3.Cine primaries, camera/RawLogBridge.kt), and the buffer transform its EGL frames lack
+     * (gl/SourceTransformEmulation.kt flags). Route state replayed with [sourceLog]: a fresh GL
+     * generation defaulting to false/0 would read wide primaries as sRGB and draw the field sideways.
+     */
+    val sourceWide: Boolean = false,
+    val sourceTransformEmulation: Int = 0,
+    /**
      * The Loupe Overview's pretend-field scale (see loupeHintRect's fieldScale): the selected
      * converter's magnification while TELE, 1 otherwise. Route state in the replayed snapshot for
      * the same reason as [sourceHlg] — a fresh GL generation must not fall back to 1 and quietly

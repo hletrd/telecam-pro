@@ -197,6 +197,18 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setSourceLog(enabled)
     }
 
+    /**
+     * Whether the ACCEPTED session's source is the RAW log developer, and the buffer transform its
+     * frames lack. One call, because the two describe the same source and must flip together.
+     */
+    fun setSourceWide(enabled: Boolean, transformEmulation: Int) {
+        val flags = if (enabled) transformEmulation else 0
+        config.update { it.copy(sourceWide = enabled, sourceTransformEmulation = flags) }
+        val gl = currentGl()
+        gl.setSourceWide(enabled)
+        gl.setSourceTransformEmulation(flags)
+    }
+
     /** The achieved Log EI offset factor of the accepted native-log repeating request (≥ 1). */
     fun setSourceLogHeadroom(factor: Float) {
         val k = factor.coerceAtLeast(1f)
@@ -267,6 +279,8 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setSourceLog(snapshot.sourceLog)
         gl.setSourceLogHeadroom(snapshot.sourceLogHeadroom)
+        gl.setSourceWide(snapshot.sourceWide)
+        gl.setSourceTransformEmulation(snapshot.sourceTransformEmulation)
         gl.setFinderFieldScale(snapshot.finderFieldScale)
         gl.setFinderBottomClearanceFraction(snapshot.finderBottomClearanceFraction)
         gl.setWindowRotation(snapshot.windowRotationDeg)

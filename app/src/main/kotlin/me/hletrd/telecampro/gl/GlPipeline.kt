@@ -278,6 +278,10 @@ class GlPipeline(
 
     private var inited = false
     private val stMatrix = FloatArray(16)
+    // NATIVE_WINDOW_TRANSFORM flags the current source's frames LACK and the SurfaceTexture matrix
+    // must therefore gain (SourceTransformEmulation): 0 for a camera stream, the rear sensor
+    // orientation's rotation for the RAW log developer's EGL frames. GL-thread confined.
+    private var sourceTransformEmulation = 0
     private var onInputReady: ((Surface) -> Unit)? = null
 
     fun start(tenBit: Boolean, onInputReady: (Surface) -> Unit) {
@@ -647,6 +651,19 @@ class GlPipeline(
 
     /** Log EI offset: the native decode's scene-linear ceiling for the log encode branches. */
     fun setSourceLogHeadroom(factor: Float) = post { renderer.setSourceLogHeadroom(factor) }
+
+    /**
+     * Whether the accepted session's S-Log3 source is the RAW log developer's (S-Gamut3.Cine
+     * primaries). Same replay discipline as [setSourceLog].
+     */
+    fun setSourceWide(enabled: Boolean) = post { renderer.setSourceWide(enabled) }
+
+    /**
+     * The buffer transform the accepted source's frames lack (SourceTransformEmulation flags; 0 for
+     * a camera stream). Applied to the SurfaceTexture matrix of every real frame, so preview,
+     * encoder, analysis and finder all see the camera's orientation. Replayed with [setSourceWide].
+     */
+    fun setSourceTransformEmulation(flags: Int) = post { sourceTransformEmulation = flags }
 
     /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
@@ -1026,6 +1043,7 @@ class GlPipeline(
                 }
                 st.updateTexImage()
                 st.getTransformMatrix(stMatrix)
+                SourceTransformEmulation.apply(stMatrix, sourceTransformEmulation)
             }.exceptionOrNull()
             if (acquisitionFailure != null) {
                 when (acquisitionOwner) {

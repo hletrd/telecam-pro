@@ -155,6 +155,8 @@ interface CameraActions {
     fun onLogEiOffset(stops: Int)
     /** Optional Gyroflow .gcsv sidecar per video take (Video tab). */
     fun onToggleGyroLog(enabled: Boolean)
+    /** EXPERIMENTAL RAW log route: S-Log3 developed in-app from the RAW stream (Video tab; RawLog.kt). */
+    fun onToggleRawLog(enabled: Boolean)
     fun onFrameLines(type: FrameLineType)
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)

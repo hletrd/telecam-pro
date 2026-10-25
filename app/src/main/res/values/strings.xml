@@ -379,6 +379,10 @@
     <string name="video_maker_log_caption">This phone maker’s own log format · for the maker’s published LUTs</string>
     <string name="video_native_log_source">Encoded by the camera’s ISP from its linear signal · 8-bit, clips at sensor white</string>
     <string name="video_native_log_source_10bit">Encoded by the camera’s ISP from its linear signal · 10-bit, clips at sensor white</string>
+    <string name="video_raw_log_source">Developed in-app from the sensor RAW · 10-bit, clips at sensor white</string>
+    <string name="label_raw_log">RAW Log (Experimental)</string>
+    <string name="caption_raw_log">Develops S-Log3 from the sensor RAW in the app: wide gamut, no ISP noise reduction or sharpening. 10-bit RAW, no stabilization or stills, up to 30 fps.</string>
+    <string name="caption_raw_log_inactive">Not active on this camera route · native log in use</string>
     <string name="mr_default_photo_name">Photo %1$s</string>
     <string name="mr_default_video_name">Video %1$s</string>
     <string name="label_output">Output</string>
