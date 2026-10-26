@@ -250,7 +250,9 @@ Two critical consequences of the afocal converter drive the entire design:
    EXIF and file times stay honest. A real capture on either route adopts its image from the ring by
    EXACT `SENSOR_TIMESTAMP`; TELE/other-standalone readers never see repeating frames and keep blind
    adoption. Admission is intentionally strict, so a dark shot refuses and falls through to step 1 —
-   see CLAUDE.md for why that refusal is the design.
+   see CLAUDE.md for why that refusal is the design. A ring frame is also FRAMED by the repeating
+   request's stabilization mode, so it serves only when the real still would carry that same mode
+   (`framedLikeRing`, Still framing below).
 1. Camera2 → processed ImageReader: logical-camera photo sessions use `YUV_420_888`; FRONT uses YUV
    on its full/deep and shallow fallback rungs; other standalone sessions use HAL JPEG. The YUV
    reader is allocated DEEP (ring depth + 2) only on the full session rung. A configure-time
@@ -935,6 +937,24 @@ Video uses the device HAL's OIS and video stabilization. `VideoStabMode` maps th
 `com.oplus.video.stabilization.mode` value. PMA110 result metadata verified `ois=1, vstab=2` for the
 enhanced path. The app does not claim Explorer-only stabilization parameters that raw Camera2 cannot
 access.
+
+**Still framing = preview framing (owner decision 2026-10-27, `StillFraming.kt`):** under Standard
+or Active the HAL crops its EIS margin out of every processed stream of a request that carries the
+mode, and a still at the template's OFF gets the full field. On the PMA110 profile
+(`stillKeepsSessionStabilization`) every still request therefore re-applies the session's mode
+through `applyVideoStab` — AUTO, presets, manual, custom WB; every drive; the in-REC snapshot — so a
+real capture, a pseudo-ZSL-served frame and the finder share one field (before the fix an AUTO still
+was ~16 % wider than the finder on the logical 1×; after it every still and served frame reads
+1.000–1.004 of the finder there and on the 3×, while TELE is cropped by neither mode). On the video
+route the in-REC snapshot rides the mode too but stays ~9 % wider than the 16:9 recording, which
+the HAL crops harder. The opposite policy is closed because a
+TRANSFORM_MATRIX still at OFF or ON inside an Active session renders another white balance. One
+exposure limit is measured: a still carrying PREVIEW_STABILIZATION is lost past
+`previewStabilizedStillMaxExposureNs` (3.2 s; 4 s → `onCaptureBufferLost`), so a HAL-AWB still that
+long rides ON (framed alike), while a matrix-WB one keeps the session's mode and stays lost (open
+owner decision, FIELD_CHECKS A23). RAW is never cropped by stabilization, so a DNG keeps the sensor
+field beside its narrower processed sibling. GENERIC writes nothing (the template's own value) and
+pseudo-ZSL refuses a stabilized session's ring there.
 
 App-side GL gyro warping is disabled by `CameraEngine` with `gl.setEis(false, 0f, 0f)`. The renderer
 and `GyroEis` retain dormant correction support, but it is not a user-facing or shipping stabilization

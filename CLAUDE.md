@@ -258,7 +258,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   processed-only, no AE-flash, no live gesture); in low light the fluidity cap deliberately diverges
   the preview from intent, so admission MUST fail and a full-quality real capture MUST run. **Do not
   "fix" the dark path by widening the tolerance** — that silently trades the user's exposure for
-  latency. SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
+  latency. FRAMING obeys the same rule (2026-10-27): a ring frame is a repeating frame, framed by the
+  session's stabilization mode, so it serves only when the real still would carry that mode
+  (`framedLikeRing`; always on PMA110, where every still rides the session's mode — see "Stills are
+  framed like the PREVIEW"). SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
   TELE/rear-standalone/video/burst/AEB are untouched and keep the legacy blind-adopt path
   byte-for-byte. FRONT takes deep YUV on its full rung, degrades to shallow YUV, then returns to its
   proven HAL-JPEG path before preview-only; PMA110's mandatory-YUV quirk remains LOGICAL-only. The
@@ -610,7 +613,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   STILL traps, both profile-gated and both invisible in the preview:** (1) a matrix still at the
   template's stabilization OFF inside a stabilized session renders some other WB (orange came out
   blue), so on `stillKeepsSessionStabilization` EVERY still rides the session's mode and is framed
-  like the preview (owner decision 2026-10-27, `StillFraming.kt`); (2) Face
+  like the preview (the "Stills are framed like the PREVIEW" bullet; a 4 s matrix still in Active
+  has no working mode); (2) Face
   Priority's FACE_PRIORITY scene (CONTROL_MODE USE_SCENE_MODE) overrides an app-owned WB on stills —
   the result echoes the gains, the pixels carry the fixed blue cast
   (`facePrioritySceneOverridesManualWb`: the scene half stands down while WB is app-owned, detection
@@ -1454,6 +1458,41 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`CameraEngine` seeds `gl.setEis(false, 0f, 0f)`); its sensor helper remains for level and capture
   orientation, but there is no user-facing `GYRO` mode. The Explorer-specific `com.oplus.ois.*` /
   `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
+- **Stills are framed like the PREVIEW (owner decision 2026-10-27, "Auto and manual stills must
+  match"; `StillFraming.kt`, `docs/FIELD_CHECKS.md` A23).** Under Standard or Active the HAL crops
+  its EIS margin out of every processed stream of a request that carries the mode; a still at the
+  still template's OFF gets the full field. Until this fix only a TRANSFORM_MATRIX (manual / preset
+  / custom WB) still rode the session's mode — for its colour, the WB trap above — so on PMA110's
+  logical 1× an AUTO still came out 15.6–16.7 % WIDER than the finder (bright frame, NCC / SIFT;
+  Standard and Active alike), while a pseudo-ZSL-served AUTO still (a repeating
+  frame) and every manual / preset still matched the finder: one bright press and one dim press of
+  the same scene framed differently. Now, on `DeviceProfile.stillKeepsSessionStabilization`, EVERY
+  still — any WB mode, SINGLE / BURST / AEB / timelapse, the in-REC snapshot — carries the
+  session's mode. Measured after, HEAD `3c8bd2b3`, lit room: on the logical 1× and 3× under
+  Standard and Active every AUTO / preset / manual still, every burst frame and every ZSL-served
+  frame reads 0.856–0.864 of the unstabilized field and 1.000–1.004 of the finder (HEIF = JPEG);
+  TELE (standalone 4 + 0x80b4) is cropped by neither mode at all — finder and stills 1.000. The
+  in-REC snapshot rides the session's mode too, but on the video route the HAL crops the 16:9 video
+  stream harder than a 4:3 still: the snapshot reads ~9 % wider (linear) than the recorded video,
+  AUTO and manual alike. The other direction (every still at OFF) is CLOSED: a matrix
+  still at OFF or ON inside an Active session renders another white balance. Two measured limits:
+  (1) a still carrying PREVIEW_STABILIZATION completes up to 3.2 s and is LOST at 4 s
+  (`onCaptureBufferLost`, no image; 1× / 3× / TELE alike), so a HAL-AWB still longer than
+  `previewStabilizedStillMaxExposureNs` rides ON (completes, framed like the Active finder, same
+  AWB colour); a matrix-WB 4 s still in Active has NO working mode (ON → deep blue, OFF → cyan, the
+  vendor stabilization mirror changes nothing) and stays lost as it was since the matrix fix — an
+  open owner decision, never a quiet wrong-colour file. (2) RAW is never cropped by stabilization
+  (Camera2: PREVIEW_STABILIZATION covers "all other non-RAW streams"), so a DNG keeps the sensor
+  field beside its narrower processed sibling (standalone 1× with DNG in Active: the DNG's field is
+  1.165 × the JPEG's; TELE 1.000, nothing is cropped there); that is the sensor-native file, not a
+  framing bug. Pseudo-ZSL gained a framing term (`ZslStillIntent.framedLikeRing` ←
+  `zslStillFramingMatches`): a ring frame serves only when the real still would carry the ring's
+  mode — always, on PMA110, for a servable sub-1/15 s still; GENERIC keeps the template's own value,
+  so a stabilized GENERIC session real-captures (unmeasured on a spec device). Verify with
+  `cmd media.camera watch` (the still frame's REQ `videoStabilizationMode`) AND the pixels — and
+  check the installed APK hash first: on 2026-10-27 another session reinstalled its own debug app
+  mid-batch (twice) and force-stopped / relaunched it with its own settings, and twenty minutes of
+  runs measured that build (its AUTO stills at OFF looked exactly like an OEM rewrite).
 - **TC session type 0x80b4 is ACCEPTED by the HAL (device-verified 2026-07-14) — the CameraUnit
   bypass.** Passing the stock app's TC operation_mode (0x80b4, captured from CamX
   `configure_streams`; stock pairs it with sensor mode 48 = the 300 mm TC OIS profile) as the
