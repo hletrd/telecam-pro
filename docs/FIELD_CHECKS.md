@@ -443,6 +443,25 @@ S-curve, as an un-tone-mapped view should be. No crash, no CAMERA_ERROR. Earlier
 grey wall under HAL AE, the curve visibly replaced the stock one (preview mean 64 → 79.5, std 9.5 →
 4.4; a linear curve read 18).
 
+**Result 2026-10-26 (still OPEN for the same two items: zebra/false color and the LTM halo look).**
+PMA110, immutable debug, TELE with the converter declared, VIDEO P, 29.97, a dim interior with LED
+highlights; one 9 s take per curve through the ten-bit native path (P010 bridge) plus one RAW log
+take. Every take: HEVC Main10 `yuv420p10le`, BT.2020 primaries / `bt2020nc` matrix / full range,
+transfer `bt2020-10` (SDR-class, the same tag the stock O-Log2 files carry), exact 30000/1001 timing,
+stereo AAC, and REAL ten-bit codes (72–77 % of Y values off the multiple-of-4 grid an 8-bit source
+would leave). Black floor and highlight ceiling sat exactly on each curve: S-Log3 p0.1 97 / max 592
+(curve 95 / 610), S-Log3.Cine 97 / 591, LogC3 96 / 567 (95 / 584), O-Log2 155 / 702 (154 / 711).
+Mapping S-Log3's p50 and p99 back to linear and through the other curves predicted LogC3 110 / 296
+and O-Log2 170 / 380; the files read 110 / 296 and 170 / 383, so every curve encodes the same linear
+signal. A still taken during the S-Log3.Cine take wrote DNG + HEIF + JPEG; the JPEG is an ordinary
+contrasty photo (luma p0.1 4, p50 83), EXIF OPPO / PMA110 / 1/60 s / ISO 2425 / 300 mm equivalent.
+That still stalls the camera ~600 ms; the encoder grid now fills it (18 repeats at 29.97, longest
+fill burst 79 ms; 59.94: every delta 2002 ticks, burst 285 ms) instead of leaving a 0.6 s hole.
+Exposure note: this dim scene's median sat low (S-Log3 code 114, RAW log 256); the stock camera's
+own O-Log2 night recordings sit at their black level too (median 190), and stock's black floor is
+190 where ours reaches the white paper's 154 — stock also exceeds the curve's 1.0 code (869) through
+its two-exposure merge, which this pipeline does not claim.
+
 **Phone-maker log checks — OPEN, added 2026-10-15 (per flavor; only the PMA110 one is testable in
 this lab).** The phone's own log is offered only on its maker's phones (`DeviceProfile.nativeLogFlavor`;
 model table in CLAUDE.md); every curve is host-pinned against its white paper, nothing below is
