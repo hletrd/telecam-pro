@@ -67,4 +67,37 @@ class ProgramModeRoutingTest {
     fun `degenerate focal cannot divide by zero`() {
         assertEquals(1_000_000_000L, preferredProgramShutterNs(0f, teleconverterMode = false, TELECONVERTER_MAGNIFICATION))
     }
+
+    @Test
+    fun `the app-side loop holds only while a video take is starting or rolling`() {
+        // Each loop step is a repeating-request swap: 7 frames lost per step mid-REC on PMA110.
+        assertTrue(appSideExposureHeldForRecording(CaptureMode.VIDEO, recording = true, recordingStarting = false))
+        assertTrue(appSideExposureHeldForRecording(CaptureMode.VIDEO, recording = false, recordingStarting = true))
+        assertFalse(appSideExposureHeldForRecording(CaptureMode.VIDEO, recording = false, recordingStarting = false))
+        // Stills never hold: there is no take to protect.
+        assertFalse(appSideExposureHeldForRecording(CaptureMode.PHOTO, recording = true, recordingStarting = true))
+    }
+
+    @Test
+    fun `only the field the loop owns in this mode makes a packet a loop step`() {
+        val s = ManualControls(exposureMode = ExposureMode.SHUTTER, iso = 800, exposureTimeNs = 16_666_666L)
+        // S: the loop drives ISO; the operator owns the shutter.
+        assertTrue(controlsDeltaIsAppSideAeOnly(s, s.copy(iso = 1_000)))
+        assertFalse(controlsDeltaIsAppSideAeOnly(s, s.copy(exposureTimeNs = 8_333_333L)))
+        assertFalse(controlsDeltaIsAppSideAeOnly(s, s.copy(iso = 1_000, zoomRatio = 2f)))
+        // ISO: the loop drives the shutter; the operator owns ISO.
+        val iso = s.copy(exposureMode = ExposureMode.ISO)
+        assertTrue(controlsDeltaIsAppSideAeOnly(iso, iso.copy(exposureTimeNs = 8_333_333L)))
+        assertFalse(controlsDeltaIsAppSideAeOnly(iso, iso.copy(iso = 1_000)))
+        // App-side P owns both; HAL-AE P and M own neither.
+        val appP = s.copy(exposureMode = ExposureMode.PROGRAM, programAppSide = true)
+        assertTrue(controlsDeltaIsAppSideAeOnly(appP, appP.copy(iso = 1_000, exposureTimeNs = 8_333_333L)))
+        val halP = appP.copy(programAppSide = false)
+        assertFalse(controlsDeltaIsAppSideAeOnly(halP, halP.copy(iso = 1_000)))
+        val m = s.copy(exposureMode = ExposureMode.MANUAL)
+        assertFalse(controlsDeltaIsAppSideAeOnly(m, m.copy(iso = 1_000)))
+        // Nothing sent yet, or nothing changed: not a loop step to drop.
+        assertFalse(controlsDeltaIsAppSideAeOnly(null, s))
+        assertFalse(controlsDeltaIsAppSideAeOnly(s, s))
+    }
 }

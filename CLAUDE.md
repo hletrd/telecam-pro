@@ -563,6 +563,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   intended exposure. DEVICE-VERIFIED 2026-07-25: a 4.6-stop dark↔lit flip converged in ~2 s with zero
   breathing at rest, settling on wire ISO 9052 / 66.7 ms — the wire ISO sitting ABOVE the user's
   1600 is the fluidity trade working as designed, not a bug.
+  **While a VIDEO take is starting or rolling the app-side loop HOLDS (owner request 2026-10-26;
+  `appSideExposureHeldForRecording`).** Every loop step is a repeating-request swap, and a swap mid-REC
+  froze the file 218–235 ms plus one more frame — 7 frames per exposure step (device-measured
+  2026-10-26 with an induced zoom swap). So S, ISO and app-side P keep the exposure they settled on
+  before REC, like AE lock on a camera body. A loop step staged in the 40 ms controls throttle just
+  before the press is dropped when it lands (`controlsDeltaIsAppSideAeOnly`: the packet differs from
+  the last one sent only in the field the loop owns in that mode — review finding, 2026-10-26) and the
+  UI returns to the wire value; the operator's own changes still apply, the loop resumes
+  when the take ends, and video P stays on HAL AE, which adjusts without swaps (moving video P
+  app-side for the AE-off cadence was considered and REJECTED for exactly this cost). Device-checked
+  2026-10-26: an 18 s S-mode take absorbed 107 loop ticks with the request generation unchanged
+  (that dark room had the loop pegged at the ISO ceiling, so it shows the hold engaging, not a
+  correction being held back).
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value every 40 ms (25 Hz) *while* a gesture continues (a debounce starved: continuous pinch reset the
   timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom

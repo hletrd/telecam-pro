@@ -344,8 +344,32 @@ class CameraViewModel private constructor(
     private val applyControlsRunnable = Runnable {
         settleRouteFold()
         applyScheduled = false
-        pendingControls?.let { engine.setControls(it) }
+        pendingControls?.let { pending ->
+            val live = _state.value
+            if (appSideExposureHeldForRecording(live.mode, live.isRecording, live.isRecordingStarting) &&
+                controlsDeltaIsAppSideAeOnly(lastSentControls, pending)
+            ) {
+                // An app-side AE step staged in the last 40 ms before REC began: dropping it keeps
+                // the take free of its request swap, and the UI goes back to what the wire carries.
+                val sent = checkNotNull(lastSentControls)
+                _state.update {
+                    if (it.controls != pending) it
+                    else it.copy(controls = pending.copy(iso = sent.iso, exposureTimeNs = sent.exposureTimeNs))
+                }
+            } else {
+                sendControls(pending)
+            }
+        }
         pendingControls = null
+    }
+
+    // The last whole-controls packet this ViewModel handed the engine; the REC exposure hold compares a
+    // staged packet against it ([controlsDeltaIsAppSideAeOnly]).
+    private var lastSentControls: ManualControls? = null
+
+    private fun sendControls(controls: ManualControls) {
+        lastSentControls = controls
+        engine.setControls(controls)
     }
 
     /** Invalidates a whole-controls packet that belongs to an optics/settings state being replaced. */
@@ -363,7 +387,7 @@ class CameraViewModel private constructor(
         pendingControlsForTransition(
             pendingControls,
             PendingControlsDisposition.DRAIN_BEFORE_OPTICS,
-        )?.let(engine::setControls)
+        )?.let(::sendControls)
         cancelPendingControls()
     }
 
@@ -1385,7 +1409,15 @@ class CameraViewModel private constructor(
             val mode = s.controls.exposureMode
             val drivesAppSideAe = mode == ExposureMode.SHUTTER || mode == ExposureMode.ISO ||
                 (mode == ExposureMode.PROGRAM && s.controls.programAppSide)
-            if (h != null && drivesAppSideAe) mainHandler.post { applyAutoExposure(h.luma) }
+            if (h != null && drivesAppSideAe) {
+                // While a video take rolls the loop holds still ([appSideExposureHeldForRecording]);
+                // counting here instead of posting keeps the held ticks off the main thread.
+                if (appSideExposureHeldForRecording(s.mode, s.isRecording, s.isRecordingStarting)) {
+                    aeTicksHeldDuringTake.incrementAndGet()
+                } else {
+                    mainHandler.post { applyAutoExposure(h.luma) }
+                }
+            }
         }
         engine.onAudioLevel = { frame ->
             // Quantize BEFORE the compare, exactly as levelRoll does (perf review #4): the raw RMS
@@ -2116,6 +2148,9 @@ class CameraViewModel private constructor(
     }
 
     private var lastLoggedLevelChannels = -1
+    // App-side AE ticks absorbed by the REC hold (appSideExposureHeldForRecording); counted on the
+    // analysis callback, reported once by the first unheld tick after the take.
+    private val aeTicksHeldDuringTake = java.util.concurrent.atomic.AtomicInteger(0)
 
     override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) {
         if (standbyMeterVisible == visible) return
@@ -3783,7 +3818,7 @@ class CameraViewModel private constructor(
         val requested = current.controls.copy(fps = rate.fps)
         val controls = (current.caps?.let(requested::normalizedFor) ?: requested)
             .normalizedForCaptureMode(current.mode)
-        engine.setControls(controls)
+        sendControls(controls)
         // Re-base any pending throttled dial apply onto the new fps: the 40 ms trailing apply would
         // otherwise push its STALE snapshot (old fps) over this direct engine write moments later.
         pendingControls = pendingControls
@@ -3890,7 +3925,7 @@ class CameraViewModel private constructor(
         }
         if (normalizedControls != current.controls) {
             engine.setAeMetering(exposureAnalysisRequired(normalizedControls))
-            engine.setControls(normalizedControls)
+            sendControls(normalizedControls)
             // Do NOT re-base a LIVE gesture's coalesced target (TR4-3): a caps callback landing
             // between a gesture's first flush and its 16 ms trailing flush would overwrite the
             // user's in-flight pending ratio with the route-normalized committed one, visibly
@@ -4972,6 +5007,13 @@ class CameraViewModel private constructor(
      */
     private fun applyAutoExposure(luma: IntArray) {
         val s = _state.value
+        // A tick posted just before REC began must not swap the request mid-take either.
+        if (appSideExposureHeldForRecording(s.mode, s.isRecording, s.isRecordingStarting)) return
+        // One row per take: how many ticks the hold absorbed (none in a scene that never moved).
+        val heldTicks = aeTicksHeldDuringTake.getAndSet(0)
+        if (heldTicks > 0 && me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+            android.util.Log.i("AutoExposure", "held during REC: ticks=$heldTicks")
+        }
         val caps = s.caps ?: return
         val c = s.controls
         val evStep = caps.evStep.let {
@@ -5554,6 +5596,38 @@ internal fun submittedTapFocusUiState(
     // AF Lock wins over tap AF: the tap may still move the AE region, but it must not claim a scan.
     afIndication = if (current.controls.afLock) AfIndication.IDLE else AfIndication.SCANNING,
 )
+
+/**
+ * Whether the app-side exposure loop (S, ISO, and app-side P) holds still because a video take is
+ * rolling — the exposure it settled on before REC stays on the wire, like AE lock on a camera body
+ * (owner request 2026-10-26). Every loop step is a repeating-request swap, and on PMA110 a swap mid-REC
+ * froze the file 218–235 ms plus one more frame: 7 frames lost per exposure step (device-measured
+ * 2026-10-26). HAL AE (video P) adjusts without swaps and is untouched, and the operator's own changes
+ * still apply. The loop resumes from the held values when the take ends.
+ */
+internal fun appSideExposureHeldForRecording(
+    mode: CaptureMode,
+    recording: Boolean,
+    recordingStarting: Boolean,
+): Boolean = mode == CaptureMode.VIDEO && (recording || recordingStarting)
+
+/**
+ * Whether [pending] differs from the packet the engine last received ONLY in the fields the app-side
+ * loop owns in this mode — ISO in S, exposure time in ISO, both in app-side P — i.e. it is a loop step,
+ * not the operator's change. The REC hold drops such a packet when its 40 ms throttle lands after the
+ * take began; anything else (a shutter turn in S, a zoom, a WB pick) still applies.
+ */
+internal fun controlsDeltaIsAppSideAeOnly(sent: ManualControls?, pending: ManualControls): Boolean {
+    if (sent == null || sent == pending) return false
+    val loopMovedOnly = when (pending.exposureMode) {
+        ExposureMode.SHUTTER -> sent.copy(iso = pending.iso)
+        ExposureMode.ISO -> sent.copy(exposureTimeNs = pending.exposureTimeNs)
+        ExposureMode.PROGRAM ->
+            if (pending.programAppSide) sent.copy(iso = pending.iso, exposureTimeNs = pending.exposureTimeNs) else return false
+        ExposureMode.MANUAL -> return false
+    }
+    return loopMovedOnly == pending
+}
 
 /**
  * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode
