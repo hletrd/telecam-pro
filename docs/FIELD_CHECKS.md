@@ -1021,8 +1021,14 @@ standing the scene half down while WB is app-owned (same shot then R 30 / G 35 /
 preview). A still's result metadata is not evidence of its WB on this HAL; the pixels are.
 
 **App verification.** Immutable debug `e9c4f8f1d45b-56996381` (SHA-256 `98b7aebc…`) for the matrix
-and `e9c4f8f1d45b-ef156a51` (SHA-256 `6af19ed9…`, the committed code: exact per-sensor transform
-lookup) for the priming, lens-crossing, TELE, custom and spot checks. Settings driven through the
+and `e9c4f8f1d45b-ef156a51` (SHA-256 `6af19ed9…`, exact per-sensor transform lookup) for the
+priming, lens-crossing, TELE, custom and spot checks. The committed fix (`1868c47e`, immutable debug
+`1868c47ed896-b7c9b53b`, SHA-256 `93a5b632…`) adds only a guard that ends priming once a transform
+is stored; its smoke run with the stored transforms cleared primed photo phys 2 (frames 0–8 AUTO,
+frame 9 TRANSFORM_MATRIX) and the maker route (0–5 AUTO), crossed to phys 4 at 3×, and carried a
+3200 K still and maker-TC Cloudy, every result AWB OFF + TRANSFORM_MATRIX with the calibrated gains
+(identical to the values below where both builds ran) — the room light was off by then, so its
+patch values are not comparable with the table. Settings driven through the
 saved-settings file, exposure P, Face Priority ON, stabilization Active. Every manual / preset run's
 RESULT carried AWB OFF + TRANSFORM_MATRIX with exactly the calibrated gains (cam 2 / phys 2: 2856 K
 1.456 / 2.616, 3200 K 1.600 / 2.342, 5500 K 2.235 / 1.551, 5600 K 2.255 / 1.535, 6500 K 2.420 / 1.420,
