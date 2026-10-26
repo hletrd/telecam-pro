@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** resolved the DCG/DRC highlight range (accepted limitation: it needs the declined CameraUnit SDK; its white-balance finding is superseded by A23); it still needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance checked on the HLG10, RAW log and front routes, under a known illuminant, on a spec device in-app, and an owner decision on manual-WB still framing,
+**A23** needs white balance and still framing checked on the HLG10, RAW log and front routes and on a spec device in-app, and an owner decision on the lost 4 s manual-WB still in Active,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1015,7 +1015,8 @@ B 1.649 (A20 dump).
 transform". Two still traps found on the way, both PMA110-profile-gated: a TRANSFORM_MATRIX still at
 stabilization OFF inside a stabilized session renders a white balance it was not asked for (probe:
 gains 2.6 / 1.2 came out blue or right from shot to shot; the app's 3200 K came out deep cyan) —
-fixed by riding the session's stabilization mode; and Face Priority's FACE_PRIORITY scene overrides
+fixed by riding the session's stabilization mode, which since 2026-10-27 every still does (Still
+framing below); and Face Priority's FACE_PRIORITY scene overrides
 an app-owned WB on stills (result echoes the gains, pixels R 3 / G 32 / B 51 of 255) — fixed by
 standing the scene half down while WB is app-owned (same shot then R 30 / G 35 / B 16, like the
 preview). A still's result metadata is not evidence of its WB on this HAL; the pixels are.
@@ -1058,15 +1059,75 @@ AUTO for 6–9 frames, then AWB OFF + the matrix (photo, Log (maker) TC). **Lens
 primed 0|SDR|4`. The maker route's forced-AUTO stopgap (A20) is gone: maker Log records the
 operator's WB.
 
+**Still framing (owner decision 2026-10-27: "Auto and manual stills must match").** Before, only a
+TRANSFORM_MATRIX still rode the session's stabilization mode; an AUTO still kept the template's OFF.
+Measured on the installed `1868c47e` build (logical 1×, Active, the room light briefly on): an AUTO
+still read 1.156 (NCC) / 1.167 (SIFT) of the finder's field, i.e. ~16 % WIDER, while a ZSL-served AUTO
+still (a repeating frame) read 1.003 and manual / Daylight stills 0.993 (dark frames, classification
+grade); Standard behaved the same. Now (`64e0535c`, `3c8bd2b3`) every still on the PMA110 profile
+carries the session's mode. Final run: immutable debug `3c8bd2b3320c-1069f252` (SHA-256 `4960b466…`),
+room light on, M 1/15 s at ISO 9052 (TELE 12700), BURST for real captures, three SINGLE presses for
+ZSL; fields measured on the five-frame mean by full-resolution NCC and SIFT (they agree within
+0.5 %). still / OFF = against the same route's unstabilized OFF-session burst; still / finder =
+against the run's own preview screenshot.
+
+| Route | Stabilization | AUTO still / OFF | Daylight still / OFF | 3200 K still / OFF | ZSL-served AUTO / OFF | stills / finder | finder / OFF |
+|---|---|---|---|---|---|---|---|
+| Logical 1× (phys 2) | Off | reference | 0.996–1.000 | 0.996 | 0.996–0.998 | 0.998–1.000 | 0.998–1.002 |
+| Logical 1× | Active | 0.859 | 0.859 | 0.859–0.861 | 0.857–0.858 (3200 K ZSL 0.856–0.858) | 1.002–1.004 | 0.855–0.862 |
+| Logical 1× | Standard | 0.860–0.863 | 0.860–0.863 | 0.860–0.863 | 0.859–0.861 | 1.004–1.009 | 0.855–0.862 |
+| Logical 3× (phys 4) | Off | reference | – | 1.000 | 1.000 | 0.999–1.000 | 1.000–1.001 |
+| Logical 3× | Active | 0.862–0.863 | 0.863 | 0.862–0.863 | 0.862 | 1.000–1.001 | 0.861–0.865 |
+| Logical 3× | Standard | 0.863–0.864 | – | 0.862 | – | 1.000–1.001 | 0.861–0.862 |
+| TELE (standalone 4, 0x80b4) | Off | reference | – | 1.000 | – | 0.998–1.000 | 0.999–1.002 |
+| TELE | Active | 1.000 | 1.000 | 1.000 | – | 0.998–1.000 | 0.997–1.002 |
+| TELE | Standard | 1.000–1.001 | – | 1.000–1.002 | – | 0.998–1.000 | 0.999–1.002 |
+
+AUTO, preset, manual, ZSL-served and real stills now share the finder's field on every route; TELE
+is cropped by neither mode at all (stills and finder alike). `cmd media.camera watch`: no still
+changed the repeating request's stabilization mode except the 4 s AUTO still below. HEIF = JPEG
+(1.0000). **DNG:** on the standalone 1× (photo with DNG) in Active the DNG's field is 1.164–1.167 × its
+JPEG sibling (JPEG 0.858 of OFF); at Off and on TELE they are equal — stabilization never crops RAW,
+which is the sensor-native file, not a framing bug. **In-REC snapshot** (video, standalone 2,
+Active): it rides the session's mode (AUTO and 3200 K alike) and reads 0.94 of the photo route's OFF
+field, but the HAL crops the 16:9 video stream harder (0.858), so the snapshot is ~9 % wider (linear)
+than the recording — a residual this app cannot remove without cropping the still itself.
+
+**Long exposures in Active.** A still carrying PREVIEW_STABILIZATION completed at 2 s (the before
+build) and at 3.2 s (this session's builds; 1×, 3× and TELE) and was lost at 4 s
+(`onCaptureBufferLost`, no image): seven of seven 4 s stills on this session's builds (1×, 3×), and
+five of five on the other session's build below (1×, 3×, TELE; `cmd media.camera watch` shows the
+same request shape), which also completed 1 s and 3 s. A 4 s AUTO still now rides ON: completes on
+all three routes, reads 0.858–0.861 / 1.000 (1× / TELE) of the OFF field like the finder, colour as
+at 3.2 s. A 4 s TRANSFORM_MATRIX still has no working mode — ON
+rendered 3200 K deep blue (RGB 4 / 11 / 99 of 255), OFF cyan, ON with the vendor mirror at the
+session's value deep blue again, PREVIEW_STABILIZATION in either key lost — so it keeps the session's
+mode and is still lost, exactly as since the matrix-WB fix. **OWNER DECISION:** leave it (a loud
+failure), cap the still exposure at 3.2 s while Active and an app-owned WB are both selected (an
+honest ruler ceiling), or research switching the repeating request to ON for such a shot.
+
+**Colour, file vs finder (relative checks only).** Room light on, 1×: 3200 K warmth (Cr − Cb)
++41.9 / +42.0 / +42.6 (Standard / Active / Off), Daylight +86.2 / +86.4 / +87.8, finder within
+1–3 codes of each file; 3×: 3200 K +20.6 / +21.0 / +21.3; TELE: +24.3 / +24.0 / +24.3. Warmer as the
+Kelvin rises on every route, the same white point at every stabilization mode (no cyan matrix
+still), the in-REC snapshot within one code of its finder (AUTO +19.5 / +20.0, 3200 K +30.8 / +30.2).
+
+**Shared phone.** A second session (worktree `find-x9-log-review`) used this PMA110 during the run:
+it reinstalled its own debug APK at 06:13:42 and 07:12:13 and force-stopped / relaunched the app with
+its own settings. Its AUTO stills (the pre-fix behaviour) first looked like an OEM rewrite of the
+stabilization key; an instrumented build then showed the app writing the session's mode on 70 of 70
+AUTO stills and the camera service receiving it unchanged. Every final run is checked for the
+installed APK hash before and after, a single app process and the expected files.
+
 **Remaining:** (1) the HLG10 video session, the RAW log session (its developer takes the result
-gains) and the FRONT route were not run; (2) the room light is not a known illuminant, so absolute
-Kelvin accuracy against a chart under e.g. CIE A / D65 is unproven (the stock 5000 K cross-check is
-the only anchor); (3) the Flip6 spec path (presets on CONTROL_AWB_MODE, manual on the matrix) is
-probe-verified only — the in-app run did not open the camera in that session; (4) a matrix still
-rides the session's stabilization, so with stabilization on it is framed like the preview, about
-10 % narrower than an AUTO still (grey-patch pitch 350 → 387 px) — whether every still should follow
-the preview's framing is an OWNER DECISION; (5) no attached device takes the CCT path (CCT advertised
-without a ColorMatrix calibration).
+gains) and the FRONT route were not run (FRONT framing too); (2) the Flip6 spec path (presets on
+CONTROL_AWB_MODE, manual on the matrix) is probe-verified only — the in-app run did not open the
+camera in that session — and neither the GENERIC still path nor the GENERIC pseudo-ZSL framing
+refusal has run on a spec device; (3) the 4 s TRANSFORM_MATRIX still in Active above (owner
+decision); (4) no attached device takes the CCT path (CCT advertised without a ColorMatrix
+calibration). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
+decision 2026-10-27: device-to-device variation makes it meaningless); the relative checks above —
+warmer as the Kelvin rises, file matching the finder, AUTO and manual consistent — are the checks.
 
 ## B. Held in hand — 3 min
 
