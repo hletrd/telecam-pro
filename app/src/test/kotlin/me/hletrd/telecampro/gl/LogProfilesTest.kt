@@ -227,19 +227,18 @@ class LogProfilesTest {
     }
 
     @Test
-    fun `the declined vendor-log path leaves no shader residue`() {
+    fun `retired generated maker curves stay absent from the new native source path`() {
         val shader = Shaders.FRAGMENT
         // The phone-maker curves (codes 6/7/8: O-Log2, O-Log, Mi-Log) were removed 2026-10-26 with
         // the options that used them; their codes stay vacant and their curves must not come back.
         for (code in 6..8) {
             assertFalse("code $code must stay vacant", shader.contains("uTransfer == $code"))
         }
-        for (curve in listOf("olog2(", "olog(", "milog(", "toeLog2(", "47.28711236", "0.09271529")) {
+        for (curve in listOf("olog2(", "olog(", "milog(", "toeLog2(", "0.09271529")) {
             assertFalse("maker curve residue $curve", shader.contains(curve))
         }
-        // The de-log inverse and its branch existed only for a scene-referred vendor stream that can
-        // no longer arrive (path declined 2026-08-04). They were removed with it; re-adding either
-        // means re-adding dead code, so this asserts their absence rather than their survival.
+        // Retired shader IDs remain vacant. The real manufacturer source uses a distinct decode
+        // for assists and passthrough at code 9; it never revives these generated output curves.
         assertFalse("the de-log inverse must not come back", shader.contains("olog2Inv"))
         assertFalse("the de-log branch must not come back", shader.contains("uTransfer == 3"))
         assertFalse("its 709 helper must not come back", shader.contains("toRec709"))

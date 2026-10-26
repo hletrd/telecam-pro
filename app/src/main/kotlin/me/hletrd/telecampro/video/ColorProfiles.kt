@@ -176,7 +176,7 @@ internal fun hevcColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (t
     // QTI encoder "SDR transfer + BT2020 full range" lands in the container as CICP 14 —
     // bt2020-10, functionally identical to BT.709 per H.273 — NOT the literal SDR code point, and
     // crucially not the ST2084/PQ mistag this tag exists to prevent.)
-    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
+    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.MAKER_LOG,
     -> VideoColorTags(
         profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
         standard = MediaFormat.COLOR_STANDARD_BT2020,
@@ -205,7 +205,7 @@ internal fun apvColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (tr
         range = MediaFormat.COLOR_RANGE_FULL,
         transfer = MediaFormat.COLOR_TRANSFER_HLG,
     )
-    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
+    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.MAKER_LOG,
     ColorTransfer.SDR,
     -> VideoColorTags(
         profile = null,

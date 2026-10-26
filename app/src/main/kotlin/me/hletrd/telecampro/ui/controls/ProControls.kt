@@ -1054,7 +1054,7 @@ internal fun nativeLogUnverifiedWarningVisible(
  * fallback bakes log onto an already tone-mapped stream, where an underexposure would only add noise.
  */
 internal fun logEiOffsetSettingVisible(transfer: ColorTransfer, nativeLogCurveSupported: Boolean): Boolean =
-    transfer.isLog && nativeLogCurveSupported
+    transfer in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES && nativeLogCurveSupported
 
 /** The offered offsets, 0..LOG_EI_OFFSET_MAX_STOPS whole stops. */
 internal val LOG_EI_OFFSET_OPTIONS: List<Int> = (0..me.hletrd.telecampro.camera.LOG_EI_OFFSET_MAX_STOPS).toList()

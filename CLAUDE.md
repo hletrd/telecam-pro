@@ -168,8 +168,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `acceptedOpticsAuxState` must not normalize `photoFormats` in a still-less session (see the DNG
   route-input entry — a trip through log video otherwise wrote an empty format set over the
   operator's selection).
-  **What is still NOT claimable, and this is the part that must survive any rewrite of this bullet:**
-  the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
+  **Scope: these source limitations describe HLG and app-generated Log, not the separately verified
+  maker pipeline below. What is still NOT claimable for those mappings:** the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
   10-bit *encode* of that stream, NOT recovered HDR and NOT scene-referred capture — see the next
   two bullets, which remain correct as written. Photo and any video left on SDR stay 8-bit; native-log
   video is 8-bit except through the P010 bridge, where it is ten bits of the SAME un-S-curved,
@@ -1065,10 +1065,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `CameraViewModel.onVideoColorMode` lands a mode through the two old doors, intent FIRST, so any
   change costs at most one reopen. The Fn tile / dial chip cycle the MODES (chip value "Off" / HLG /
   the compact profile / "<profile> RAW"); the profile is the menu's row. The owner's fifth slot —
-  "Log (maker mode)", the phone maker's OWN log PIPELINE — is shown only on a device whose maker
-  pipeline is reachable and integrated; none is (PMA110's stock O-Log2 route below is research
-  only), so no device shows it and it is not in the enum. It returns as a member when one is,
-  never as a curve this app imitates.
+  "Log (maker)", the phone maker's OWN log PIPELINE — is shown only on a device whose maker
+  pipeline is reachable and integrated. PMA110 now offers `MAKER_LOG` on the rear automatic route,
+  without TC, at up to 30 fps and without Open Gate. It opens the logical camera with the native
+  protocol below; this is a fifth mode, not another member of `VIDEO_LOG_PROFILES`. Its stable shader
+  ID is 9; the retired IDs 3/6/7/8 remain vacant. Source confirmation precedes Ready. An unsupported
+  or refused maker intent stays persisted but reads/records the ordinary S-Log3 fallback. Switching
+  this route remaps lens-local/unified zoom in the same optics transaction. Native mode drops stills,
+  bypasses the P010/RAW bridges and the programmed S-Log3 curve/EI offset; its own inverse is used
+  only for monitor assists. The app's remembered standard Log Profile remains independent.
   **The phone-maker CURVES are GONE (owner decision 2026-10-26, superseding 2026-10-15's "the
   phone's own log, per phone").** O-Log2 / O-Log / Mi-Log were GL approximations of each maker's
   published curve over this app's own S-Log3 transport, offered per `Build.MODEL` through
@@ -1181,7 +1186,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   was too strong. Ten-bit native log is ten bits of the SAME
   un-S-curved, clip-bounded ISP signal, not the stock pipeline's latitude.
 - **Stock O-Log2 processing route reached through direct Camera2 (PMA110, ColorOS 17,
-  2026-10-25/26; RESEARCH, not integrated in the product).** On `PMA110_17.0.0.106(CN01)`, Camera
+  2026-10-25/26; integrated as Gamma = Log (maker)).** On `PMA110_17.0.0.106(CN01)`, Camera
   `7.006.119`, an independent probe with no SDK dependency, root, package impersonation or app Log
   shader produces the stock route. The missing configure-time pair is
   `com.oplus.is.sdk.camera.package = byteArrayOf(1)` AND `com.oplus.is.from.extension = 1` (int).
@@ -1207,11 +1212,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `pro_video_log_mode` combination reports HDR 1/two exposures but an SDR-like gamma (starts
   0,64,128); additional TC combinations remain open.
   Stock reports `VideoColorBT709=1`; the extension route returns 0 even if 1 is requested. The
-  native source reaches a ten-bit GL sampler, but the independent probe's GL/encoder bridge variants
-  end with CAMERA_ERROR(3). A generic same-camera control also fails, so the cause is not established
-  as native-Log-specific; sustained product integration remains open. Do not substitute the current
-  S-Log3 source decoder or generic-source JFIF override for the native O-Log2 source, or apply a
-  second Log OETF. Preserve the shipping fallback until the product session/colour path is proven.
+  earlier ImageWriter bridge variants failed on generic controls too. Integration solved this by
+  removing that bridge: the OEM session overrides the existing PRIVATE SurfaceTexture stream to
+  TP10 (`0x7fa30c09`), STANDARD, dataspace `0x8c60000`. It feeds the existing RGBA1010102 GL renderer
+  directly. Recording uses source codes unchanged by any OETF; `MakerLogSource` is an inverse only
+  for display assists. Never apply the generic S-Log3 decoder or JFIF dataspace override here.
+  `CameraController` waits for operation mode 0x830b, Log format 0 and the actual Log LUT before
+  Ready. Its 1024-entry array contains 256 valid entries followed by zeros; the black entry is 754.
+  Refusal rebuilds without any SDK tag. A camera-device failure disables the native attempt for the
+  recovery sequence; explicit mode selection can retry. Product evidence is in FIELD_CHECKS A20:
+  4K Main10 + AAC, 345 frames / 11.5115 s, maximum PTS interval 33.367 ms, full decode clean.
+  The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
+  has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor
   signature, but this two-tag route is device-tested on 17 only. Resolve vendor keys by NAME:
   168 of 455 shared result tags changed numeric IDs across the update. Optional private detail:

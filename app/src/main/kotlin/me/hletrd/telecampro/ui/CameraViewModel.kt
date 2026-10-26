@@ -251,6 +251,7 @@ class CameraViewModel private constructor(
         CameraUiState(
             nativeLogEiSupported = engine.nativeLogEiSupported,
             nativeLogCurveVerified = engine.nativeLogCurveMeasured,
+            makerLogSupported = engine.makerLogSupported,
         ),
     )
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
@@ -1691,6 +1692,9 @@ class CameraViewModel private constructor(
             e.mode == CaptureMode.VIDEO,
             requestedFormats.dngRaw,
             engine.rawForcesStandalone,
+            makerLog = e.mode == CaptureMode.VIDEO && safeTransfer == ColorTransfer.MAKER_LOG &&
+                me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, CameraRoute.BACK,
+                    requestedTeleconverter, null, e.videoFrameRate.encoderRate, e.openGate),
         )
         // The RESTORED phone's chips: a preset lands where that maker puts it, and a unified ratio
         // re-bands on that phone's chip positions, never the outgoing phone's.
@@ -1732,12 +1736,13 @@ class CameraViewModel private constructor(
             ),
             savedZoomRatio = requestedZoom,
             photoStandalone = e.mode == CaptureMode.PHOTO && restoredRouteStandalone,
+            videoStandalone = restoredRouteStandalone,
             presets = restoredPresets,
         )
         val currentState = _state.value
         // The log profile Gamma = Log / RAW Log returns to: the restored log itself, else the bank's
         // memory. Written below and undone by a rollback (RecallRollbackRestore).
-        val restoredLogProfile = if (safeTransfer.isLog) safeTransfer else e.logProfile
+        val restoredLogProfile = if (safeTransfer in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES) safeTransfer else e.logProfile
         val restoredRoute = recalledCameraRoute(currentState.cameraRoutes, currentState.activeCameraRoute)
             ?: return
         val restoredLens = if (restoredRoute == CameraRoute.BACK) restoredOptics.lens else currentState.lens
@@ -2930,6 +2935,7 @@ class CameraViewModel private constructor(
             lensLocalRoute = before.activeCameraRoute.lensLocalZoom,
             // DNG keeps PHOTO on a standalone lens too, so there is no unified↔local gap to bridge.
             photoIsStandalone = standaloneRouteFor(before, videoMode = false),
+            videoIsStandalone = standaloneRouteFor(before, videoMode = true),
             optical = before.lensInventory.optical,
             presets = before.zoomPresets,
         )
@@ -2966,6 +2972,24 @@ class CameraViewModel private constructor(
         // seemed not to stick. Writing here means the mode is already on disk well before any kill.
         saveSettingsIfEnabled()
     }
+    /** Native maker video changes the rear zoom scale just like the DNG route door. */
+    private fun makerRouteOptics(before: CameraUiState, after: CameraUiState): ModeOptics? {
+        if (before.makerLogRoute == after.makerLogRoute) return null
+        drainPendingControls()
+        cancelPendingControls()
+        invalidateOpticsDerivedState()
+        clearTapFocusUi()
+        return remapRouteScaleOptics(
+            before.lens, before.controls,
+            fromStandalone = standaloneRouteFor(before),
+            toStandalone = standaloneRouteFor(after),
+            teleconverter = before.teleconverterMode,
+            lensLocalRoute = before.activeCameraRoute.lensLocalZoom,
+            optical = before.lensInventory.optical,
+            presets = before.zoomPresets,
+        )
+    }
+
     override fun onTransfer(transfer: ColorTransfer) {
         if (rejectIfRecording()) return
         val current = _state.value
@@ -2973,6 +2997,7 @@ class CameraViewModel private constructor(
             current.videoCodec,
             current.tenBitEncodeAvailable,
         )
+        val routeOptics = makerRouteOptics(current, current.copy(transfer = safeTransfer))
         if (!current.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
         if (current.encoderInventoryLoaded) {
             engine.setVideoPipeline(
@@ -2984,7 +3009,10 @@ class CameraViewModel private constructor(
             engine.setTransfer(safeTransfer)
         }
         _state.update {
-            it.copy(transfer = safeTransfer, logProfile = if (safeTransfer.isLog) safeTransfer else it.logProfile)
+            it.copy(transfer = safeTransfer,
+                lens = routeOptics?.lens ?: it.lens,
+                controls = routeOptics?.controls ?: it.controls,
+                logProfile = if (safeTransfer in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES) safeTransfer else it.logProfile)
         }
         markChanged(FnSlot.TRANSFER)
         scheduleSettingsSave()
@@ -3001,14 +3029,20 @@ class CameraViewModel private constructor(
         if (rejectIfRecording()) return
         val current = _state.value
         when (mode) {
+            VideoColorMode.MAKER_LOG -> {
+                if (!current.makerLogOffered) return
+                // Like Off/HLG, maker mode masks a kept RAW intent. One transfer transaction owns
+                // the complete switch, including rollback; no second raw-intent write can escape it.
+                onTransfer(ColorTransfer.MAKER_LOG)
+            }
             VideoColorMode.OFF -> onTransfer(ColorTransfer.SDR)
             VideoColorMode.HLG -> onTransfer(ColorTransfer.HLG)
             VideoColorMode.LOG -> {
                 if (current.rawLog) setRawLogIntent(false)
-                onTransfer(if (current.transfer.isLog) current.transfer else current.logProfile)
+                onTransfer(if (current.transfer in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES) current.transfer else current.logProfile)
             }
             VideoColorMode.RAW_LOG -> {
-                val profile = if (current.transfer.isLog) current.transfer else current.logProfile
+                val profile = if (current.transfer in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES) current.transfer else current.logProfile
                 if (!current.rawLog) setRawLogIntent(true)
                 onTransfer(if (rawLogTransfer(profile)) profile else ColorTransfer.SLOG3)
             }
@@ -3442,6 +3476,7 @@ class CameraViewModel private constructor(
             before.audioCodec, before.audioBitrateKbps, inventory.audioOptions,
         )
         engine.setAudioEncoding(safeAudioCodec, safeAudioKbps)
+        val inventoryRouteOptics = makerRouteOptics(before, before.copy(transfer = safeTransfer, videoCodec = safeCodec))
         engine.setVideoPipeline(
             inventory.candidatesFor(safeCodec, safeTransfer),
             safeTransfer,
@@ -3483,6 +3518,8 @@ class CameraViewModel private constructor(
                 encoderInventoryLoaded = true,
                 availableVideoCodecs = codecs,
                 videoCodec = safeCodec,
+                lens = inventoryRouteOptics?.lens ?: it.lens,
+                controls = inventoryRouteOptics?.controls ?: it.controls,
                 audioEncoderOptions = inventory.audioOptions,
                 audioCodec = safeAudioCodec,
                 audioBitrateKbps = safeAudioKbps,
@@ -3629,7 +3666,10 @@ class CameraViewModel private constructor(
     private fun standaloneRouteFor(
         state: CameraUiState,
         videoMode: Boolean = state.mode == CaptureMode.VIDEO,
-    ): Boolean = standaloneRouteWanted(videoMode, state.photoFormats.dngRaw, engine.rawForcesStandalone)
+    ): Boolean = standaloneRouteWanted(videoMode, state.photoFormats.dngRaw, engine.rawForcesStandalone,
+        makerLog = videoMode && state.transfer == ColorTransfer.MAKER_LOG &&
+            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, CameraRoute.BACK,
+                false, state.cameraOverrideId, state.videoFrameRate.encoderRate, state.openGate))
 
     /** Converts the canonical rear snapshot into the route a save/recall will actually restore. */
     private fun retainedRearZoomRatio(state: CameraUiState, teleconverter: Boolean): Float {
@@ -3811,11 +3851,14 @@ class CameraViewModel private constructor(
         )
         val candidates = encoderInventory.candidatesFor(codec, safeTransfer)
         if (candidates.isEmpty()) return
+        val routeOptics = makerRouteOptics(current, current.copy(videoCodec = codec, transfer = safeTransfer))
         engine.setVideoPipeline(candidates, safeTransfer, codec)
         _state.update {
             it.copy(
                 videoCodec = codec,
                 transfer = safeTransfer,
+                lens = routeOptics?.lens ?: it.lens,
+                controls = routeOptics?.controls ?: it.controls,
                 activeMemorySlot = null,
             )
         }
@@ -3852,11 +3895,13 @@ class CameraViewModel private constructor(
      * narrow for a route that cannot deliver the request, which must not clear the MR slot or persist.
      */
     private fun applyVideoFrameRate(rate: VideoFrameRate) {
+        val before = _state.value
+        val routeOptics = makerRouteOptics(before, before.copy(videoFrameRate = rate))
         engine.setVideoFrameRate(rate)
         // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
         val current = _state.value
-        val requested = current.controls.copy(fps = rate.fps)
+        val requested = (routeOptics?.controls ?: current.controls).copy(fps = rate.fps)
         val controls = (current.caps?.let(requested::normalizedFor) ?: requested)
             .normalizedForCaptureMode(current.mode)
         sendControls(controls)
@@ -3865,12 +3910,14 @@ class CameraViewModel private constructor(
         pendingControls = pendingControls
             ?.copy(fps = rate.fps)
             ?.normalizedForCaptureMode(current.mode)
-        _state.update { it.copy(videoFrameRate = rate, controls = controls) }
+        _state.update { it.copy(videoFrameRate = rate, controls = controls, lens = routeOptics?.lens ?: it.lens) }
     }
     override fun onToggleOpenGate(enabled: Boolean) {
         if (rejectIfRecording()) return
+        val before = _state.value
+        val routeOptics = makerRouteOptics(before, before.copy(openGate = enabled))
         engine.setOpenGate(enabled)
-        _state.update { it.copy(openGate = enabled, activeMemorySlot = null) }
+        _state.update { it.copy(openGate = enabled, activeMemorySlot = null, lens = routeOptics?.lens ?: it.lens, controls = routeOptics?.controls ?: it.controls) }
         reconcileFrameRate()
         scheduleSettingsSave()
     }
@@ -4349,8 +4396,11 @@ class CameraViewModel private constructor(
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
         invalidateOpticsDerivedState()
         clearTapFocusUi()
+        val before = _state.value
+        val routeOptics = makerRouteOptics(before, before.copy(cameraOverrideId = id))
         engine.setCameraOverride(id)
-        _state.update { it.copy(cameraOverrideId = id) }
+        _state.update { it.copy(cameraOverrideId = id,
+            lens = routeOptics?.lens ?: it.lens, controls = routeOptics?.controls ?: it.controls) }
     }
 
     override fun onToggleRememberSettings(enabled: Boolean) {

@@ -664,6 +664,8 @@ class GlPipeline(
      */
     fun setSourceLog(enabled: Boolean) = post { renderer.setSourceLog(enabled) }
 
+    fun setSourceMaker(enabled: Boolean) = post { renderer.setSourceMaker(enabled) }
+
     /** Log EI offset: the native decode's scene-linear ceiling for the log encode branches. */
     fun setSourceLogHeadroom(factor: Float) = post { renderer.setSourceLogHeadroom(factor) }
 

@@ -20,7 +20,7 @@ class NativeLogCaptionTest {
 
     @Test
     fun `a native log session keeps stills and RAW on its full rung`() {
-        ColorTransfer.entries.filter { it.isLog }.forEach { transfer ->
+        me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES.forEach { transfer ->
             val tenBit = tenBitSessionWanted(videoMode = true, transfer = transfer, nativeLogCurveSupported = true)
             assertFalse(tenBit)
             val plan = sessionAttemptPlan(
@@ -70,7 +70,7 @@ class NativeLogCaptionTest {
     fun `transfer caption follows the native curve capability`() {
         assertNull(transferSourceCaption(ColorTransfer.SDR, nativeLogCurveSupported = true))
         assertNull(transferSourceCaption(ColorTransfer.SDR, nativeLogCurveSupported = false))
-        ColorTransfer.entries.filter { it.isLog }.forEach {
+        me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES.forEach {
             assertEquals(R.string.video_native_log_source, transferSourceCaption(it, nativeLogCurveSupported = true))
             assertEquals(R.string.video_tone_mapped_source, transferSourceCaption(it, nativeLogCurveSupported = false))
         }
@@ -80,7 +80,7 @@ class NativeLogCaptionTest {
 
     @Test
     fun `native log reads 10-bit only on an accepted P010 bridge session`() {
-        ColorTransfer.entries.filter { it.isLog }.forEach {
+        me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES.forEach {
             assertEquals(
                 "$it",
                 R.string.video_native_log_source_10bit,
@@ -128,11 +128,11 @@ class NativeLogCaptionTest {
 
     @Test
     fun `the Log EI offset row appears only for a log transfer on a native-curve camera`() {
-        ColorTransfer.entries.filter { it.isLog }.forEach {
+        me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES.forEach {
             assertTrue("$it native", logEiOffsetSettingVisible(it, nativeLogCurveSupported = true))
             assertFalse("$it GL fallback", logEiOffsetSettingVisible(it, nativeLogCurveSupported = false))
         }
-        listOf(ColorTransfer.SDR, ColorTransfer.HLG).forEach {
+        listOf(ColorTransfer.SDR, ColorTransfer.HLG, ColorTransfer.MAKER_LOG).forEach {
             assertFalse("$it", logEiOffsetSettingVisible(it, nativeLogCurveSupported = true))
             assertFalse("$it", logEiOffsetSettingVisible(it, nativeLogCurveSupported = false))
         }

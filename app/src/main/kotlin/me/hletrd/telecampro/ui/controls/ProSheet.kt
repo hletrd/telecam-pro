@@ -1638,7 +1638,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     } else {
         null
     }
-    Captioned(rawModeCaption) {
+    val makerCaption = if (colorMode == VideoColorMode.MAKER_LOG && state.cameraReady) {
+        stringResource(if (state.glTenBitOutput) R.string.caption_maker_log else R.string.caption_maker_log_8bit)
+    } else null
+    Captioned(makerCaption ?: rawModeCaption) {
         SegmentedSelector(
             label = stringResource(R.string.label_gamma),
             options = state.videoColorModes,
@@ -1669,8 +1672,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             fontWeight = FontWeight.Medium,
         )
     }
-    val sourceCaption = transferSourceCaption(
-        state.transfer,
+    val sourceCaption = if (colorMode == VideoColorMode.MAKER_LOG) null else transferSourceCaption(
+        state.effectiveVideoTransfer,
         me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
         tenBitNativeLogSession = state.cameraReady && state.photoSessionOutputs.tenBitNativeLog,
         rawLogSession = state.cameraReady && state.photoSessionOutputs.rawLog,
@@ -1681,7 +1684,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             SegmentedSelector(
                 label = stringResource(R.string.label_log_profile),
                 options = VIDEO_LOG_PROFILES,
-                selected = state.transfer,
+                selected = state.effectiveVideoTransfer,
                 labelFor = ::transferLabel,
                 onSelect = actions::onTransfer,
                 enabled = recordingMutable,

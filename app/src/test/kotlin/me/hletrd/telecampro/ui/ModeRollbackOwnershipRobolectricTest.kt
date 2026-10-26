@@ -233,6 +233,43 @@ class ModeRollbackOwnershipRobolectricTest {
         assertFalse("rollback wrapper must not own the Engine monitor", Modifier.isSynchronized(method.modifiers))
     }
 
+    @Test
+    fun `maker gamma round trip keeps UI and engine framing and clears the cached standalone id`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO, ColorTransfer.SLOG3, ColorTransfer.SLOG3,
+        )
+        setField(engine, "deviceProfile", me.hletrd.telecampro.camera.DeviceProfile.resolve("PMA110"))
+        setField(engine, "lensChoice", me.hletrd.telecampro.camera.LensChoice.TELE3X)
+        val controls = me.hletrd.telecampro.camera.ManualControls(zoomRatio = 1.25f)
+        setField(engine, "controls", controls)
+        setField(viewModel, "pendingControls", controls)
+        setField(engine, "overrideId", "4")
+        state(viewModel).value = state(viewModel).value.copy(
+            makerLogSupported = true,
+            lens = me.hletrd.telecampro.camera.LensChoice.TELE3X,
+            controls = controls,
+        )
+        viewModel.onTransfer(ColorTransfer.MAKER_LOG)
+        assertEquals(3.75f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(3.75f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+        assertEquals(null, field(engine, "overrideId"))
+        viewModel.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60)
+        assertEquals(1.25f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(1.25f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+        viewModel.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_29_97)
+        assertEquals(3.75f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(3.75f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+        viewModel.onCameraOverride("4")
+        assertEquals(1.25f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(1.25f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+        viewModel.onCameraOverride(null)
+        assertEquals(3.75f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(3.75f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+        viewModel.onTransfer(ColorTransfer.SLOG3)
+        assertEquals(1.25f, viewModel.state.value.controls.zoomRatio, 1e-6f)
+        assertEquals(1.25f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
+    }
+
     private fun createAccepted(
         mode: CaptureMode,
         acceptedTransfer: ColorTransfer = transferFor(mode),

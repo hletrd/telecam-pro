@@ -117,6 +117,8 @@ enum class ColorTransfer(val isLog: Boolean = false) {
     SLOG3_CINE(isLog = true),
     /** ARRI LogC3 (EI 800) transfer in ARRI Wide Gamut 3 primaries. */
     LOGC3(isLog = true),
+    /** The measured manufacturer's own pipeline; never an app-generated maker curve. */
+    MAKER_LOG(isLog = true),
     SDR,
 }
 
@@ -137,10 +139,10 @@ enum class ColorTransfer(val isLog: Boolean = false) {
  * O-Log2 route is research only, CLAUDE.md). It returns as a member when one is, never as a curve
  * this app imitates.
  */
-enum class VideoColorMode { OFF, HLG, LOG, RAW_LOG }
+enum class VideoColorMode { OFF, HLG, LOG, RAW_LOG, MAKER_LOG }
 
 /** The profiles both log modes offer: the industry-standard curves only (owner decision 2026-10-26). */
-val VIDEO_LOG_PROFILES: List<ColorTransfer> = ColorTransfer.entries.filter { it.isLog }
+val VIDEO_LOG_PROFILES: List<ColorTransfer> = listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
 
 /**
  * The modes this device can record HONESTLY ([availableTransfers]: HLG and log need a 10-bit HEVC
@@ -151,10 +153,13 @@ fun availableVideoColorModes(
     codec: VideoCodec,
     tenBitEncodeAvailable: Boolean,
     rawLogOffered: Boolean,
+    makerLogOffered: Boolean = false,
 ): List<VideoColorMode> = when {
     !availableTransfers(codec, tenBitEncodeAvailable).any { it.isLog } -> listOf(VideoColorMode.OFF)
-    rawLogOffered -> VideoColorMode.entries
-    else -> VideoColorMode.entries - VideoColorMode.RAW_LOG
+    else -> VideoColorMode.entries.filter {
+        (it != VideoColorMode.RAW_LOG || rawLogOffered) &&
+            (it != VideoColorMode.MAKER_LOG || makerLogOffered)
+    }
 }
 
 /**
@@ -163,9 +168,15 @@ fun availableVideoColorModes(
  * developable RAW) the session records native log, so the row says Log while the intent is kept for
  * a route that can honour it — the same keep-the-request rule the session ladder follows.
  */
-fun videoColorModeOf(transfer: ColorTransfer, rawLogRequested: Boolean, rawLogOffered: Boolean): VideoColorMode = when {
+fun videoColorModeOf(
+    transfer: ColorTransfer,
+    rawLogRequested: Boolean,
+    rawLogOffered: Boolean,
+    makerLogOffered: Boolean = false,
+): VideoColorMode = when {
     transfer == ColorTransfer.SDR -> VideoColorMode.OFF
     transfer == ColorTransfer.HLG -> VideoColorMode.HLG
+    transfer == ColorTransfer.MAKER_LOG -> if (makerLogOffered) VideoColorMode.MAKER_LOG else VideoColorMode.LOG
     rawLogRequested && rawLogOffered && rawLogTransfer(transfer) -> VideoColorMode.RAW_LOG
     else -> VideoColorMode.LOG
 }
@@ -626,7 +637,8 @@ fun standaloneRouteWanted(
     // No default (AGG4-47): defaulting to the PMA110 law made an omitted argument compile into
     // the wrong route on every GENERIC device.
     rawForcesStandalone: Boolean,
-): Boolean = videoMode || (rawWanted && rawForcesStandalone)
+    makerLog: Boolean = false,
+): Boolean = if (videoMode) !makerLog else rawWanted && rawForcesStandalone
 
 /**
  * Whether a VIDEO session carries the NATIVE ISP log curve (see NativeLogCurve.kt): a log transfer
@@ -678,7 +690,7 @@ fun tenBitSessionWanted(
  * over native log: S-Log3 ↔ S-Log3.Cine inside it stays GL-only, while a move to LogC3 or a
  * phone-maker log leaves it and so reopens.
  */
-enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT, RAW_LOG }
+enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT, RAW_LOG, MAKER_LOG }
 
 fun videoSessionShape(
     videoMode: Boolean,
@@ -687,7 +699,9 @@ fun videoSessionShape(
     // No default (the route-term rule): a shape comparison that forgot it would miss a RAW-log
     // flip and keep the old session's outputs under the new intent.
     rawLogWanted: Boolean,
+    makerLogWanted: Boolean = false,
 ): VideoSessionShape = when {
+    makerLogWanted -> VideoSessionShape.MAKER_LOG
     rawLogWanted -> VideoSessionShape.RAW_LOG
     nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.NATIVE_LOG
     tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.TEN_BIT
@@ -718,6 +732,7 @@ val CameraUiState.unifiedZoom: Float
             videoMode = mode == CaptureMode.VIDEO,
             rawWanted = photoFormats.dngRaw,
             rawForcesStandalone = rawForcesStandalone,
+            makerLog = makerLogRoute,
         ),
         optical = lensInventory.optical,
         presets = zoomPresets,
@@ -1711,6 +1726,8 @@ data class PhotoSessionOutputs(
     // only the session that configured can say which source the file is developed from. Such a
     // session has no still readers by construction.
     val rawLog: Boolean = false,
+    /** The factory Log source was confirmed by capture metadata before Ready was published. */
+    val makerLog: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }
@@ -2197,6 +2214,7 @@ data class CameraUiState(
      * sampled at each Ready). Captions claim ten bits for a GL-rendered file only when this is true.
      */
     val glTenBitOutput: Boolean = false,
+    val makerLogSupported: Boolean = false,
     /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a
@@ -2263,11 +2281,24 @@ data class CameraUiState(
 
     /** The Gamma modes the Video tab and the Fn cycle offer ([availableVideoColorModes]). */
     val videoColorModes: List<VideoColorMode>
-        get() = availableVideoColorModes(videoCodec, tenBitEncodeAvailable, rawLogOffered)
+        get() = availableVideoColorModes(videoCodec, tenBitEncodeAvailable, rawLogOffered, makerLogOffered)
 
     /** The Gamma mode the request reads as on this route ([videoColorModeOf]). */
     val videoColorMode: VideoColorMode
-        get() = videoColorModeOf(transfer, rawLog, rawLogOffered)
+        get() = videoColorModeOf(transfer, rawLog, rawLogOffered,
+            makerLogOffered && !(mode == CaptureMode.VIDEO && cameraReady &&
+                transfer == ColorTransfer.MAKER_LOG && !photoSessionOutputs.makerLog))
+
+    val makerLogOffered: Boolean
+        get() = makerLogOffered(makerLogSupported, activeCameraRoute, teleconverterMode,
+            cameraOverrideId, videoFrameRate.encoderRate, openGate)
+
+    val makerLogRoute: Boolean
+        get() = makerLogSessionWanted(mode == CaptureMode.VIDEO, transfer, makerLogOffered)
+
+    val effectiveVideoTransfer: ColorTransfer
+        get() = effectiveRecordingTransfer(transfer,
+            makerLogOffered && (mode != CaptureMode.VIDEO || !cameraReady || photoSessionOutputs.makerLog))
 
     /** [photoFormats] is the REQUEST; this is what the accepted session writes ([effectiveFor]). */
     val effectivePhotoFormats: PhotoFormats

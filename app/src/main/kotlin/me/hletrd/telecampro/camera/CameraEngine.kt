@@ -420,6 +420,7 @@ class CameraEngine internal constructor(
     // Hidden while Video is active, but transaction-owned like every visible optics control: a
     // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
     @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
+    @Volatile private var makerLogRefused = false
     @Volatile private var transfer = ColorTransfer.SDR
     /** Operator's next-Video curve; Photo keeps this while its active GL/Camera2 transfer is SDR. */
     @Volatile private var requestedVideoTransfer = ColorTransfer.SDR
@@ -641,7 +642,7 @@ class CameraEngine internal constructor(
      * while the session stays on the 70 mm lens (RPL cycle 1, AGG-3).
      */
     private fun lensBandFollowsZoom(video: Boolean, teleconverter: Boolean, route: CameraRoute): Boolean =
-        !standaloneRouteWanted(video, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
+        !standaloneRouteWanted(video, rawWanted, activeDeviceProfile().rawRequiresStandalone, makerLogWanted(mode = video)) &&
             !teleconverter && route == CameraRoute.BACK
 
     private data class VideoPipelineSelection(
@@ -907,6 +908,7 @@ class CameraEngine internal constructor(
             // and missing the camera's buffer transform, so the decode and the orientation both
             // follow the same accepted truth.
             rendererAssists.setSourceLog(expectedController.nativeLogConfigured || expectedController.rawLogConfigured)
+            rendererAssists.setSourceMaker(expectedController.makerLogConfigured)
             rendererAssists.setSourceWide(
                 expectedController.rawLogConfigured,
                 me.hletrd.telecampro.gl.SourceTransformEmulation.rearTransformFor(caps?.sensorOrientation ?: 0),
@@ -998,7 +1000,8 @@ class CameraEngine internal constructor(
             transaction.before.transfer,
             nativeLogSupported,
             rawLogWanted(selection, caps, transaction.before.videoMode, transaction.before.transfer),
-        ) != videoSessionShape(videoMode, transfer, nativeLogSupported, rawLogWanted(selection, caps))
+            makerLogWanted(mode = transaction.before.videoMode, t = transaction.before.transfer, tc = transaction.before.teleconverter, route = transaction.before.route),
+        ) != videoSessionShape(videoMode, transfer, nativeLogSupported, rawLogWanted(selection, caps), makerLogWanted())
         if ((resolvedHiResStill() != transaction.before.hiResConfigured || sessionTransferChanged) &&
             ownsOpticsTransaction(transaction) && !paused && recorder == null
         ) {
@@ -1995,6 +1998,7 @@ class CameraEngine internal constructor(
 
     /** The HOST handset's [DeviceProfile.nativeLogEiSupported]: gates the Log EI offset setting. */
     val nativeLogEiSupported: Boolean get() = deviceProfile.nativeLogEiSupported
+    val makerLogSupported: Boolean get() = deviceProfile.makerLogPipeline
 
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
     val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
@@ -2832,6 +2836,7 @@ class CameraEngine internal constructor(
                 tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
+                makerLog = makerLogWanted() && !makerLogRefused,
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
@@ -3317,9 +3322,8 @@ class CameraEngine internal constructor(
     /**
      * Selects the color transfer — the single source of truth. The log profiles (S-Log3 /
      * S-Log3.Cine / LogC3) are GL-baked curves (the shipping path): the encoder receives the curve
-     * and the preview renders it flat. The device's native HAL log key (`com.oplus.log.video.mode`)
-     * is INERT for third-party Camera2 (device-settled 2026-07-09 — see the body comment), and the
-     * dormant plumbing that once carried it was REMOVED 2026-08-04 with the vendor-SDK decision.
+     * and the preview renders it flat. MAKER_LOG instead selects the measured OEM session through
+     * Camera2 extension parameters; its accepted source passes through GL without another OETF.
      *
      * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
      * curve into the second half, so the GL curve is only pushed when idle (the field still updates
@@ -3345,6 +3349,7 @@ class CameraEngine internal constructor(
         // deriving them before this monitor allowed an owned rollback to restore Photo/SDR and then
         // be overwritten by a stale no-generation Video/HLG packet. The monitor is reentrant, so a
         // real boundary change can enter beginOpticsTransaction without opening an interleaving gap.
+        if (requestedTransfer == ColorTransfer.MAKER_LOG && recorder == null) makerLogRefused = false
         val codec = candidates.firstOrNull()?.codec ?: fallbackCodec
         val normalizedCandidates = candidates
             .filter { it.codec == codec }
@@ -3368,11 +3373,19 @@ class CameraEngine internal constructor(
         val nativeLogSupported = nativeLogCurveSupported(caps)
         val sessionShapeChanged = videoSessionShape(
             videoMode, transfer, nativeLogSupported, rawLogWanted(selection, caps, videoMode, transfer),
+            makerLogWanted(t = transfer),
         ) != videoSessionShape(
             videoMode, activeTransfer, nativeLogSupported, rawLogWanted(selection, caps, videoMode, activeTransfer),
+            makerLogWanted(t = activeTransfer),
         )
-        val publish = { publishVideoPipelineLocked(targetPipeline) }
-        if (sessionShapeChanged && recorder == null) {
+        val makerBefore = makerLogWanted(t = transfer)
+        val makerAfter = makerLogWanted(t = activeTransfer)
+        val publish = {
+            remapMakerRouteBoundary(makerBefore, makerAfter)
+            publishVideoPipelineLocked(targetPipeline)
+        }
+        val retryMaker = makerAfter && cameraReady && controller?.makerLogConfigured == false
+        if ((sessionShapeChanged || retryMaker) && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
             postGlTransfer(activeTransfer)
             reopenForSession(transaction)
@@ -3791,16 +3804,23 @@ class CameraEngine internal constructor(
      * diagnostics and persisted-schema compatibility; normal rates only update the next recording.
      */
     fun setVideoFrameRate(r: VideoFrameRate) {
+        if (r != videoFrameRate && recorder != null) {
+            onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status())
+            return
+        }
+        val makerBefore = makerLogWanted()
         val before = desiredHighSpeedFps()
         val rawLogBefore = rawLogWanted(selection, caps)
         videoFrameRate = r
+        val makerChanged = makerBefore != makerLogWanted()
+        synchronized(this) { remapMakerRouteBoundary(makerBefore, makerLogWanted()) }
         // RAW log is the one shape a frame rate can flip (its RAW stream tops out at the advertised
         // RAW cadence, 30 fps on PMA110), so a crossing reopens like a transfer change.
         // Both are BARE doors: the rate was written above, so the baseline must be snapshotted after
         // that write (currentOpticsReconfiguration's baselinePrecedesMutation = false, AGG3-7), never
         // through beginOpticsTransaction, which would claim a pre-write baseline and take the
         // RESTORE_ROLLBACK path on a preflight failure.
-        if (desiredHighSpeedFps() != before ||
+        if (makerChanged || desiredHighSpeedFps() != before ||
             (rawLogWanted(selection, caps) != rawLogBefore && recorder == null)
         ) {
             reopenForSession()
@@ -3838,9 +3858,13 @@ class CameraEngine internal constructor(
         if (openGate == enabled) return
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        val makerBefore = makerLogWanted()
         openGate = enabled
+        synchronized(this) { remapMakerRouteBoundary(makerBefore, makerLogWanted()) }
         val sel = selection ?: return
-        applyVideoSize(chooseVideoSize(sel))
+        val targetSize = chooseVideoSize(sel)
+        if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
+        else applyVideoSize(targetSize)
     }
 
     /**
@@ -3933,6 +3957,7 @@ class CameraEngine internal constructor(
             if (!activeCameraFailureBelongsToController(controller, failedController)) return
             // Before recovery reopens: that reopen must not repeat the attempt that failed the device.
             if (failure is RawLogConfigureFatalException) rawLogRefusedRoute = failure.routeKey
+            if (failedController.makerLogFailed) makerLogRefused = true
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             val tapPublication = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
@@ -4357,6 +4382,7 @@ class CameraEngine internal constructor(
                 // video does, and the zoom scale follows the route.
                 standaloneRoute = standaloneRouteWanted(
                     videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                    makerLog = makerLogWanted(tc = false),
                 ),
                 opticalPresets = acceptedOpticalPresets,
                 presets = zoomPresets,
@@ -4483,6 +4509,7 @@ class CameraEngine internal constructor(
         val transaction = beginOpticsTransaction {
             val sourceStandaloneRoute = teleconverterMode || standaloneRouteWanted(
                 videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                makerLog = makerLogWanted(),
             )
             if (enabled) {
                 preFrontRearUnifiedZoom = unifiedZoomOf(
@@ -4497,6 +4524,7 @@ class CameraEngine internal constructor(
             if (targetRoute != CameraRoute.BACK) teleconverterMode = false
             val targetStandaloneRoute = standaloneRouteWanted(
                 videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                makerLog = makerLogWanted(),
             )
             controls = controls.copy(
                 zoomRatio = if (enabled) {
@@ -4572,7 +4600,7 @@ class CameraEngine internal constructor(
     private fun resolveNonTeleId(choice: LensChoice): String? =
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             cachedExternal()?.logicalId
-        } else if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)) {
+        } else if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone, makerLogWanted())) {
             cachedIdForFocal(choice.targetEquivMm)
         } else {
             cachedLogicalBack()
@@ -4674,9 +4702,12 @@ class CameraEngine internal constructor(
         // A debug override pins an explicit rear-route id; it is not the facing door, so it also
         // drops FRONT (selectCurrentLens would otherwise ignore the pinned id while facing FRONT).
         val transaction = beginOpticsTransaction {
+            val wasRear = activeCameraRoute == CameraRoute.BACK
+            val makerBefore = makerLogWanted()
             setActiveCameraRoute(CameraRoute.BACK)
             overrideId = id
             userCameraPin = id
+            if (wasRear) remapMakerRouteBoundary(makerBefore, makerLogWanted())
         }.first
         reconfigureCamera(id, transaction)
     }
@@ -4892,6 +4923,7 @@ class CameraEngine internal constructor(
                     tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
+                    makerLog = makerLogWanted() && !makerLogRefused,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
@@ -6546,7 +6578,7 @@ class CameraEngine internal constructor(
         val frozenSize = videoSize
         val frozenFrameRate = videoFrameRate
         val frozenCodec = videoCodec
-        val frozenTransfer = transfer
+        val frozenTransfer = effectiveRecordingTransfer(transfer, acceptedSession.outputs.makerLog)
         val frozenCandidates = videoEncoderCandidates.toList()
         val frozenHighSpeedFps = desiredHighSpeedFps()
         val inputs = RecordingAdmissionInputs(
@@ -8489,6 +8521,7 @@ class CameraEngine internal constructor(
                     zoomRatio = controls.zoomRatio,
                     standaloneRoute = standaloneRouteWanted(
                         videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                        makerLog = makerLogWanted(),
                     ),
                     optical = acceptedOpticalPresets,
                     presets = zoomPresets,
@@ -8503,10 +8536,32 @@ class CameraEngine internal constructor(
         }
     }
 
-    /**
-     * Whether the EXPERIMENTAL RAW log route applies to [sel]/[c] for [mode]/[t] at the selected frame
-     * rate ([rawLogSessionWanted] over [rawLogSupported]); false without a route.
-     */
+    /** Desired OEM topology; source acceptance is confirmed separately by the controller. */
+    private fun makerLogWanted(
+        mode: Boolean = videoMode,
+        t: ColorTransfer = transfer,
+        tc: Boolean = teleconverterMode,
+        route: CameraRoute = activeCameraRoute,
+        fps: Double = videoFrameRate.encoderRate,
+        gate: Boolean = openGate,
+    ): Boolean = makerLogSessionWanted(mode, t, makerLogOffered(
+        deviceProfile.makerLogPipeline, route, tc, userCameraPin, fps, gate,
+    ))
+
+    /** Same unified/local conversion as the lens and DNG doors; called inside the optics mutation. */
+    private fun remapMakerRouteBoundary(before: Boolean, after: Boolean) {
+        if (before == after || activeCameraRoute.lensLocalZoom || teleconverterMode) return
+        val unified = unifiedZoomOf(lensChoice, controls.zoomRatio, !before, acceptedOpticalPresets, zoomPresets)
+        if (after) {
+            controls = controls.copy(zoomRatio = unified)
+        } else {
+            lensChoice = LensChoice.forZoom(unified, zoomPresets)
+            controls = controls.copy(zoomRatio = localZoomOf(unified, acceptedOpticalPresets, zoomPresets).coerceAtLeast(1f))
+        }
+        // Re-resolve the automatic route, not the cached id of the previous accepted session.
+        overrideId = userCameraPin
+    }
+
     private fun rawLogWanted(
         sel: TeleSelection?,
         c: CameraCaps?,
@@ -8552,6 +8607,7 @@ class CameraEngine internal constructor(
     private fun tenBitNativeLogStreamFor(c: CameraCaps, stream: Size): Size? =
         stream.takeIf {
             nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)) &&
+                !(transfer == ColorTransfer.MAKER_LOG && makerLogRefused) &&
                 tenBitNativeLogBridgeSupported(deviceProfile, c, it.width, it.height)
         }
 

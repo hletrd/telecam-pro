@@ -192,6 +192,11 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     }
 
     /** Whether the ACCEPTED session streams the native S-Log3 curve; selects the GL log decode. */
+    fun setSourceMaker(enabled: Boolean) {
+        config.update { it.copy(sourceMaker = enabled) }
+        currentGl().setSourceMaker(enabled)
+    }
+
     fun setSourceLog(enabled: Boolean) {
         config.update { it.copy(sourceLog = enabled) }
         currentGl().setSourceLog(enabled)
@@ -278,6 +283,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setSourceLog(snapshot.sourceLog)
+        gl.setSourceMaker(snapshot.sourceMaker)
         gl.setSourceLogHeadroom(snapshot.sourceLogHeadroom)
         gl.setSourceWide(snapshot.sourceWide)
         gl.setSourceTransformEmulation(snapshot.sourceTransformEmulation)

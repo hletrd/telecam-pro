@@ -17,6 +17,7 @@ internal data class ShaderLocations(
     val uTransfer: Int,
     val uSourceHlg: Int,
     val uSourceLog: Int,
+    val uSourceMaker: Int,
     val uSourceLogHeadroom: Int,
     val uSourceWide: Int,
     val uPeaking: Int,
@@ -48,6 +49,7 @@ internal fun resolveShaderLocations(
         uTransfer = uniform(ShaderBindings.U_TRANSFER),
         uSourceHlg = uniform(ShaderBindings.U_SOURCE_HLG),
         uSourceLog = uniform(ShaderBindings.U_SOURCE_LOG),
+        uSourceMaker = uniform(ShaderBindings.U_SOURCE_MAKER),
         uSourceLogHeadroom = uniform(ShaderBindings.U_SOURCE_LOG_HEADROOM),
         uSourceWide = uniform(ShaderBindings.U_SOURCE_WIDE),
         uPeaking = uniform(ShaderBindings.U_PEAKING),
@@ -213,6 +215,7 @@ class FlipRenderer internal constructor(
     private var uTransfer = 0
     private var uSourceHlg = 0
     private var uSourceLog = 0
+    private var uSourceMaker = 0
     private var uSourceLogHeadroom = 0
     private var uSourceWide = 0
     private var uPeaking = 0
@@ -245,6 +248,7 @@ class FlipRenderer internal constructor(
     private var rotationDeg = 0
     private var sourceHlg = false
     private var sourceLog = false
+    private var sourceMaker = false
     private var sourceLogHeadroom = 1f
     private var sourceWide = false
     // Rotation the camera SurfaceTexture transform already bakes into the sampled image (the sensor
@@ -316,6 +320,7 @@ class FlipRenderer internal constructor(
             uTransfer = locations.uTransfer
             uSourceHlg = locations.uSourceHlg
             uSourceLog = locations.uSourceLog
+            uSourceMaker = locations.uSourceMaker
             uSourceLogHeadroom = locations.uSourceLogHeadroom
             uSourceWide = locations.uSourceWide
             uPeaking = locations.uPeaking
@@ -360,6 +365,8 @@ class FlipRenderer internal constructor(
     }
 
     /** Whether the accepted session streams the native S-Log3 curve; selects the shader's log decode. */
+    fun setSourceMaker(enabled: Boolean) { sourceMaker = enabled }
+
     fun setSourceLog(enabled: Boolean) {
         if (
             sourceLog != enabled &&
@@ -498,6 +505,7 @@ class FlipRenderer internal constructor(
         // argument — preview, encoder, analysis and finder all read the same camera buffers.
         GLES20.glUniform1i(uSourceHlg, if (sourceHlg) 1 else 0)
         GLES20.glUniform1i(uSourceLog, if (sourceLog) 1 else 0)
+        GLES20.glUniform1i(uSourceMaker, if (sourceMaker) 1 else 0)
         GLES20.glUniform1f(uSourceLogHeadroom, sourceLogHeadroom)
         GLES20.glUniform1i(uSourceWide, if (sourceWide) 1 else 0)
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
@@ -698,6 +706,7 @@ internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
         ColorTransfer.SLOG3 -> 2
         ColorTransfer.SLOG3_CINE -> 4
         ColorTransfer.LOGC3 -> 5
+        ColorTransfer.MAKER_LOG -> 9
         // SDR = no OETF, same as the null path.
         ColorTransfer.SDR -> 0
     }

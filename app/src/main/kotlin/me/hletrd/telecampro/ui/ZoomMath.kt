@@ -98,6 +98,7 @@ internal val CameraUiState.mainRelativeZoomMultiplier: Float
             videoMode = mode == CaptureMode.VIDEO,
             rawWanted = photoFormats.dngRaw,
             rawForcesStandalone = rawForcesStandalone,
+            makerLog = makerLogRoute,
         ),
         phone = phoneModel,
         measuredMainEquivMm = lensInventory.presetEquivMm[LensChoice.MAIN],
@@ -460,6 +461,7 @@ internal fun remapModeOptics(
      * framing on every mode flip.
      */
     photoIsStandalone: Boolean,
+    videoIsStandalone: Boolean = true,
     /** Optical presets, so the conversion divides by the lens the route reaches (one-camera safe). */
     optical: Set<LensChoice>,
     /** The declared phone's chip positions (`CameraUiState.zoomPresets`) the bands follow. */
@@ -478,10 +480,10 @@ internal fun remapModeOptics(
     // local remap does not apply (it would rewrite the retained rear band from a front-local ratio).
     // Same early return as TELE/FRONT, for the same reason: when photo is ALSO standalone both
     // sides store a lens-local ratio, so a remap would corrupt rather than convert.
-    if (fromMode == toMode || teleconverter || lensLocalRoute || photoIsStandalone) {
+    if (fromMode == toMode || teleconverter || lensLocalRoute || photoIsStandalone == videoIsStandalone) {
         return ModeOptics(lens, modeControls)
     }
-    return if (toMode == CaptureMode.VIDEO) {
+    return if ((toMode == CaptureMode.VIDEO && videoIsStandalone) || (toMode == CaptureMode.PHOTO && photoIsStandalone)) {
         val band = LensChoice.forZoom(modeControls.zoomRatio, presets)
         ModeOptics(
             lens = band,
@@ -622,13 +624,14 @@ internal fun restoredOptics(
      * `false` default WAS that bug for any caller that forgot it.
      */
     photoStandalone: Boolean,
+    videoStandalone: Boolean = true,
     /**
      * The RESTORED phone's chip positions (`zoomPresetsFor(restored phone, inventory)`), the scale
      * a unified ratio is re-banded on — never the outgoing phone's.
      */
     presets: ZoomPresets,
 ): RestoredOptics {
-    val lensLocal = mode == CaptureMode.VIDEO || photoStandalone
+    val lensLocal = if (mode == CaptureMode.VIDEO) videoStandalone else photoStandalone
     val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {
         teleconverter || lensLocal -> 1f
         else -> presets.position(requestedLens)

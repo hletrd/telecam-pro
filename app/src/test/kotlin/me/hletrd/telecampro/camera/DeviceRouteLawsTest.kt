@@ -270,11 +270,11 @@ class EncoderSizeLadderTest {
  */
 class TransferEncoderHonestyTest {
     private val all = listOf(
-        ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.SDR,
+        ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.MAKER_LOG, ColorTransfer.SDR,
     )
 
     @Test
-    fun `the transfers are exactly HLG, the three industry-standard logs, and SDR`() {
+    fun `encoded formats include the native maker transport separately from app profiles`() {
         // The phone-maker curves (O-Log2 / O-Log / Mi-Log) were removed 2026-10-26.
         assertEquals(all, ColorTransfer.entries)
         assertEquals(listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3), VIDEO_LOG_PROFILES)

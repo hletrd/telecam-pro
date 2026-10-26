@@ -101,6 +101,7 @@ class UiSnapshotActivity : ComponentActivity() {
                                     val s = snapshotState
                                     val profile = if (s.transfer.isLog) s.transfer else s.logProfile
                                     snapshotState = when (mode) {
+                                        VideoColorMode.MAKER_LOG -> s.copy(transfer = ColorTransfer.MAKER_LOG, rawLog = false)
                                         VideoColorMode.OFF -> s.copy(transfer = ColorTransfer.SDR)
                                         VideoColorMode.HLG -> s.copy(transfer = ColorTransfer.HLG)
                                         VideoColorMode.LOG -> s.copy(transfer = profile, rawLog = false)
@@ -297,6 +298,7 @@ private fun snapshotTransferLabel(transfer: ColorTransfer): String = when (trans
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
+    ColorTransfer.MAKER_LOG -> "O-Log2"
     ColorTransfer.SDR -> "SDR"
 }
 

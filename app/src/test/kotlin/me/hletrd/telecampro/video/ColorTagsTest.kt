@@ -53,10 +53,10 @@ class ColorTagsTest {
     }
 
     @Test
-    fun logClassMembership_isExactlyTheThreeLogProfiles() {
+    fun logClassIncludesThreeProfilesAndTheNativeTransport() {
         // isLog drives the assist gate, the flat preview, and the tag policy above — pin it.
         assertEquals(
-            listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3),
+            listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.MAKER_LOG),
             ColorTransfer.entries.filter { it.isLog },
         )
     }

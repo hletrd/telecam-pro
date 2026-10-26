@@ -34,6 +34,7 @@ internal data class RendererConfig(
      * 709 — log applied twice, a plausible-looking wrong file.
      */
     val sourceLog: Boolean = false,
+    val sourceMaker: Boolean = false,
     /**
      * The ACHIEVED Log EI offset factor k (≥ 1) of the native-log repeating request: the scene-linear
      * ceiling of the GL native decode the log encode branches read (NativeLogCurve.kt). 1 = no

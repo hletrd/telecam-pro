@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-eight remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-nine remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -21,6 +21,7 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
+**A20** needs exact stock/product gamut comparison, TC research and a sustained native-Log soak,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -709,6 +710,45 @@ RAW Log → Log each cost exactly ONE reopen. A RAW LogC3 take and a RAW S-Log3 
 through the S-Log3 inverse and the LogC3 OETF predicts the LogC3 file's within 2 codes of 1023 at
 every percentile from p0.5 to p99.5 (median 258 → predicted 242.3, measured 241), so the GL re-encode
 of the developer's S-Log3 into LogC3 is right on device.
+
+### A20. Stock O-Log2 through the product GL recorder — ◐ HALF DONE 2026-10-26
+
+PMA110, `PMA110_17.0.0.106(CN01)`, stock Camera `7.006.119`. Immutable debug source
+`50e85d5c2b4e-47712c04` (attested working snapshot of the integration), ordinary `.debug` package.
+Gamma = Log (maker), rear 1×, 4K 29.97, TC off, colour chart. The camera opened logical 0,
+operation mode 0x830b, a single 3840×2160 TP10 stream (`0x7fa30c09`), STANDARD, dataspace
+`0x8c60000`, no stills or P010/ImageWriter bridge. Results report sensor mode 21, HDR mode 1 and
+two exposures, with the native Log gamma starting 754. The initial source-proof bug treated the
+zero-filled tail of the 1024-entry array as a curve point; this build checks the valid 256 entries.
+
+`VID_TELECAM_F1_1793003866245_0000000001.mp4`: 2160×3840 portrait-encoded HEVC Main10,
+`yuv420p10le`, BT.2020 nonconstant/full, transfer `bt2020-10`, AAC; 345 frames / 11.5115 s.
+Full FFmpeg decode exits zero. Maximum PTS interval 33.367 ms; no interval above 50 ms.
+The 3-second frame has 390 distinct Y10 levels, minimum 185, median 528, and 74.95% of samples
+use nonzero low two bits. This complements the direct-sampler probe's 640 distinct G10 levels;
+Main10 container metadata alone is not the source-precision proof.
+
+3× → Photo → Video restored the native logical session and 3× framing. TC on used ordinary
+standalone camera 4 / S-Log3 with P010 and stills; TC off returned to native camera 0 / O-Log2
+at 3×. The maker intent remains stored while the OSD names the accepted fallback. A host test
+also exercises a fractional 3.75× round trip through both ViewModel and Engine.
+
+**Integrated-menu build `003d09d1dc0b-e09eebf7`, same device/date:** the completed menu/GL changes
+were included. 59.94 fps and Open Gate each selected the ordinary P010 Log session and removed the
+maker option; restoring 29.97 / 16:9 restored native O-Log2. Process restart retained maker intent.
+Gamma Display Assist displayed normal contrast; recording stayed flat. With Assist on at 3×,
+`VID_TELECAM_F1_1793004848332_0000000001.mp4` saved 1669 frames / 55.694959 s, 4K Main10 + AAC,
+same full-range BT.2020 tags, zero full-decode errors and a maximum PTS interval of 33.367 ms.
+At 3 seconds, Y10 spans 180–621 with 441 distinct levels; 75.04% of samples use the low two bits.
+No camera session error occurred in these transitions or the take. This is a short recording check,
+not the outstanding thermal soak. All 2956 host JVM tests passed after the final failure-path review;
+manufacturer failure state now travels separately so policy/quarantine exception types stay intact.
+
+**Remaining:** exact colour/gamut equivalence (stock VideoColorBT709=1, extension result=0),
+matched highlight/clipping comparison of the product encode, long thermal soak, and additional
+TC operation-mode combinations. Earlier stock/probe matched-exposure gamma arrays were exactly
+equal, which establishes reported curves, not pixel identity. ColorOS 16 is source-compared,
+not verified with this integrated APK. Local evidence: `.context/stock-log-2026-10-26/product/`.
 
 ## B. Held in hand — 3 min
 

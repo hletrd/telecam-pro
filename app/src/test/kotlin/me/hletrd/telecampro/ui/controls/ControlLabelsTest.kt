@@ -339,6 +339,7 @@ class ControlLabelsTest {
             ColorTransfer.SLOG3 to "S-Log3",
             ColorTransfer.SLOG3_CINE to "S-Log3.Cine",
             ColorTransfer.LOGC3 to "LogC3",
+            ColorTransfer.MAKER_LOG to "O-Log2",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabel,
@@ -352,6 +353,7 @@ class ControlLabelsTest {
             // SG3C = the community shorthand for S-Gamut3.Cine.
             ColorTransfer.SLOG3_CINE to "SG3C",
             ColorTransfer.LOGC3 to "LOGC3",
+            ColorTransfer.MAKER_LOG to "O-Log2",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabelShort,
@@ -364,6 +366,7 @@ class ControlLabelsTest {
             me.hletrd.telecampro.R.string.gamma_mode_hlg,
             me.hletrd.telecampro.R.string.gamma_mode_log,
             me.hletrd.telecampro.R.string.gamma_mode_raw_log,
+            me.hletrd.telecampro.R.string.gamma_mode_maker_log,
         ),
         VideoColorMode.entries.map(::videoColorModeLabel),
     )
@@ -372,6 +375,8 @@ class ControlLabelsTest {
     fun `the Gamma chip names the mode, and RAW Log carries the OSD's RAW suffix`() {
         assertEquals("Off", videoColorModeChipValue(VideoColorMode.OFF, ColorTransfer.SDR, "Off"))
         assertEquals("HLG", videoColorModeChipValue(VideoColorMode.HLG, ColorTransfer.HLG, "Off"))
+        assertEquals("O-Log2", videoColorModeChipValue(VideoColorMode.MAKER_LOG, ColorTransfer.MAKER_LOG, "Off"))
+        assertEquals("SLOG3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.MAKER_LOG, "Off"))
         assertEquals("LOGC3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.LOGC3, "Off"))
         assertEquals("SG3C RAW", videoColorModeChipValue(VideoColorMode.RAW_LOG, ColorTransfer.SLOG3_CINE, "Off"))
     }

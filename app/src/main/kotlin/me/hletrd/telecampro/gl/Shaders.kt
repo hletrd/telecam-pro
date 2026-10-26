@@ -10,6 +10,7 @@ internal object ShaderBindings {
     const val U_TRANSFER = "uTransfer"
     const val U_SOURCE_HLG = "uSourceHlg"
     const val U_SOURCE_LOG = "uSourceLog"
+    const val U_SOURCE_MAKER = "uSourceMaker"
     const val U_SOURCE_LOG_HEADROOM = "uSourceLogHeadroom"
     const val U_SOURCE_WIDE = "uSourceWide"
     const val U_PEAKING = "uPeaking"
@@ -29,6 +30,7 @@ internal object ShaderBindings {
         U_TRANSFER,
         U_SOURCE_HLG,
         U_SOURCE_LOG,
+        U_SOURCE_MAKER,
         U_SOURCE_LOG_HEADROOM,
         U_SOURCE_WIDE,
         U_PEAKING,
@@ -106,6 +108,8 @@ object Shaders {
         // 1 when the CAMERA stream is S-Log3 (709 primaries) encoded by the ISP's programmed native
         // tone curve. Never together with uSourceHlg: native log is the 8-bit session by design.
         uniform int ${ShaderBindings.U_SOURCE_LOG};
+        // Confirmed factory O-Log2, BT.2020. Independent from the programmed S-Log3 transport.
+        uniform int ${ShaderBindings.U_SOURCE_MAKER};
         // Log EI offset (NativeLogCurve.kt): the ACHIEVED underexposure factor k >= 1 the ISP curve
         // lifted back (slog3(k * x)). The decode slog3Inverse(code) is already scene-linear k * x —
         // the inverse needs no k — so k is the ceiling of that decode's domain [0, k]. 1 = no offset.
@@ -115,7 +119,7 @@ object Shaders {
         uniform int ${ShaderBindings.U_SOURCE_WIDE};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3; 3 and 6/7/8 = vacant (retired de-log branch,
-                                 // removed phone-maker curves)
+                                 // removed phone-maker curves); 9 = confirmed maker-source passthrough
         uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
         uniform float ${ShaderBindings.U_PEAK_THRESHOLD}; // edge magnitude above which peaking paints
         uniform vec3 ${ShaderBindings.U_PEAK_COLOR};      // peaking highlight color
@@ -176,8 +180,24 @@ object Shaders {
             return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
         }
 
+        vec3 makerSourceLinear(vec3 code) {
+            vec3 hi = exp2((code - ${MakerLogSource.DELTA}) / ${MakerLogSource.GAMMA}) - ${MakerLogSource.BETA};
+            vec3 lo = sqrt(max(code, vec3(0.0)) / ${MakerLogSource.TOE}) + ${MakerLogSource.R0};
+            return mix(hi, lo, step(code, vec3(${MakerLogSource.CUT_CODE})));
+        }
+
+        vec3 makerDisplaySample(vec3 c) {
+            vec3 lin2020 = makerSourceLinear(c);
+            vec3 lin709 = mat3(
+                1.660491, -0.124550, -0.018151,
+                -0.587641, 1.132900, -0.100579,
+                -0.072850, -0.008349, 1.118730) * lin2020;
+            return pow(clamp(lin709, 0.0, 1.0), vec3(1.0 / SDR_EOTF_GAMMA));
+        }
+
         vec3 sampleSource(vec2 uv) {
             vec3 c = texture2D(uTexture, uv).rgb;
+            if (uSourceMaker == 1) return makerDisplaySample(c);
             if (uSourceLog == 0) return c;
             if (uSourceWide == 1) return wideDisplaySample(c);
             vec3 lin = clamp(slog3Inverse(c) * uSourceLogHeadroom, 0.0, 1.0);
@@ -319,6 +339,11 @@ object Shaders {
         }
 
         void main() {
+            // Encoder/native flat preview: preserve camera codes and avoid monitor-decode work.
+            if (uTransfer == 9 && uSourceMaker == 1 && uPeaking == 0 && uZebra == 0 && uFalseColor == 0) {
+                gl_FragColor = vec4(texture2D(uTexture, vTexCoord).rgb, 1.0);
+                return;
+            }
             vec3 base = dgain(sampleSource(vTexCoord));
             vec3 color = base;
             // Exposure signal for the zebra / false-color overlays: ALWAYS the display-referred
@@ -353,6 +378,11 @@ object Shaders {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
                 vec3 lin = logInputLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
+            } else if (uTransfer == 9) {
+                // Factory Log is already encoded. Never run it through a second OETF or 709 clamp.
+                // A refused/unsupported maker request records the ordinary S-Log3 fallback.
+                color = uSourceMaker == 1 ? texture2D(uTexture, vTexCoord).rgb
+                    : slog3(gamutFloor(toSGamut3(logInputLinear(base))));
             }
 
             // False color: map exposure (luma) to IRE-style bands (display-referred, see meter).

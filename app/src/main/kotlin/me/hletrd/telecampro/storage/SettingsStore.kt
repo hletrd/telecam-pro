@@ -354,7 +354,7 @@ class SettingsStore(
                 transfer = restoredTransfer,
                 // A blob from before the key existed remembers the log it was recording, if any.
                 logProfile = migratedTransferName(safeString("${prefix}logProfile", null), restoredTransfer)
-                    .takeIf { it.isLog } ?: ed.logProfile,
+                    .takeIf { it in me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES } ?: ed.logProfile,
                 heif = safeBoolean("${prefix}heif", ed.heif),
                 jpeg = safeBoolean("${prefix}jpeg", ed.jpeg),
                 dngRaw = safeBoolean("${prefix}dngRaw", ed.dngRaw),

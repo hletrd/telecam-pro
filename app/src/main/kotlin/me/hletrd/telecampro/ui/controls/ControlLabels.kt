@@ -495,6 +495,7 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
+    ColorTransfer.MAKER_LOG -> "O-Log2"
     ColorTransfer.SDR -> "SDR"
 }
 
@@ -504,6 +505,7 @@ internal fun videoColorModeLabel(mode: VideoColorMode): Int = when (mode) {
     VideoColorMode.HLG -> me.hletrd.telecampro.R.string.gamma_mode_hlg
     VideoColorMode.LOG -> me.hletrd.telecampro.R.string.gamma_mode_log
     VideoColorMode.RAW_LOG -> me.hletrd.telecampro.R.string.gamma_mode_raw_log
+    VideoColorMode.MAKER_LOG -> me.hletrd.telecampro.R.string.gamma_mode_maker_log
 }
 
 /**
@@ -522,8 +524,9 @@ internal fun videoColorModeChipValue(mode: VideoColorMode, transfer: ColorTransf
     when (mode) {
         VideoColorMode.OFF -> offLabel
         VideoColorMode.HLG -> transferLabelShort(ColorTransfer.HLG)
-        VideoColorMode.LOG -> transferLabelShort(transfer)
+        VideoColorMode.LOG -> transferLabelShort(me.hletrd.telecampro.camera.effectiveRecordingTransfer(transfer, false))
         VideoColorMode.RAW_LOG -> transferLabelShort(transfer) + " RAW"
+        VideoColorMode.MAKER_LOG -> "O-Log2"
     }
 
 /** Log EI offset value label: "0", "+1 EV", "+2 EV", "+3 EV" (EV stays Latin, like the EV ruler). */
@@ -543,5 +546,6 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     // SG3C = the community-standard shorthand for S-Gamut3.Cine (the full name won't fit the OSD).
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
+    ColorTransfer.MAKER_LOG -> "O-Log2"
     ColorTransfer.SDR -> "SDR"
 }

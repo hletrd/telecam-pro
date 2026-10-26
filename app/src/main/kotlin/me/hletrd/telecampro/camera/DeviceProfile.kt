@@ -101,6 +101,8 @@ internal data class DeviceProfile(
      * ([tenBitNativeLogBridgeSupported]).
      */
     val tenBitNativeLogBridge: Boolean = false,
+    /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
+    val makerLogPipeline: Boolean = false,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -114,6 +116,7 @@ internal data class DeviceProfile(
             nativeLogEiSupported = false,
             nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
+            makerLogPipeline = true,
         )
 
         val GENERIC = DeviceProfile(

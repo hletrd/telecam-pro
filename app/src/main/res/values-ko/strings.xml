@@ -587,4 +587,7 @@
     <string name="hint_photo_ois">사진 광학식 손떨림 보정입니다. 삼각대에서는 끄세요.</string>
     <string name="hint_waveform">화면 왼쪽부터 오른쪽까지의 밝기입니다.</string>
     <string name="hint_zebra">과노출에 가까운 영역에 줄무늬를 표시합니다.</string>
+    <string name="gamma_mode_maker_log">Log (제조사)</string>
+    <string name="caption_maker_log">O-Log2 · 10비트 · 사진 촬영 불가</string>
+    <string name="caption_maker_log_8bit">O-Log2 · 8비트 출력 · 사진 촬영 불가</string>
 </resources>

@@ -208,6 +208,22 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun nativeMakerModePersistsSeparatelyFromTheAppLogProfile() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        val extras = ExtraSettings(transfer = ColorTransfer.MAKER_LOG, logProfile = ColorTransfer.LOGC3)
+        assertTrue(store.save(ManualControls(zoomRatio = 3.75f), extras))
+        assertTrue(store.savePreset(MemorySlot.MR1, ManualControls(zoomRatio = 3.75f), extras, "Maker", "O-Log2"))
+        for (saved in listOf(store.load(), store.loadPreset(MemorySlot.MR1))) {
+            assertEquals(ColorTransfer.MAKER_LOG, saved?.extras?.transfer)
+            assertEquals(ColorTransfer.LOGC3, saved?.extras?.logProfile)
+        }
+        // A pipeline enum can never become the remembered app-curve profile.
+        prefs.edit().putString("logProfile", "MAKER_LOG").commit()
+        assertEquals(ColorTransfer.SLOG3, store.load()?.extras?.logProfile)
+    }
+
+    @Test
     fun logProfileRoundTripsAndFallsBackToTheRestoredLog() {
         val prefs = FakePrefs()
         val store = SettingsStore(prefs)

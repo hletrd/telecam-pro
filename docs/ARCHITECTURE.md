@@ -25,7 +25,7 @@
 
 ## Overview
 
-A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video whose Gamma is a mode — Off (SDR), HLG, Log (S-Log3 / S-Log3.Cine / LogC3 applied on the ISP pipeline), or an EXPERIMENTAL RAW Log that develops the same profiles in-app from the RAW stream (owner decision 2026-10-26; the per-phone maker curves O-Log2 / O-Log / Mi-Log were removed the same day). Log video on a camera that takes a programmed `CONTRAST_CURVE` (every PMA110 camera) is NATIVE ISP log: the ordinary session with stills, whose repeating request swaps the stock tone curve for S-Log3 — 8-bit, or ten-bit on a measured profile whose camera carries the GL stream as YCBCR_P010 through `P010InputBridge` (stills kept). HLG video, and log on a camera without that capability, request an HLG10 Camera2 session with still readers removed; that stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through an 8-bit EGL target (RGBA1010102 on a `tenBitNativeLogBridge` profile), then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). This does not recover ISP-removed highlights and does not make the log profiles scene-referred camera log.
+A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video whose Gamma is a mode — Off (SDR), HLG, Log (S-Log3 / S-Log3.Cine / LogC3 applied on the ISP pipeline), or an EXPERIMENTAL RAW Log that develops the same profiles in-app from the RAW stream (owner decision 2026-10-26; the per-phone maker curves O-Log2 / O-Log / Mi-Log were removed the same day). Log video on a camera that takes a programmed `CONTRAST_CURVE` (every PMA110 camera) is NATIVE ISP log: the ordinary session with stills, whose repeating request swaps the stock tone curve for S-Log3 — 8-bit, or ten-bit on a measured profile whose camera carries the GL stream as YCBCR_P010 through `P010InputBridge` (stills kept). HLG video, and log on a camera without that capability, request an HLG10 Camera2 session with still readers removed; that stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through an 8-bit EGL target (RGBA1010102 on a `tenBitNativeLogBridge` profile), then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). These app-generated mappings do not recover ISP-removed highlights or become scene-referred camera log. A separate Gamma = Log (maker) mode selects the measured OEM O-Log2/HDR pipeline on the supported rear route; see Video Pipeline below.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -58,6 +58,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only (the per-phone maker-log product fact `nativeLogFlavor` was removed with those curves, 2026-10-26). `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
+| `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
 | `RawLog.kt` | EXPERIMENTAL RAW log gates, pure and host-tested: `rawLogTransfer` (every log profile — S-Log3 / S-Log3.Cine / LogC3; GL re-encodes the developer's S-Log3), `rawStreamSustains` (the RAW stream's advertised minimum frame duration against the selected rate), `rawLogSupported` (developable rear camera + the PMA110 RAW route law), `rawLogSessionWanted`, and `rawLogOffered` for Gamma = RAW Log (`VideoColorMode`, CameraState.kt). |
@@ -751,6 +752,7 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `logicalStillRequiresYuv` | `true` | `false` | `resolveMustUseYuvStill` → `sessionAttemptPlan` (YUV still on the logical rear route; FRONT's YUV lane stays an optimisation) |
 | `videoMinFrameDurationsUnderstated` | `true` | `false` | `CameraCaps.read(gateVideoRatesOnMinFrameDuration)` fills `videoMinFrameDurationsNs`, which `VideoFrameRate.availableFor` uses to drop rates the selected size's advertised SurfaceTexture minimum frame duration cannot sustain; PMA110's TELE advertises 30 fps at 3840×2160 yet records ~60 |
 | `nativeLogCurveMeasured` | `true` (the programmed S-Log3 curve measured landing scene levels where the convention puts them, 2026-10-14) | `false` (unmeasured; in one dim room the Galaxy Z Flip6 decoded a chart's white to the same ~5½-stops-under level as PMA110, 2026-10-26) | NOT a route gate — native log still runs wherever the curve is advertised (owner decision 2026-10-26). `CameraEngine.nativeLogCurveMeasured` → `CameraUiState.nativeLogCurveVerified`; false shows the one-line Caution warning under Gamma = Log on the native path (`nativeLogUnverifiedWarningVisible`) |
+| `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no TC/pin/Open Gate, up to 30 fps; actual result confirmation gates Ready and recording source truth |
 | `nativeLogEiSupported` | `false` (measured: ISP output not exposure-linear under the programmed curve, 2026-10-15) | `true` (spec: linear TONEMAP_CURVE input; unmeasured) | `CameraController.repeatingNativeLogEiStops` forces wire offset 0 when false; `CameraEngine.nativeLogEiSupported` → `CameraUiState.nativeLogEiSupported` hides the Video-tab "Log EI Offset" row and the OSD " +N" |
 | `tenBitNativeLogBridge` | `true` (measured 2026-10-25: P010 + S-Log3 curve + JPEG + RAW on cam 2 and on cam 4 under 0x80b4; ten bits reach GL and the file) | `false` (unmeasured; a HAL may advertise P010 + STANDARD and still reject or mis-tag it) | `CameraEngine.tenBitNativeLogStreamFor` resolves the GL input size for `CameraController.open(tenBitNativeLogStream)` when the capability half also holds (`CameraCaps.p010StandardAdvertised`, the size in `CameraCaps.p010OutputSizes`, not FRONT); the controller builds a `P010InputBridge` on the first try of each rung and retries that rung 8-bit if it is refused. True also starts every GL generation on an RGBA1010102 EGL config |
 | `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId`; every UI route decision reads `CameraEngine.rawForcesStandalone` via `CameraViewModel.standaloneRouteFor`, while `CameraUiState.rawForcesStandalone` is display copy only, PMA110 default until the first inventory) |
@@ -971,15 +973,36 @@ unused.
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
-them. The shipping Log path remains the programmed ISP curve/GL pipeline described below. Separate
-research on 2026-10-25/26 reached the stock O-Log2 route on ColorOS 17 through paired Camera2 session
-tags (`is.sdk.camera.package=1` and `is.from.extension=1`), with real Main10 files and identical
-reported stock/probe gamma arrays at matched exposure. This is not integrated in TeleCam Pro.
-The probe's ImageWriter bridge variants fail on both native and generic control sessions (cause not
-isolated), standalone routes have different HDR metadata, and the tested `0x80b4` TC combination
-does not yield the same Log gamma. Native input needs
-a distinct O-Log2 source decode and verified YUV matrix; current S-Log3/JFIF assumptions cannot be
-reused. See CLAUDE.md's stock Log entry for the recipe, authentication/presence trap and evidence limits.
+them. Gamma = **Log (maker)** integrates the stock O-Log2 pipeline on the PMA110 profile through
+logical camera 0: session type `0x830b`, paired `is.sdk.camera.package=1` (byte array) and
+`is.from.extension=1` (int), NUL-terminated `pro_video_log_mode`, `log.video.mode=0` and
+`camera.is.from.main.menu=1`, on both session parameters and TEMPLATE_RECORD repeating requests.
+It is offered on the rear automatic route at up to 30 fps, without TC or Open Gate. No SDK library
+or package impersonation is involved. The SDK tag must be omitted entirely on ordinary fallback.
+
+`MakerLog.kt` owns eligibility, effective fallback and the source proof: operation mode 0x830b,
+Log format 0 and an actual 1024-entry gamma table with black 754 and an increasing first 256 entries
+(the rest are padding). Ready is deferred until this proof; 30 unconfirmed results rebuild the
+ordinary S-Log3 session. Fatal camera failure marks the native route refused for recovery, and an
+explicit Gamma selection may retry. Requested intent survives refusal, TC, FPS and route changes;
+`PhotoSessionOutputs.makerLog` owns accepted source/recording truth. Gamma transitions remap
+lens-local/unified zoom and clear the cached camera ID inside the optics transaction; MR/restore,
+Photo transitions and front-route snapshots use the same route scale.
+
+The OEM mode supplies **TP10 directly to the PRIVATE SurfaceTexture**, with STANDARD dynamic range
+and BT.2020 full-range dataspace `0x8c60000`. It needs no ImageWriter bridge and carries no still
+readers. `RendererConfig.sourceMaker` is replayed with each GL generation. Shader ID 9 preserves the
+source codes for recording through RGBA1010102 to HEVC Main10; the measured clip retains 10-bit
+levels. IDs 3/6/7/8 remain retired, and maker mode is excluded from the app/RAW log-profile picker.
+`MakerLogSource` decodes only for monitor assists, separately from the S-Log3/JFIF path. The ordinary
+native-curve EI offset never alters the maker source. Source/GL precision drives the caption.
+
+Matched-exposure stock/probe gamma arrays were identical. Product testing confirms sensor mode 21,
+HDR mode 1/two exposures and error-free 4K Main10 + AAC recording (FIELD_CHECKS A20). Pixel identity
+and exact gamut equivalence remain unproven: stock's VideoColorBT709 result differs. Standalone and
+TC operation modes did not reproduce the full same processing signature; native TC is withheld.
+ColorOS 16 shares the named configure-stage protocol but this integration is device-tested on 17.
+See CLAUDE.md's stock Log entry for the service/presence trap and evidence limits.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
 **Video resolution and frame rates:**

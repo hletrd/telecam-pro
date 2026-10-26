@@ -161,6 +161,15 @@ class CameraController internal constructor(
     // @Volatile for visibility; updateControls confines the actual write to the handler thread.
     @Volatile private var controls = ManualControls()
     private var tenBitHlg = false
+    // OEM pipeline intent, per-attempt refusal and accepted capture-result proof.
+    private var makerLogRequested = false
+    private var makerLogRefused = false
+    private var makerLogAttempt = false
+    private var pendingMakerConfirmation: ((CameraCaptureSession, TotalCaptureResult) -> Unit)? = null
+    @Volatile var makerLogConfigured = false
+        private set
+    @Volatile var makerLogFailed = false
+        private set
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -370,6 +379,7 @@ class CameraController internal constructor(
         // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
+        makerLog: Boolean = false,
         highSpeedFps: Int = 0,
         // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
         // that forgot one compiled and silently opened with stabilization off, the TC hints off,
@@ -394,6 +404,8 @@ class CameraController internal constructor(
         // the shared slot. Publish terminality BEFORE invoking that callback so supersession cleanup
         // can never mistake the outgoing native owner for a restorable one in the callback→close gap.
         val terminalError = ErrorCb { failure ->
+            // Keep the original exception class: policy/quarantine handling also consumes it.
+            if (makerLogAttempt) makerLogFailed = true
             reportTerminalCameraFailure(dualOpenRestorability, failure, onError::onError)
         }
         this.selection = selection
@@ -415,6 +427,12 @@ class CameraController internal constructor(
                 if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
             )
         }
+        this.makerLogRequested = makerLog && deviceProfile.makerLogPipeline && caps.isLogicalMultiCamera &&
+            selection.physicalId == null && !caps.lensFacingFront
+        this.makerLogRefused = false
+        this.makerLogConfigured = false
+        this.makerLogFailed = false
+        this.pendingMakerConfirmation = null
         this.tenBitHlg = tenBitHlg
         // Re-checked against THIS camera's caps: the engine resolves the same predicate from the
         // same caps, so this only matters if a future caller passes intent instead of a decision.
@@ -629,6 +647,16 @@ class CameraController internal constructor(
         }
     }
 
+    /** OEM session protocol; every key is repeated on the recording request. */
+    private fun CaptureRequest.Builder.applyMakerLogParameters() {
+        set(CaptureRequest.Key(MakerLogProtocol.SDK_PACKAGE, ByteArray::class.java), byteArrayOf(1))
+        set(CaptureRequest.Key(MakerLogProtocol.FROM_EXTENSION, Int::class.javaObjectType), 1)
+        set(CaptureRequest.Key(MakerLogProtocol.CAMERA_MODE, ByteArray::class.java),
+            (MakerLogProtocol.MODE_NAME + "\u0000").toByteArray(Charsets.UTF_8))
+        set(CaptureRequest.Key(MakerLogProtocol.LOG_MODE, Int::class.javaObjectType), 0)
+        set(CaptureRequest.Key(MakerLogProtocol.FROM_MAIN_MENU, ByteArray::class.java), byteArrayOf(1))
+    }
+
     /**
      * Programs the native S-Log3 tone curve (NativeLogCurve.kt) on a native-log session's REPEATING
      * request; a no-op otherwise, so every non-log request stays byte-identical. Not guarded by
@@ -638,6 +666,7 @@ class CameraController internal constructor(
      * Edge/NR are deliberately untouched: they remain the operator's controls.
      */
     private fun CaptureRequest.Builder.applyNativeLogToneCurve(eiFactor: Double) {
+        if (makerLogAttempt) return
         val base = nativeLogCurvePoints ?: return
         // Log EI offset: the curve lifts the ACHIEVED underexposure back (slog3(k·x)). k = 1 is the
         // historical array object itself, so an N = 0 request is byte-identical.
@@ -659,7 +688,7 @@ class CameraController internal constructor(
      * native-log session, 0 everywhere else (photo, HLG/SDR video, the GL-log fallback, high speed).
      */
     private fun repeatingNativeLogEiStops(c: ManualControls): Int =
-        if (nativeLogCurvePoints != null && highSpeedFps == 0 && deviceProfile.nativeLogEiSupported) {
+        if (!makerLogAttempt && nativeLogCurvePoints != null && highSpeedFps == 0 && deviceProfile.nativeLogEiSupported) {
             c.logEiOffsetStops
         } else {
             0
@@ -824,6 +853,10 @@ class CameraController internal constructor(
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
+        pendingMakerConfirmation = null
+        makerLogConfigured = false
+        val useMakerLog = makerLogRequested && !makerLogRefused
+        makerLogAttempt = useMakerLog
         val attempt = configAttempt
         val attemptToken = configureGate.begin()
         // The measured JPEG-blob failure belongs to PMA110's LOGICAL camera only. FRONT uses YUV on
@@ -865,7 +898,7 @@ class CameraController internal constructor(
         // (no HLG profile, no still readers — the developer, not the ISP, makes every frame), so the
         // plan's HLG/JPEG/RAW terms below stand down while it is present.
         val rawStream = rawLogStream
-        val rawBridge = if (rawStream != null && !rawLogRefused && !caps.lensFacingFront) {
+        val rawBridge = if (!useMakerLog && rawStream != null && !rawLogRefused && !caps.lensFacingFront) {
             runCatching {
                 val chars = rawChars ?: readRawCharacteristics() ?: error("no characteristics")
                 val rawSize = caps.rawSize ?: error("no RAW size")
@@ -879,13 +912,13 @@ class CameraController internal constructor(
             null
         }
         rawLogBridge = rawBridge
-        val sessionHlg = useHlg && rawBridge == null
+        val sessionHlg = useHlg && rawBridge == null && !useMakerLog
 
         // Ten-bit native log: the same rung, with the GL stream carried as P010 (STANDARD profile)
         // through the bridge instead of the 8-bit PRIVATE SurfaceTexture stream. Never with HLG10
         // (that rung is the GL-log fallback for curve-less cameras, which never resolve a size).
         val bridgeSize = p010BridgeSize
-        val bridge = if (rawBridge == null && bridgeSize != null && !p010BridgeRefused && nativeLogCurve && !useHlg) {
+        val bridge = if (!useMakerLog && !makerLogRefused && rawBridge == null && bridgeSize != null && !p010BridgeRefused && nativeLogCurve && !useHlg) {
             runCatching { P010InputBridge.create(preview, bridgeSize.width, bridgeSize.height) }
                 .onFailure { failure ->
                     p010BridgeRefused = true
@@ -905,7 +938,7 @@ class CameraController internal constructor(
         }
         configs.add(previewCfg)
 
-        if (useJpeg && rawBridge == null) {
+        if (useJpeg && rawBridge == null && !useMakerLog) {
             // The LOGICAL multicamera can't allocate the full-size JPEG blob (device-observed
             // gralloc "SnapAlloc: ValidateDescriptor invalid" — the image never arrives and the
             // shot dies), so stills there come as YUV and the app encodes them itself (the save
@@ -959,7 +992,7 @@ class CameraController internal constructor(
             }
         }
 
-        if (useRaw && rawBridge == null) caps.rawSize?.let { size ->
+        if (useRaw && rawBridge == null && !useMakerLog) caps.rawSize?.let { size ->
             val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
             reader.setOnImageAvailableListener({ onImage(it, isRaw = true) }, handler)
             rawReader = reader
@@ -974,6 +1007,7 @@ class CameraController internal constructor(
             // EIS; device-measured 2026-10-26, RAW-only on camera 4 under 0x80b4 failed configure
             // with -38 and left the camera device in its ERROR state.
             vendorOperationMode = plan.useVendorOperationMode && rawBridge == null,
+            makerLogOperationMode = useMakerLog,
             outputs = configs,
             callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
@@ -982,11 +1016,11 @@ class CameraController internal constructor(
                     session = s
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = sessionHlg
-                    nativeLogConfigured = nativeLogCurve
-                    tenBitNativeLogConfigured = p010Bridge != null
+                    nativeLogConfigured = nativeLogCurve && !useMakerLog
+                    tenBitNativeLogConfigured = p010Bridge != null || useMakerLog
                     rawLogConfigured = rawLogBridge != null
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$sessionHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, rawLog=${rawLogBridge != null}, jpeg=${jpegReader != null}, raw=${rawReader != null}, hiRes=$hiResReaderActive)")
+                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$sessionHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, rawLog=${rawLogBridge != null}, makerLog=$useMakerLog, jpeg=${jpegReader != null}, raw=${rawReader != null}, hiRes=$hiResReaderActive)")
                     }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
@@ -1007,19 +1041,43 @@ class CameraController internal constructor(
                             }
                         })
                     }
+                    val deliverReady = {
+                        onReady.onReady(acceptedPhotoSessionOutputs(
+                            plan, jpegReader != null, rawReader != null, hiResReaderActive,
+                            p010BridgePresent = p010Bridge != null,
+                            rawLogPresent = rawLogBridge != null,
+                            makerLogPresent = makerLogConfigured,
+                        ))
+                    }
+                    if (useMakerLog) {
+                        var frames = 0
+                        pendingMakerConfirmation = confirmation@{ callbackSession, result ->
+                            if (closed || callbackSession !== s) return@confirmation
+                            val confirmed = runCatching {
+                                makerLogSourceConfirmed(
+                                    result.get(CaptureResult.Key(MakerLogProtocol.OPERATION_MODE, IntArray::class.java))?.firstOrNull(),
+                                    result.get(CaptureResult.Key(MakerLogProtocol.LOG_MODE, IntArray::class.java))?.firstOrNull(),
+                                    result.get(CaptureResult.Key(MakerLogProtocol.GAMMA_INFO, IntArray::class.java)),
+                                )
+                            }.getOrDefault(false)
+                            if (confirmed) {
+                                pendingMakerConfirmation = null
+                                makerLogConfigured = true
+                                deliverReady()
+                            } else if (++frames >= 30) {
+                                pendingMakerConfirmation = null
+                                makerLogRefused = true
+                                runCatching { s.stopRepeating() }
+                                runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                            }
+                        }
+                    }
                     when (sessionStartDelivery(startPreview())) {
-                        SessionStartDelivery.READY -> onReady.onReady(
-                            acceptedPhotoSessionOutputs(
-                                plan = plan,
-                                processedReaderPresent = jpegReader != null,
-                                rawReaderPresent = rawReader != null,
-                                hiResReaderPresent = hiResReaderActive,
-                                p010BridgePresent = p010Bridge != null,
-                                rawLogPresent = rawLogBridge != null,
-                            ),
-                        )
-                        SessionStartDelivery.ERROR ->
+                        SessionStartDelivery.READY -> if (!useMakerLog) deliverReady()
+                        SessionStartDelivery.ERROR -> {
+                            pendingMakerConfirmation = null
                             onError.onError(IllegalStateException("repeating preview request failed"))
+                        }
                     }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
@@ -1030,6 +1088,11 @@ class CameraController internal constructor(
                     if (closed) return
                     // The synchronous throw below already handled this attempt when it came with one.
                     if (!configureGate.claim(attemptToken)) return
+                    if (useMakerLog) {
+                        makerLogRefused = true
+                        runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                        return
+                    }
                     // A failed RAW log attempt retries the SAME rung on the native-log path: the
                     // RAW-only shape was the experiment, not the rung.
                     if (rawLogBridge != null) {
@@ -1073,10 +1136,25 @@ class CameraController internal constructor(
         // Fully defensive — a session-parameter failure falls back to a plain session, not a dead camera.
         runCatching {
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            if (useMakerLog) {
+                // Seed the factory warm-start with this take's exposure/FPS, rather than a previous
+                // camera client's potentially multi-second low-light exposure.
+                sp.applyManualControls(controls, caps, pinAutoFps = pinAutoFps,
+                    previewExposureCap = true, enforceFrameRate = pinAutoFps, videoMode = true,
+                    nativeLogEiStops = 0)
+            }
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
+            if (useMakerLog) sp.applyMakerLogParameters()
             sessionConfig.setSessionParameters(sp.build())
-        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
+        }.onFailure {
+            if (useMakerLog) {
+                makerLogRefused = true
+                configureSession(onReady, onError)
+                return
+            }
+            if (BuildConfig.DEBUG) Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}")
+        }
         // createCaptureSession can throw SYNCHRONOUSLY (realistic: a future ColorOS rejecting the
         // vendor sessionType 0x80b4 with IllegalArgumentException instead of onConfigureFailed).
         // Uncaught, that surfaces as terminal onError WITHOUT advancing the ladder — the exact
@@ -1088,6 +1166,11 @@ class CameraController internal constructor(
                 // Camera2 also posts onConfigureFailed for this attempt; whichever runs first owns it,
                 // and this synchronous path always runs first.
                 if (!configureGate.claim(attemptToken)) return@onFailure
+                if (useMakerLog && !configureFailureIsDeviceFatal(failure)) {
+                    makerLogRefused = true
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                    return@onFailure
+                }
                 if (configureFailureIsDeviceFatal(failure)) {
                     // The device itself is gone: every rung below would fail on it in microseconds.
                     // Report once and let the Engine's bounded recovery reopen a fresh device. A RAW log
@@ -1170,10 +1253,11 @@ class CameraController internal constructor(
     @android.annotation.SuppressLint("WrongConstant")
     private fun regularOrVendorSessionConfiguration(
         vendorOperationMode: Boolean,
+        makerLogOperationMode: Boolean,
         outputs: List<OutputConfiguration>,
         callback: CameraCaptureSession.StateCallback,
     ): SessionConfiguration = SessionConfiguration(
-        if (vendorOperationMode) VENDOR_TC_SESSION_TYPE else SessionConfiguration.SESSION_REGULAR,
+        if (makerLogOperationMode) MakerLogProtocol.SESSION_TYPE else if (vendorOperationMode) VENDOR_TC_SESSION_TYPE else SessionConfiguration.SESSION_REGULAR,
         outputs,
         executor,
         callback,
@@ -1349,7 +1433,7 @@ class CameraController internal constructor(
         val faceReadout = facePriorityKeysFor(controls, caps.faceCapability(), afOverrideActive = false) != null
         var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
-            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            val builder = camera.createCaptureRequest(if (makerLogAttempt) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
                 // The RAW log or P010 bridge's reader when one configured, else the GL input Surface.
                 addTarget(cameraOutputSurface ?: preview)
                 // The RAW developer applies the frame's own lens-shading map (RAW is pre-shading).
@@ -1379,6 +1463,7 @@ class CameraController internal constructor(
                 // The curve is ALWAYS the plain S-Log3: GL applies the EI lift after decoding (a
                 // k-scaled curve was measured not to lift on PMA110, see Shaders.nativeSceneLinear).
                 applyNativeLogToneCurve(1.0)
+                if (makerLogAttempt) applyMakerLogParameters()
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
@@ -1399,6 +1484,7 @@ class CameraController internal constructor(
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
+                    pendingMakerConfirmation?.invoke(session, result)
                     // Pair this repeating result with its ring frame (EXIF/admission truth for the
                     // pseudo-ZSL serve path). Same camera thread as the reader listener.
                     if (zslTargetAttached && !zslStreamingBroken) zslRingAttachResult(result)
@@ -2823,6 +2909,7 @@ class CameraController internal constructor(
             if (!openAttempted) deviceCloseOwner.proveNoDeviceWillArrive()
             deviceCloseOwner.armClose(device)
             val teardown = Runnable {
+                pendingMakerConfirmation = null
                 runCameraTeardownCleanup(
                     cleanup = {
                         var nativeReleaseFailure: Throwable? = null
@@ -3110,12 +3197,14 @@ internal fun acceptedPhotoSessionOutputs(
     hiResReaderPresent: Boolean,
     p010BridgePresent: Boolean = false,
     rawLogPresent: Boolean = false,
+    makerLogPresent: Boolean = false,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
     // A RAW log session never carries the HLG10 profile, whatever the plan asked for.
-    hlg = plan.useHlg && !rawLogPresent,
-    tenBitNativeLog = p010BridgePresent,
+    hlg = plan.useHlg && !rawLogPresent && !makerLogPresent,
+    tenBitNativeLog = p010BridgePresent || makerLogPresent,
+    makerLog = makerLogPresent,
     rawLog = rawLogPresent,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).

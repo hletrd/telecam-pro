@@ -896,10 +896,10 @@ class CameraViewModelRobolectricTest {
         )
         setState(v) { it.copy(caps = developable, videoFrameRate = VideoFrameRate.FPS_29_97) }
         assertEquals(VideoColorMode.RAW_LOG, v.state.value.videoColorMode)
-        assertEquals(VideoColorMode.entries, v.state.value.videoColorModes)
+        assertEquals(VideoColorMode.entries - VideoColorMode.MAKER_LOG, v.state.value.videoColorModes)
         setState(v) { it.copy(videoFrameRate = VideoFrameRate.FPS_59_94) }
         assertEquals(VideoColorMode.LOG, v.state.value.videoColorMode)
-        assertEquals(VideoColorMode.entries - VideoColorMode.RAW_LOG, v.state.value.videoColorModes)
+        assertEquals(VideoColorMode.entries - setOf(VideoColorMode.RAW_LOG, VideoColorMode.MAKER_LOG), v.state.value.videoColorModes)
         assertTrue("the intent is kept for a route that can honour it", v.state.value.rawLog)
     }
 

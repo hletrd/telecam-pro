@@ -11,7 +11,7 @@ package me.hletrd.telecampro.camera
  * S-Gamut3.Cine; GL decodes that unclamped and re-encodes the selected profile, so the profile is a
  * GL choice and switching among them never reopens the RAW session.
  */
-fun rawLogTransfer(transfer: ColorTransfer): Boolean = transfer.isLog
+fun rawLogTransfer(transfer: ColorTransfer): Boolean = transfer in VIDEO_LOG_PROFILES
 
 /**
  * Whether the RAW stream's advertised minimum frame duration sustains [fps]. Zero means "not
