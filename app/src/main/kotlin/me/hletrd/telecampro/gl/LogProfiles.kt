@@ -105,6 +105,13 @@ internal object LogProfiles {
         ),
     )
 
+    /** Linear BT.2020 camera input -> BT.709 working coordinates; keep out-of-709 negatives. */
+    val REC709_FROM_BT2020: DoubleArray = invert3(doubleArrayOf(
+        SdrToHlgMapping.R_FROM_R, SdrToHlgMapping.R_FROM_G, SdrToHlgMapping.R_FROM_B,
+        SdrToHlgMapping.G_FROM_R, SdrToHlgMapping.G_FROM_G, SdrToHlgMapping.G_FROM_B,
+        SdrToHlgMapping.B_FROM_R, SdrToHlgMapping.B_FROM_G, SdrToHlgMapping.B_FROM_B,
+    ))
+
     private fun invert3(m: DoubleArray): DoubleArray {
         val det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) +
             m[2] * (m[3] * m[7] - m[4] * m[6])
@@ -219,7 +226,13 @@ internal object LogProfiles {
         // [sceneLinear]: the inputs ARE linear light already — the native-log Log EI offset path
         // (Shaders `nativeSceneLinear`), whose values legitimately exceed 1.0 and must not meet
         // sourceLinear's [0, 1] clamp.
-        val linear709 = if (sceneLinear) Rgb(red, green, blue) else Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
+        val decoded = if (sceneLinear) Rgb(red, green, blue) else Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
+        val matrix = REC709_FROM_BT2020
+        val linear709 = if (sourceHlg && !sceneLinear) Rgb(
+            matrix[0] * decoded.red + matrix[1] * decoded.green + matrix[2] * decoded.blue,
+            matrix[3] * decoded.red + matrix[4] * decoded.green + matrix[5] * decoded.blue,
+            matrix[6] * decoded.red + matrix[7] * decoded.green + matrix[8] * decoded.blue,
+        ) else decoded
         val linearTarget = Rgb(
             red = rr * linear709.red + rg * linear709.green + rb * linear709.blue,
             green = gr * linear709.red + gg * linear709.green + gb * linear709.blue,

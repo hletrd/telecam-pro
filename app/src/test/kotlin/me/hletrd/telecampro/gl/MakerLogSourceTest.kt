@@ -4,20 +4,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MakerLogSourceTest {
-    @Test fun `monitor decode follows the published grey and white anchors`() {
-        assertEquals(0.18, MakerLogSource.decode(0.48827246), 0.00001)
-        assertEquals(1.0, MakerLogSource.decode(0.69455317), 0.00001)
+    @Test fun `monitor decode matches OPPO ACES V2 black shadow grey white and headroom anchors`() {
+        // Values from OPPO's O-Log2_to_ACES_AP0_V2.ctl forward function, not Apple Log.
+        val anchors = listOf(
+            0.1199148853601808 to 0.0,
+            0.13213779041367546 to 0.001,
+            0.2079582832203723 to 0.01,
+            0.4878881393293232 to 0.18,
+            0.69417851621953 to 1.0,
+            0.9996129347013585 to 12.0,
+        )
+        for ((code, linear) in anchors) assertEquals(linear, MakerLogSource.decode(code), 1e-10)
     }
 
-    @Test fun `native highlight headroom is not clamped in the source inverse`() {
-        assertTrue(MakerLogSource.decode(0.95) > 7.9)
-        assertTrue(MakerLogSource.decode(1.0) > 11.0)
-        assertEquals(MakerLogSource.R0, MakerLogSource.decode(0.0), 1e-10)
+    @Test fun `source inverse retains below-black values and highlight headroom until display mapping`() {
+        assertTrue(MakerLogSource.decode(0.0) < 0.0)
+        assertTrue(MakerLogSource.decode(1.0) > 12.0)
+        // The old quadratic toe crushed this positive OPPO shadow to a negative value.
+        assertTrue(MakerLogSource.decode(0.13) > 0.0)
     }
 
-    @Test fun `toe join is continuous and decode is monotone over ten bit codes`() {
-        assertEquals(0.01, MakerLogSource.decode(MakerLogSource.CUT_CODE - 1e-8), 1e-6)
-        assertEquals(0.01, MakerLogSource.decode(MakerLogSource.CUT_CODE + 1e-8), 1e-6)
+    @Test fun `source inverse is monotone across every ten bit code`() {
         var previous = MakerLogSource.decode(0.0)
         for (code in 1..1023) {
             val current = MakerLogSource.decode(code / 1023.0)
