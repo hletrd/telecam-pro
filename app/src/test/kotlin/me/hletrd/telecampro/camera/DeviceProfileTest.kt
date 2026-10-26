@@ -24,6 +24,8 @@ class DeviceProfileTest {
             assertTrue(model, p.rawRequiresStandalone)
             assertEquals(model, HAL_SAFE_MAX_STILL_EXPOSURE_NS, p.stillExposureCeilingNs)
             assertTrue(model, p.videoMinFrameDurationsUnderstated)
+            // White balance, measured 2026-10-27 (WhiteBalance.kt): presets ignored by the HAL.
+            assertTrue(model, p.awbPresetModesIgnored)
         }
     }
 
@@ -45,6 +47,7 @@ class DeviceProfileTest {
             assertFalse("$model", p.rawRequiresStandalone)
             assertNull("$model", p.stillExposureCeilingNs)
             assertFalse("$model", p.videoMinFrameDurationsUnderstated)
+            assertFalse("$model", p.awbPresetModesIgnored)
         }
     }
 

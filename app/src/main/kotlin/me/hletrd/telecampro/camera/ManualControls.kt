@@ -2,6 +2,7 @@ package me.hletrd.telecampro.camera
 
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 
 /**
@@ -45,8 +46,11 @@ data class ManualControls(
     // White balance
     val wbMode: WbMode = WbMode.AUTO,
     val wbKelvin: Int = 5200,
-    val wbTint: Int = 0, // -50 (green) .. +50 (magenta)
-    // Measured custom WB (grey/white-card capture); active when wbMode == CUSTOM.
+    // -50 (green) .. +50 (magenta): Camera2's own COLOR_CORRECTION_COLOR_TINT scale, ±50 = ±0.01 Duv
+    // off the Planckian locus (WhiteBalance.kt), whichever mechanism carries it.
+    val wbTint: Int = 0,
+    // Measured custom WB (grey/white-card capture); active when wbMode == CUSTOM. Replayed through
+    // TRANSFORM_MATRIX with the route's own colour transform (WhiteBalance.kt).
     val customWbGains: WbGains? = null,
     val awbLock: Boolean = false,
     // Metering (SPOT/CENTER apply an AE region; region rect computed in CameraController)
@@ -127,31 +131,23 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         allowed = { it != FocusMode.MANUAL || caps.supportsManualFocus && caps.hasFocusDistanceRange },
     ) ?: FocusMode.CONTINUOUS
 
-    val requestedWbAllowed = when (wbMode) {
-        WbMode.MANUAL -> caps.supportsManualPostProcessing
-        WbMode.CUSTOM -> caps.supportsManualPostProcessing && customWbGains != null
-        else -> true
-    }
-    val normalizedWb = if (requestedWbAllowed &&
-        exactAdvertisedMode(wbMode.awbMetadata, caps.awbModes) != null
-    ) {
+    // White balance: the ONE availability answer ([wbModeAvailable]) that the UI projection also
+    // uses, so a restored or recalled selection the route cannot apply never reaches the readout.
+    // Fallback order is unchanged: AUTO first, then the presets, MANUAL last.
+    val wbCap = caps.wb
+    val hasCustomWb = customWbGains != null
+    val normalizedWb = if (wbModeAvailable(wbMode, wbCap, hasCustomWb)) {
         wbMode
     } else {
-        selectAdvertisedEnum(
-            requested = WbMode.AUTO,
-            fallbackOrder = listOf(
-                WbMode.AUTO,
-                WbMode.DAYLIGHT,
-                WbMode.CLOUDY,
-                WbMode.SHADE,
-                WbMode.INCANDESCENT,
-                WbMode.FLUORESCENT,
-                WbMode.MANUAL,
-            ),
-            advertised = caps.awbModes,
-            metadata = WbMode::awbMetadata,
-            allowed = { it != WbMode.MANUAL || caps.supportsManualPostProcessing },
-        ) ?: WbMode.AUTO
+        listOf(
+            WbMode.AUTO,
+            WbMode.DAYLIGHT,
+            WbMode.CLOUDY,
+            WbMode.SHADE,
+            WbMode.INCANDESCENT,
+            WbMode.FLUORESCENT,
+            WbMode.MANUAL,
+        ).firstOrNull { wbModeAvailable(it, wbCap, hasCustomWb) } ?: WbMode.AUTO
     }
 
     val manualAeAvailable = caps.supportsManualSensor && caps.hasIsoRange && caps.hasExposureTimeRange &&
@@ -276,6 +272,10 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
             !normalizedProgramAppSide &&
             exactAdvertisedMode(normalizedFlash.autoAeMetadata, caps.aeModes) != null,
         wbMode = normalizedWb,
+        // The Kelvin the route actually takes (the CCT path clamps to the advertised range) and the
+        // tint on Camera2's own ±50 scale, so the ruler/readout show what lands on the wire.
+        wbKelvin = normalizedWbKelvin(wbKelvin, wbCap),
+        wbTint = wbTint.coerceIn(-WB_TINT_LIMIT, WB_TINT_LIMIT),
         awbLock = awbLock && normalizedWb == WbMode.AUTO &&
             exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, caps.awbModes) != null,
         antibanding = normalizedAntibanding,
@@ -760,10 +760,14 @@ internal fun CaptureRequest.Builder.applyManualControls(
     // tele's position. No default, same rule: a builder that forgot it would put a TC-local 1.0 on
     // the logical wire, i.e. the MAIN lens, with the converter on the tele.
     zoomWire: MakerTeleRoute?,
+    // The WB keys for THIS request, resolved by the controller from [c], the route and the route's
+    // own colour transform ([resolveWbWire]). No default, same rule: a builder that forgot it would
+    // silently fall back to whatever the template's AWB does instead of the operator's choice.
+    wb: WbWire,
 ): NativeLogEiApplied {
     applyFocus(c, caps, videoMode)
     val ei = applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate, nativeLogEiStops)
-    applyWhiteBalance(c, caps)
+    applyWhiteBalance(wb)
     applyProcessing(c, caps)
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
     // and must win over the AE mode that applyExposure set (see applyFlash).
@@ -1218,40 +1222,52 @@ private fun CaptureRequest.Builder.applyExposure(
     return ei
 }
 
-private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: CameraCaps) {
-    when (c.wbMode) {
-        WbMode.MANUAL -> if (caps.supportsManualPostProcessing &&
-            exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_OFF, caps.awbModes) != null
-        ) {
+/**
+ * Writes exactly the keys of [wire] (WhiteBalance.kt). A manual white point rides
+ * COLOR_CORRECTION_MODE_TRANSFORM_MATRIX with BOTH gains and transform: Camera2 documents the gains
+ * as camera-owned in FAST/HIGH_QUALITY, and both HALs measured disregard them there (PMA110 then
+ * applies a fixed R 0.851 / B 5.263 blue cast — the app's manual WB until 2026-10-27).
+ */
+private fun CaptureRequest.Builder.applyWhiteBalance(wire: WbWire) {
+    when (wire) {
+        WbWire.Omit -> Unit
+        is WbWire.Auto -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
+            set(CaptureRequest.CONTROL_AWB_LOCK, wire.lock)
+        }
+        // Priming learns the route's own transform from converged AUTO frames: never locked.
+        is WbWire.Prime -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
+            set(CaptureRequest.CONTROL_AWB_LOCK, false)
+        }
+        is WbWire.Preset -> set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
+        is WbWire.Cct -> if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.BAKLAVA) {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-            // FAST (not TRANSFORM_MATRIX) honors COLOR_CORRECTION_GAINS without also requiring a
-            // COLOR_CORRECTION_TRANSFORM — which we never set, so TRANSFORM_MATRIX left color undefined.
-            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
-            set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinTintToRggbGains(c.wbKelvin, c.wbTint))
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_CCT)
+            set(CaptureRequest.COLOR_CORRECTION_COLOR_TEMPERATURE, wire.kelvin)
+            set(CaptureRequest.COLOR_CORRECTION_COLOR_TINT, wire.tint)
         }
-        WbMode.CUSTOM -> {
-            val g = c.customWbGains
-            if (caps.supportsManualPostProcessing && g != null &&
-                exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_OFF, caps.awbModes) != null
-            ) {
-                // Measured card WB: replay the AWB gains sampled at capture time (see FAST-mode note
-                // on the MANUAL branch above).
-                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-                set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
-                set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(g.r, g.gEven, g.gOdd, g.b))
-            }
-        }
-        WbMode.AUTO -> {
-            exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, caps.awbModes)?.let {
-                set(CaptureRequest.CONTROL_AWB_MODE, it)
-                set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
-            }
-        }
-        else -> exactAdvertisedMode(c.wbMode.awbMetadata, caps.awbModes)?.let {
-            set(CaptureRequest.CONTROL_AWB_MODE, it)
+        is WbWire.Matrix -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            set(
+                CaptureRequest.COLOR_CORRECTION_GAINS,
+                RggbChannelVector(wire.gains[0], wire.gains[1], wire.gains[2], wire.gains[3]),
+            )
+            set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, ColorSpaceTransform(wbTransformRationals(wire.transform)))
         }
     }
 }
+
+/**
+ * A row-major 3×3 as the numerator/denominator pairs ColorSpaceTransform takes, at 1/10000 — finer
+ * than the 1/128 the HAL reports its own transforms in, and echoed back exactly by PMA110.
+ */
+internal fun wbTransformRationals(transform: DoubleArray): IntArray = IntArray(18) { i ->
+    if (i % 2 == 1) WB_TRANSFORM_DENOMINATOR else Math.round(transform[i / 2] * WB_TRANSFORM_DENOMINATOR).toInt()
+}
+
+private const val WB_TRANSFORM_DENOMINATOR = 10_000
 
 /** UI WB selection -> its exact CONTROL_AWB_MODE_* value. */
 internal val WbMode.awbMetadata: Int
@@ -1354,63 +1370,3 @@ internal val ProcessingLevel.noiseMetadata: Int
         ProcessingLevel.FAST -> CameraMetadata.NOISE_REDUCTION_MODE_FAST
         ProcessingLevel.HIGH_QUALITY -> CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
     }
-
-/**
- * Ceiling for a single WB channel gain. Unclamped, the Tanner-Helland approximation demands a
- * ~18-19× blue gain at the UI-reachable 2000 K — far outside the ~1-8× range sensor WB gains
- * actually span, leaving the HAL's behavior undefined. Color accuracy at the extreme presets is
- * necessarily approximate; a bounded gain beats an out-of-range request.
- */
-const val MAX_WB_CHANNEL_GAIN = 8f
-
-/**
- * Approximate CCT + tint -> RGGB channel gains for manual WB.
- * Kelvin uses a Tanner-Helland blackbody approximation; tint shifts the green channel
- * (-50 greener .. +50 more magenta). Gains are normalized so the smallest is 1.0 (camera minimum)
- * and each channel is capped at [MAX_WB_CHANNEL_GAIN].
- */
-fun kelvinTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
-    val v = kelvinTintToRggbGainValues(kelvin, tint)
-    return RggbChannelVector(v[0], v[1], v[2], v[3])
-}
-
-/**
- * Pure core of [kelvinTintToRggbGains] as `[R, G_even, G_odd, B]` — RggbChannelVector's constructor
- * is an unmocked android.jar stub on the JVM, so the math is only unit-testable in this form.
- */
-internal fun kelvinTintToRggbGainValues(kelvin: Int, tint: Int): FloatArray {
-    val t = (kelvin.coerceIn(1000, 40000)) / 100.0
-
-    val r = if (t <= 66.0) 255.0 else (329.698727446 * Math.pow(t - 60.0, -0.1332047592)).coerceIn(0.0, 255.0)
-    val g = if (t <= 66.0) {
-        (99.4708025861 * Math.log(t) - 161.1195681661).coerceIn(0.0, 255.0)
-    } else {
-        (288.1221695283 * Math.pow(t - 60.0, -0.0755148492)).coerceIn(0.0, 255.0)
-    }
-    val b = when {
-        t >= 66.0 -> 255.0
-        t <= 19.0 -> 0.0
-        else -> (138.5177312231 * Math.log(t - 10.0) - 305.0447927307).coerceIn(0.0, 255.0)
-    }
-
-    val rr = (r / 255.0).coerceAtLeast(1e-3)
-    val gg = (g / 255.0).coerceAtLeast(1e-3)
-    val bb = (b / 255.0).coerceAtLeast(1e-3)
-
-    // Tint: >0 magenta (less green gain), <0 green (more green gain).
-    val tintFactor = 1.0 - (tint.coerceIn(-50, 50) / 100.0)
-
-    var gainR = 1.0 / rr
-    var gainG = (1.0 / gg) * tintFactor
-    var gainB = 1.0 / bb
-    val minGain = minOf(gainR, gainG, gainB).coerceAtLeast(1e-3)
-    gainR /= minGain; gainG /= minGain; gainB /= minGain
-
-    val cap = MAX_WB_CHANNEL_GAIN.toDouble()
-    return floatArrayOf(
-        gainR.coerceAtMost(cap).toFloat(),
-        gainG.coerceAtMost(cap).toFloat(),
-        gainG.coerceAtMost(cap).toFloat(),
-        gainB.coerceAtMost(cap).toFloat(),
-    )
-}

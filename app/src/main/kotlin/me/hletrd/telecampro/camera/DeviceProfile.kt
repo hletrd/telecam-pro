@@ -115,6 +115,16 @@ internal data class DeviceProfile(
      * (FIELD_CHECKS A22).
      */
     val makerLogTeleMaxWireZoom: Float? = null,
+    /**
+     * The HAL accepts CONTROL_AWB_MODE presets and echoes them in the result, but renders every one
+     * with the AWB-AUTO gains. PMA110 MEASURED 2026-10-27 (isolated Camera2 probe + ColorChecker,
+     * .context/wb-fix-2026-10-27/): INCANDESCENT / DAYLIGHT / CLOUDY recorded the AUTO gains to
+     * ±0.01 on the logical photo camera, standalone 2, the native S-Log3 session, TELE 4 under 0x80b4
+     * and the maker 0x830b session alike. Where true, a preset is carried as its Kelvin target
+     * ([wbPresetTarget]) through the manual-WB mechanism instead. The Galaxy Z Flip6 (spec HAL)
+     * honours them — its four presets landed on four distinct gains/transform pairs.
+     */
+    val awbPresetModesIgnored: Boolean = false,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -130,6 +140,7 @@ internal data class DeviceProfile(
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
+            awbPresetModesIgnored = true,
         )
 
         val GENERIC = DeviceProfile(

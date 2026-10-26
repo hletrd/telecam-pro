@@ -267,6 +267,30 @@ class CameraEngine internal constructor(
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // White balance (WhiteBalance.kt): every route's own colour transform, learned from AWB-AUTO
+    // frames by whichever controller is live and replayed under manual WB. Process-wide so a reopen
+    // never relearns it; mirrored to its own small prefs file so a relaunch straight into manual WB
+    // needs no AUTO "priming" detour. Seeded off the main thread; a new route persists at once, a
+    // drifting known one at most once a minute (a lost refresh costs nothing — the next AUTO frame
+    // relearns it).
+    private val wbReferencePersistence = me.hletrd.telecampro.storage.WbReferencePersistence(context)
+    private val wbReferences = WbReferenceStore()
+    @Volatile private var wbReferencePersistedKeys: Set<WbRouteKey> = emptySet()
+    @Volatile private var wbReferencePersistedAtMs = 0L
+
+    init {
+        wbReferences.onChanged = { snapshot ->
+            val now = android.os.SystemClock.uptimeMillis()
+            if (!wbReferencePersistedKeys.containsAll(snapshot.keys) ||
+                now - wbReferencePersistedAtMs >= WB_REFERENCE_PERSIST_INTERVAL_MS
+            ) {
+                wbReferencePersistedKeys = snapshot.keys
+                wbReferencePersistedAtMs = now
+                runCatching { ioExecutor.execute { wbReferencePersistence.save(snapshot) } }
+            }
+        }
+        runCatching { ioExecutor.execute { wbReferences.seed(wbReferencePersistence.load()) } }
+    }
     // Optional Gyroflow .gcsv sidecar (video/GyroLogRecorder.kt). Owns its own sensor HandlerThread
     // and publish thread, so neither REC timing nor the GL/encoder/recorder lanes ever wait on it.
     // The operator's intent is read once per take at REC admission.
@@ -1446,6 +1470,7 @@ class CameraEngine internal constructor(
                     stillExposureCeilingNs = activeDeviceProfile().stillExposureCeilingNs,
                     gateVideoRatesOnMinFrameDuration =
                         !activeDeviceProfile().videoMinFrameDurationsUnderstated,
+                    awbPresetModesHonoured = !activeDeviceProfile().awbPresetModesIgnored,
                     // A process-lifetime cache must never memoize the logical-fallback read
                     // (review 2026-08-01): a transient service outage during the first physical
                     // read otherwise stamps the LOGICAL camera's focal into every later still on
@@ -2709,6 +2734,9 @@ class CameraEngine internal constructor(
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
+        // One store for every controller (WhiteBalance.kt); a take holds lens-crossing WB rebuilds.
+        ctrl.wbReferences = wbReferences
+        ctrl.wbLensRebuildHeld = { recorder != null }
         // Every result callback is identity-gated: a CLOSING controller's capture results keep
         // arriving on its camera thread for a beat after the replacement is wired, and an ungated
         // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a
@@ -9082,6 +9110,9 @@ class CameraEngine internal constructor(
         // rapid review deletion. Once a retained URI is routed here, its DISCARD marker is durable.
         private const val MAX_RETAINED_STILL_DELETE_TOMBSTONES = 32
         private const val NO_INPUT_READY_OPEN = Long.MIN_VALUE
+        // How often a KNOWN route's drifting WB transform may be re-mirrored to storage (a new route
+        // persists immediately). AUTO refreshes it at 1 Hz; the file only needs a recent one.
+        private const val WB_REFERENCE_PERSIST_INTERVAL_MS = 60_000L
 
         // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
         // took over the gesture exposure trade; it was unreferenced and its comment still asserted

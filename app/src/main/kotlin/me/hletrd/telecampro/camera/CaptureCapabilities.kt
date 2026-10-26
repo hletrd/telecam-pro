@@ -273,7 +273,33 @@ data class CameraCaps(
      * measured 29.8 fps RAW-only stream.
      */
     val rawMinFrameDurationNs: Long = 0L,
+    /**
+     * COLOR_CORRECTION_AVAILABLE_MODES and COLOR_CORRECTION_COLOR_TEMPERATURE_RANGE (both API 36);
+     * null below 36 or when absent. PMA110 advertises [0 1 2 3] (3 = CCT) and [1500, 10000] on every
+     * camera (dumpsys 2026-10-26); the Galaxy Z Flip6 [0 1 2] and no range. White balance chooses
+     * its mechanism from these ([wbKelvinPath]).
+     */
+    val colorCorrectionModes: IntArray? = null,
+    val colorTemperatureMin: Int? = null,
+    val colorTemperatureMax: Int? = null,
+    /**
+     * This camera's own ColorMatrix calibration, and on a logical multi-camera each physical
+     * member's: the Kelvin → gains law of whichever sensor produces the frame ([wbTargetGains]).
+     * PMA110's logical camera 0 carries a coarse /128 pair of its own beside its members' /10000
+     * ones, so the member's is preferred once the active sensor is known.
+     */
+    val colorCalibration: ColorCalibration? = null,
+    val physicalColorCalibrations: Map<String, ColorCalibration> = emptyMap(),
+    /**
+     * Whether this route's HAL actually applies CONTROL_AWB_MODE presets: false only where a
+     * [DeviceProfile] measured them disregarded ([DeviceProfile.awbPresetModesIgnored]).
+     */
+    val awbPresetModesHonoured: Boolean = true,
 ) {
+    /** The calibration of [physicalId]'s sensor when known, else this camera's own. */
+    internal fun colorCalibrationFor(physicalId: String?): ColorCalibration? =
+        physicalId?.let(physicalColorCalibrations::get) ?: colorCalibration
+
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
     // NOTE: no maxFocalMm helper. CameraSelector2 deliberately picks the lens CLOSEST to 70 mm, not
@@ -340,6 +366,9 @@ data class CameraCaps(
             // [DeviceProfile.videoMinFrameDurationsUnderstated] inverted. Default false keeps every
             // existing caller/test on the PMA110 truth (no duration gate), like the ceiling above.
             gateVideoRatesOnMinFrameDuration: Boolean = false,
+            // [DeviceProfile.awbPresetModesIgnored] inverted. Default true keeps every existing
+            // caller/test on spec behaviour (presets ride CONTROL_AWB_MODE).
+            awbPresetModesHonoured: Boolean = true,
         ): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
@@ -448,6 +477,7 @@ data class CameraCaps(
             } else 0f
 
             val oisModes = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION) ?: IntArray(0)
+            val colorTemperatureRange = readColorTemperatureRange(chars)
 
             return CameraCaps(
                 logicalId = logicalId,
@@ -562,10 +592,66 @@ data class CameraCaps(
                 rawMinFrameDurationNs = rawSize?.let { size ->
                     runCatching { map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, size) }.getOrNull()
                 } ?: 0L,
+                colorCorrectionModes = readColorCorrectionModes(chars),
+                colorTemperatureMin = colorTemperatureRange?.first,
+                colorTemperatureMax = colorTemperatureRange?.second,
+                colorCalibration = readColorCalibration(chars),
+                // A logical camera's members carry their own sensors' calibration; read defensively,
+                // a member that fails to read simply falls back to the logical camera's own.
+                physicalColorCalibrations = if (!has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)) {
+                    emptyMap()
+                } else {
+                    runCatching { chars.physicalCameraIds }.getOrDefault(emptySet()).mapNotNull { id ->
+                        runCatching { readColorCalibration(manager.getCameraCharacteristics(id)) }
+                            .getOrNull()?.let { id to it }
+                    }.toMap()
+                },
+                awbPresetModesHonoured = awbPresetModesHonoured,
             )
         }
     }
 }
+
+/** COLOR_CORRECTION_AVAILABLE_MODES, API 36+ only; null below or when absent. */
+private fun readColorCorrectionModes(chars: CameraCharacteristics): IntArray? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        runCatching { chars.get(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_MODES) }.getOrNull()
+    } else {
+        null
+    }
+
+/** COLOR_CORRECTION_COLOR_TEMPERATURE_RANGE as (min, max) Kelvin, API 36+ only. */
+private fun readColorTemperatureRange(chars: CameraCharacteristics): Pair<Int, Int>? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        runCatching { chars.get(CameraCharacteristics.COLOR_CORRECTION_COLOR_TEMPERATURE_RANGE) }
+            .getOrNull()?.let { it.lower to it.upper }
+    } else {
+        null
+    }
+
+/**
+ * The ColorMatrix calibration ([ColorCalibration]) — present on RAW-capable sensors, where Camera2
+ * requires it. Needs ColorMatrix1 and a reference illuminant with a defined temperature; the second
+ * calibration is used only with its own known illuminant, as in [RawDevelopProfile.from].
+ */
+internal fun readColorCalibration(chars: CameraCharacteristics): ColorCalibration? = runCatching {
+    fun android.hardware.camera2.params.ColorSpaceTransform.rowMajor(): DoubleArray =
+        DoubleArray(9) { i -> getElement(i % 3, i / 3).toDouble() }
+    val color1 = chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)?.rowMajor() ?: return@runCatching null
+    val cct1 = RawDevelopMath.illuminantCct(chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1))
+        ?: return@runCatching null
+    val cct2 = chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt()
+        ?.let { RawDevelopMath.illuminantCct(it) }
+    ColorCalibration(
+        colorMatrix1 = color1,
+        colorMatrix2 = chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2)?.rowMajor()?.takeIf { cct2 != null },
+        calibration1 = chars.get(CameraCharacteristics.SENSOR_CALIBRATION_TRANSFORM1)?.rowMajor(),
+        calibration2 = chars.get(CameraCharacteristics.SENSOR_CALIBRATION_TRANSFORM2)?.rowMajor()
+            ?.takeIf { cct2 != null },
+        cct1 = cct1,
+        cct2 = cct2,
+    ).takeIf { cal -> runCatching { RawDevelopMath.invert(cal.xyzToCamera(5000.0)) }.isSuccess }
+}.getOrNull()
 
 /**
  * Android-type-free projection of the Camera2 facts that own manual-control request values. Keeping
@@ -610,7 +696,26 @@ internal data class CameraControlCapabilities(
     val hiResAdvertisedStandalone: Boolean = false,
     // Face Priority AF gate facts ([facePriorityAfAvailable]); absent = unavailable.
     val face: FaceCapability = FaceCapability(IntArray(0), 0, IntArray(0)),
-)
+    // White-balance mechanism facts (WhiteBalance.kt). Defaults = a route without CCT, without a
+    // calibration and with honoured presets, i.e. the Kelvin path falls to the uncalibrated matrix
+    // exactly where manual WB was offered before (MANUAL_POST_PROCESSING + AWB OFF).
+    val colorCorrectionModes: IntArray? = null,
+    val colorTemperatureMin: Int? = null,
+    val colorTemperatureMax: Int? = null,
+    val wbCalibrated: Boolean = false,
+    val awbPresetModesHonoured: Boolean = true,
+) {
+    /** The WB view of these facts — built once per projection, the ONE input of every WB decision. */
+    val wb: WbCapability = WbCapability(
+        awbModes = awbModes,
+        manualPostProcessing = supportsManualPostProcessing,
+        colorCorrectionModes = colorCorrectionModes,
+        cctMin = colorTemperatureMin,
+        cctMax = colorTemperatureMax,
+        calibrated = wbCalibrated,
+        presetsHonoured = awbPresetModesHonoured,
+    )
+}
 
 // Per-instance cache (perf review #9): CameraCaps is an immutable per-route snapshot, but this
 // projection was rebuilt (~30 fields) on EVERY call — 25 Hz on the camera thread via normalizedFor
@@ -652,6 +757,11 @@ private fun CameraCaps.buildControlCapabilities(): CameraControlCapabilities = C
     noiseReductionModes = noiseReductionModes,
     hiResAdvertisedStandalone = hiResJpegSize != null && physicalId == null && !isLogicalMultiCamera,
     face = faceCapability(),
+    colorCorrectionModes = colorCorrectionModes,
+    colorTemperatureMin = colorTemperatureMin,
+    colorTemperatureMax = colorTemperatureMax,
+    wbCalibrated = colorCalibration != null || physicalColorCalibrations.isNotEmpty(),
+    awbPresetModesHonoured = awbPresetModesHonoured,
 )
 
 /**

@@ -183,6 +183,24 @@ class CameraController internal constructor(
     private var lastActivePhysicalId: String? = null
     private var lastLensSwitchedPublished: Boolean? = null
     private var lastActivePhysicalReadMs = 0L
+    // White balance (WhiteBalance.kt). [wbReferences] is every route's own colour transform, learned
+    // from AWB-AUTO frames and replayed under manual WB; the engine installs its process-wide store
+    // before open(), the default keeps an unwired controller (host tests) self-contained.
+    // [wbLensRebuildHeld] is the engine's "a take is rolling" answer: a logical camera that crosses
+    // onto another sensor under manual WB keeps its old transform until the take ends rather than
+    // pay a ~180 ms repeating-request swap inside the file. Everything else is camera-thread confined:
+    // the CONFIGURED session's shape, the sensor its frames last came from, what the current
+    // repeating wire was built for, the AUTO priming state, and the 1 Hz observation pacing.
+    @Volatile internal var wbReferences: WbReferenceStore = WbReferenceStore()
+    @Volatile internal var wbLensRebuildHeld: () -> Boolean = { false }
+    private var wbShape = WbSessionShape.SDR
+    private var wbObservedPhysicalId: String? = null
+    private var wbPendingPhysicalId: String? = null
+    private var wbWireKey: WbRouteKey? = null
+    private var wbWireIsMatrix = false
+    private var wbPriming = false
+    private var wbPrimeStartedMs = 0L
+    private var lastWbObserveMs = 0L
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -974,6 +992,17 @@ class CameraController internal constructor(
         }
         rawLogBridge = rawBridge
         val sessionHlg = useHlg && rawBridge == null && !useMakerLog
+        // The colour-transform identity this attempt's frames will have (WhiteBalance.kt): each
+        // shape renders its own gamut, so a transform learned in one is never replayed in another.
+        // Set before the session parameters below, which already carry the WB keys.
+        wbShape = when {
+            useMakerLog -> WbSessionShape.MAKER_LOG
+            rawBridge != null -> WbSessionShape.RAW_LOG
+            sessionHlg -> WbSessionShape.HLG10
+            plan.useVendorOperationMode -> WbSessionShape.VENDOR_TC
+            else -> WbSessionShape.SDR
+        }
+        wbPriming = false
 
         // Ten-bit native log: the same rung, with the GL stream carried as P010 (STANDARD profile)
         // through the bridge instead of the 8-bit PRIVATE SurfaceTexture stream. Never with HLG10
@@ -1199,13 +1228,13 @@ class CameraController internal constructor(
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             if (useMakerLog) {
                 // Seed the factory warm-start with this take's exposure/FPS, rather than a previous
-                // camera client's potentially multi-second low-light exposure. WB is forced AUTO
-                // here too (makerLogWbControls): the OEM session ignores manual WB and otherwise
-                // blue-casts (MakerLog.kt), and the session parameters must agree with the repeating
-                // request below or the warm-start would seed a WB the per-frame request then drops.
-                sp.applyManualControls(makerLogWbControls(controls), caps, pinAutoFps = pinAutoFps,
+                // camera client's potentially multi-second low-light exposure. The WB keys are the
+                // repeating request's own (wbWireFor), so the warm-start seeds the WB the per-frame
+                // request then keeps: the maker session honours TRANSFORM_MATRIX like every other
+                // route (WhiteBalance.kt; it was forced AUTO from 2026-10-26 until that was measured).
+                sp.applyManualControls(controls, caps, pinAutoFps = pinAutoFps,
                     previewExposureCap = true, enforceFrameRate = pinAutoFps, videoMode = true,
-                    nativeLogEiStops = 0, zoomWire = makerTeleRoute)
+                    nativeLogEiStops = 0, zoomWire = makerTeleRoute, wb = wbWireFor(controls))
             }
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
@@ -1508,11 +1537,7 @@ class CameraController internal constructor(
                 // builders inherit the target automatically (they ARE this builder).
                 if (zslTargetAttached) jpegReader?.surface?.let(::addTarget)
                 builtNativeLogEi = applyManualControls(
-                    // On a maker (OEM 0x830b) session WB is forced AUTO: this HAL ignores a
-                    // third-party client's manual WB and otherwise applies a fixed blue cast
-                    // (makerLogWbControls / MakerLog.kt). Every other control is untouched, and
-                    // every non-maker route keeps the operator's WB exactly as before.
-                    if (makerLogAttempt) makerLogWbControls(controls) else controls,
+                    controls,
                     caps,
                     pinAutoFps = pinAutoFps || smoothPreviewBoost,
                     previewExposureCap = true,
@@ -1520,6 +1545,7 @@ class CameraController internal constructor(
                     videoMode = pinAutoFps,
                     nativeLogEiStops = repeatingNativeLogEiStops(controls),
                     zoomWire = makerTeleRoute,
+                    wb = repeatingWbWire(),
                 )
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -1583,6 +1609,7 @@ class CameraController internal constructor(
                         }
                     }
                     makerTeleRoute?.let { route -> observeMakerTeleLens(result, route) }
+                    observeWhiteBalance(request, result)
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
                     // Superseded requests stay silent: a late result from a face-reading request
                     // must not repaint frames after the newer request cleared them.
@@ -1768,6 +1795,112 @@ class CameraController internal constructor(
                 },
             )
         }
+    }
+
+    // ---- White balance (WhiteBalance.kt) ----
+
+    private fun wbCameraId(): String = caps.physicalId ?: caps.logicalId
+
+    /**
+     * The sensor a logical camera's next frames are expected from: the one last observed in this
+     * session, else the converter's host on the maker TC route, else the sensor this route's colour
+     * transform was last learned on (usually where the operator left it). Null on standalone routes.
+     */
+    private fun wbExpectedPhysicalId(): String? {
+        if (!caps.isLogicalMultiCamera) return null
+        return wbObservedPhysicalId
+            ?: makerTeleRoute?.hostPhysicalId
+            ?: wbReferences.latestKey(wbCameraId(), wbShape)?.physicalId
+    }
+
+    /** The WB keys [c] puts on a request on this route right now ([resolveWbWire]). */
+    private fun wbWireFor(c: ManualControls): WbWire {
+        val key = WbRouteKey(wbCameraId(), wbShape, wbExpectedPhysicalId())
+        return resolveWbWire(
+            c = c.normalizedFor(caps),
+            cap = caps.controlCapabilities().wb,
+            calibration = caps.colorCalibrationFor(key.physicalId),
+            routeTransform = wbReferences.lookup(key),
+            // A RAW-only session's developer takes the result GAINS alone (RawLogBridge): no
+            // processed pixel depends on the transform, so it never primes.
+            transformRequired = wbShape != WbSessionShape.RAW_LOG,
+        )
+    }
+
+    /** [wbWireFor] for the repeating request, recording what it was built for (camera thread). */
+    private fun repeatingWbWire(): WbWire {
+        val wire = wbWireFor(controls)
+        val priming = wire is WbWire.Prime
+        if (priming && !wbPriming) wbPrimeStartedMs = android.os.SystemClock.uptimeMillis()
+        wbPriming = priming
+        wbWireIsMatrix = wire is WbWire.Matrix
+        wbWireKey = WbRouteKey(wbCameraId(), wbShape, wbExpectedPhysicalId())
+        wbPendingPhysicalId = null
+        return wire
+    }
+
+    /**
+     * Learns the route's own colour transform from converged AWB-AUTO frames, finishes a priming
+     * session once it has one, and follows a logical camera onto another sensor under manual WB.
+     * Paced (1 Hz; 10 Hz while priming) BEFORE any metadata read: this runs in the hottest callback
+     * in the app and every result.get() allocates.
+     */
+    private fun observeWhiteBalance(request: CaptureRequest, result: TotalCaptureResult) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val interval = if (wbPriming) WB_PRIME_OBSERVE_INTERVAL_MS else WB_OBSERVE_INTERVAL_MS
+        if (now - lastWbObserveMs < interval) return
+        lastWbObserveMs = now
+        val physical = if (caps.isLogicalMultiCamera) {
+            result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+        } else {
+            null
+        }
+        if (request.get(CaptureRequest.CONTROL_AWB_MODE) == CameraMetadata.CONTROL_AWB_MODE_AUTO) {
+            if (physical != null) wbObservedPhysicalId = physical
+            val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
+            val settled = awbState == CameraMetadata.CONTROL_AWB_STATE_CONVERGED ||
+                awbState == CameraMetadata.CONTROL_AWB_STATE_LOCKED
+            val primeExpired = wbPriming && now - wbPrimeStartedMs >= WB_PRIME_TIMEOUT_MS
+            if (!settled && !primeExpired) return
+            val key = WbRouteKey(wbCameraId(), wbShape, physical ?: wbExpectedPhysicalId())
+            val learned = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+                ?.let { t -> DoubleArray(9) { i -> t.getElement(i % 3, i / 3).toDouble() } }
+                ?.takeIf(::plausibleWbTransform)
+            val stored = when {
+                learned != null -> { wbReferences.offer(key, learned); true }
+                // A HAL that never reports a usable transform must not keep the route on AUTO:
+                // identity is what PMA110's TC route reports in a bare session, the least-wrong
+                // blind guess.
+                primeExpired -> { wbReferences.offer(key, RawDevelopMath.IDENTITY); true }
+                else -> false
+            }
+            // Priming ends only once the key HAS a transform: rebuilding without one would resolve
+            // to Prime again, restart the clock, and rebuild every observation — a swap storm.
+            if (wbPriming && stored) {
+                wbPriming = false
+                if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                    android.util.Log.i(TAG, "WhiteBalance: primed ${key.encode()} learned=${learned != null}")
+                }
+                postToCamera { if (!closed) startPreview() }
+            }
+            return
+        }
+        // Manual matrix WB on a logical camera: the HAL crossed onto another sensor, whose own
+        // gains law and transform apply. Two consecutive reads first — a HAL settling a hand-over
+        // must not cost a swap per bounce — and never during a gesture (the boost owns the wire)
+        // or a take (a mid-file swap freezes it, see [wbLensRebuildHeld]).
+        val wireKey = wbWireKey
+        if (physical == null || !wbWireIsMatrix || wireKey == null || physical == wireKey.physicalId) {
+            wbPendingPhysicalId = null
+            return
+        }
+        if (wbPendingPhysicalId != physical) {
+            wbPendingPhysicalId = physical
+            return
+        }
+        if (smoothPreviewBoost || wbLensRebuildHeld()) return
+        wbObservedPhysicalId = physical
+        postToCamera { if (!closed) startPreview() }
     }
 
     /**
@@ -2721,6 +2854,7 @@ class CameraController internal constructor(
                 val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     jpeg?.let { addTarget(it) }
                     raw?.let { addTarget(it) }
+                    val stillWb = wbWireFor(requestControls)
                     applyManualControls(
                         requestControls,
                         caps,
@@ -2735,6 +2869,9 @@ class CameraController internal constructor(
                         // A maker session has no still readers, so this is null in practice; passed
                         // anyway so a still can never frame on a different scale than the preview.
                         zoomWire = makerTeleRoute,
+                        // The press-time packet's WB on the SAME route transform as the preview; a
+                        // still taken while the route still primes carries the AUTO the preview shows.
+                        wb = stillWb,
                     )
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
@@ -3165,6 +3302,12 @@ class CameraController internal constructor(
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
         // The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type.
         const val VENDOR_TC_SESSION_TYPE = 0x80b4
+        // White-balance observation pacing (observeWhiteBalance): the route transform is a slow
+        // fact, read once a second; while priming, 10 Hz so the AUTO detour ends within a frame
+        // or three of AWB converging. A route that never converges stops priming after 3 s.
+        const val WB_OBSERVE_INTERVAL_MS = 1_000L
+        const val WB_PRIME_OBSERVE_INTERVAL_MS = 100L
+        const val WB_PRIME_TIMEOUT_MS = 3_000L
         // Maker TC lens guard read pacing: a lens handover is a sustained state, not a frame event,
         // so a quarter-second reaction costs nothing while the per-result String read drops to about
         // one frame in eight at 30 fps.

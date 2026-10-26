@@ -191,6 +191,40 @@ class ControlAvailabilityTest {
     }
 
     @Test
+    fun `white balance offers exactly what a mechanism applies on the route`() {
+        // PMA110 as measured 2026-10-27: presets advertised but ignored, CCT + calibration present.
+        // Every preset still reaches the wire as a Kelvin target, so every one is offered and
+        // round-trips through normalization; the WB ruler is live.
+        val pma110 = fullCaps().copy(
+            colorCorrectionModes = intArrayOf(0, 1, 2, COLOR_CORRECTION_MODE_CCT_VALUE),
+            colorTemperatureMin = 1500,
+            colorTemperatureMax = 10000,
+            wbCalibrated = true,
+            awbPresetModesHonoured = false,
+        )
+        val withCustom = ManualControls(customWbGains = WbGains(2f, 1f, 1f, 3f))
+        val availability = controlAvailability(pma110, withCustom)
+        assertEquals(WbMode.entries, availability.wbModes)
+        assertTrue(availability.wbDialEnabled)
+        assertTrue(availability.customWbCaptureEnabled)
+        availability.wbModes.forEach { mode ->
+            assertEquals(mode, withCustom.copy(wbMode = mode).normalizedFor(pma110).wbMode)
+        }
+        // The same ignoring HAL without any Kelvin path: presets cannot be applied, so they are not
+        // offered, and a recalled preset normalizes to AUTO instead of showing a dead choice.
+        val noPath = pma110.copy(supportsManualPostProcessing = false, colorCorrectionModes = null)
+        assertEquals(listOf(WbMode.AUTO), controlAvailability(noPath, ManualControls()).wbModes)
+        assertEquals(WbMode.AUTO, ManualControls(wbMode = WbMode.CLOUDY).normalizedFor(noPath).wbMode)
+        // A CCT-only route (no manual post-processing): Kelvin yes, measured gains no.
+        val cctOnly = pma110.copy(supportsManualPostProcessing = false, wbCalibrated = false)
+        val cctAvailability = controlAvailability(cctOnly, withCustom)
+        assertTrue(WbMode.MANUAL in cctAvailability.wbModes)
+        assertFalse(WbMode.CUSTOM in cctAvailability.wbModes)
+        assertTrue(cctAvailability.wbDialEnabled)
+        assertFalse(cctAvailability.customWbCaptureEnabled)
+    }
+
+    @Test
     fun `hi-res route fact projects only from advertised standalone caps`() {
         // Cycle-6 architect F3: the ProSheet row must see the route fact through the projection,
         // so an absent-caps route and a non-advertising route both deny it there.

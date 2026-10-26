@@ -78,18 +78,17 @@ internal fun controlAvailability(
         caps.afModes.has(CameraMetadata.CONTROL_AF_MODE_OFF)
     val manualAeAvailable = caps.supportsManualSensor && caps.hasIsoRange &&
         caps.hasExposureTimeRange && caps.aeModes.has(CameraMetadata.CONTROL_AE_MODE_OFF)
-    val manualWbAvailable = caps.supportsManualPostProcessing &&
-        caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_OFF)
+    // White balance follows the request seam's one availability answer (WhiteBalance.kt): a choice
+    // is offered only where a mechanism actually applies it on this route — PMA110's ignored AWB
+    // presets ride the Kelvin path, and manual Kelvin exists wherever ANY Kelvin path does.
+    val wbCap = caps.wb
+    val kelvinWbAvailable = wbKelvinPath(wbCap) != WbKelvinPath.NONE
 
     val focusModes = FocusMode.entries.filter { mode ->
         caps.afModes.has(mode.afMetadata) && (mode != FocusMode.MANUAL || manualFocusAvailable)
     }.orNeutral(FocusMode.CONTINUOUS)
     val wbModes = WbMode.entries.filter { mode ->
-        caps.awbModes.has(mode.awbMetadata) && when (mode) {
-            WbMode.MANUAL -> manualWbAvailable
-            WbMode.CUSTOM -> manualWbAvailable && normalized.customWbGains != null
-            else -> true
-        }
+        wbModeAvailable(mode, wbCap, hasCustomGains = normalized.customWbGains != null)
     }.orNeutral(WbMode.AUTO)
 
     val exposureModes = buildList {
@@ -140,7 +139,7 @@ internal fun controlAvailability(
         manualFocusDialEnabled = manualFocusAvailable,
         shutterDialEnabled = manualAeAvailable,
         isoDialEnabled = manualAeAvailable,
-        wbDialEnabled = manualWbAvailable,
+        wbDialEnabled = kelvinWbAvailable,
         evDialEnabled = caps.hasEvCompensationRange && evPathAvailable,
         zoomDialEnabled = caps.hasZoomRatioRange,
         afSpotSizeEnabled = caps.maxAfRegions > 0 && normalized.focusMode != FocusMode.MANUAL,
@@ -154,8 +153,9 @@ internal fun controlAvailability(
             caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
         // A grey-card sample must come from the HAL's live, unlocked AUTO path. Manual/preset/
         // locked results merely echo already-requested gains and cannot truthfully be relabeled as
-        // a new measurement, even though AWB_OFF is available for applying the captured gains.
-        customWbCaptureEnabled = manualWbAvailable && normalized.wbMode == WbMode.AUTO &&
+        // a new measurement. Replaying it needs app-owned gains, i.e. TRANSFORM_MATRIX (CCT mode
+        // has no gains key).
+        customWbCaptureEnabled = wbCap.transformMatrixAvailable && normalized.wbMode == WbMode.AUTO &&
             !normalized.awbLock && caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
         hiResAdvertisedStandalone = caps.hiResAdvertisedStandalone,
     )
