@@ -50,7 +50,7 @@
     <string name="label_directionality">지향성</string>
     <string name="label_input">입력</string>
     <string name="label_gamma">감마</string>
-    <string name="label_gamma_disp_assist">감마 표시 지원</string>
+    <string name="label_gamma_disp_assist">감마 표시 보조</string>
     <string name="label_grid">그리드</string>
     <string name="label_level">수평계</string>
     <string name="label_loupe">루페</string>
@@ -151,7 +151,7 @@
     <string name="a11y_take_photo">사진 촬영</string>
     <string name="a11y_start_recording">녹화 시작</string>
     <string name="a11y_stop_recording">녹화 중지</string>
-    <string name="a11y_stop_timelapse">인터벌 촬영 중지</string>
+    <string name="a11y_stop_timelapse">타임랩스 중지</string>
     <string name="a11y_state_ready">준비됨</string>
     <string name="a11y_state_unavailable">사용 불가</string>
     <string name="a11y_unavailable_while_recording">녹화 중에는 사용할 수 없음</string>
@@ -300,7 +300,7 @@
     <string name="section_memory_recall">메모리 호출</string>
     <string name="section_format">포맷</string>
     <string name="section_framing">프레이밍</string>
-    <string name="section_release">릴리즈</string>
+    <string name="section_release">릴리스</string>
     <string name="section_white_balance">화이트 밸런스</string>
     <string name="section_autofocus">자동 초점</string>
     <string name="section_mf_assist">수동 초점 보조</string>
@@ -372,7 +372,7 @@
     <string name="value_60hz">60 Hz</string>
     <string name="value_off">꺼짐</string>
     <string name="value_on">켜짐</string>
-    <string name="value_fast">빠르게</string>
+    <string name="value_fast">빠름</string>
     <string name="value_high_quality">고화질</string>
     <string name="value_none">없음</string>
     <string name="value_monochrome">흑백</string>
@@ -415,8 +415,8 @@
     <string name="value_high">높음</string>
     <string name="value_ultra">울트라</string>
     <string name="value_max">최대</string>
-    <string name="value_small">작게</string>
-    <string name="value_large">크게</string>
+    <string name="value_small">작음</string>
+    <string name="value_large">큼</string>
     <string name="value_red">빨간색</string>
     <string name="value_green">초록색</string>
     <string name="value_blue">파란색</string>
@@ -511,7 +511,7 @@
     <string name="a11y_saturated_hours_minutes_remaining">%1$s %2$s 이상 남음</string>
     <string name="a11y_status_join">%1$s, %2$s</string>
     <string name="osd_stabilization_standard">표준 보정</string>
-    <string name="osd_stabilization_steady">강력 보정</string>
+    <string name="osd_stabilization_steady">액티브 보정</string>
     <string name="osd_stabilization_off">보정 꺼짐</string>
     <string name="osd_drive_burst">연속 촬영</string>
     <string name="osd_metering_spot">스팟</string>
