@@ -1426,6 +1426,9 @@ class CameraEngine internal constructor(
     private val lensExifCache = java.util.concurrent.ConcurrentHashMap<String, LensExifMetadata>()
     private val idForFocalCache = java.util.concurrent.ConcurrentHashMap<Float, String>()
     @Volatile private var cachedLogicalBackId: String? = null
+    // Logical id → its physical member under the converter (maker TC lens guard). Same lifetime as
+    // the focal→id cache; a key with no readable member is simply not cached and re-asks.
+    private val makerTeleHostCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     // Measured per-device HAL quirks (multi-device 2026-08-01). Resolved once; PMA110 keeps every
     // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
     private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
@@ -1495,6 +1498,21 @@ class CameraEngine internal constructor(
 
     private fun cachedLogicalBack(): String? =
         cachedLogicalBackId ?: CameraSelector2.logicalBackId(manager)?.also { cachedLogicalBackId = it }
+
+    /** The physical member of [logicalId] under the converter, by enumerated focal (never a literal). */
+    private fun cachedMakerTeleHost(logicalId: String): String? =
+        makerTeleHostCache[logicalId] ?: CameraSelector2.pickPhysicalMember(
+            CameraSelector2.candidatesOf(manager), logicalId, LensChoice.TELE3X.targetEquivMm,
+        )?.also { makerTeleHostCache[logicalId] = it }
+
+    /**
+     * The camera the TELE route opens: the standalone host tele (the ordinary TC route, 0x80b4), or
+     * the LOGICAL camera when the converter rides the maker pipeline ([makerLogTeleRouteWanted]). One
+     * resolver for every door (startup/reopen, mode, lens/TC, recall), so none of them can reopen the
+     * other TC route's camera.
+     */
+    private fun teleRouteCameraId(): String? =
+        if (makerLogTeleRouteWanted()) cachedLogicalBack() else cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
 
     @Volatile private var lensInventoryPublished = false
 
@@ -1664,6 +1682,7 @@ class CameraEngine internal constructor(
         cachedFrontSelection = null
         cachedLogicalBackId = null
         idForFocalCache.clear()
+        makerTeleHostCache.clear()
         capsCache.clear()
         lensExifCache.clear()
         // Discovery truth may be stale, but accepted session optics stay authoritative until the
@@ -1999,6 +2018,8 @@ class CameraEngine internal constructor(
     /** The HOST handset's [DeviceProfile.nativeLogEiSupported]: gates the Log EI offset setting. */
     val nativeLogEiSupported: Boolean get() = deviceProfile.nativeLogEiSupported
     val makerLogSupported: Boolean get() = deviceProfile.makerLogPipeline
+    /** Whether the profile measured a maker TC span ([DeviceProfile.makerLogTeleMaxWireZoom]). */
+    val makerLogTeleSupported: Boolean get() = deviceProfile.makerLogTeleMaxWireZoom != null
 
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
     val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
@@ -2710,6 +2731,7 @@ class CameraEngine internal constructor(
         // A replacement controller starts with no faces; frames from the outgoing route's geometry
         // must not linger over the new one until its first readout.
         onFaceBoxes?.invoke(emptyList())
+        ctrl.onMakerLogTeleRefused = { handleMakerLogTeleRefused(ctrl) }
         ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
             override fun wantsRollingShutterSkew(): Boolean =
                 controller === ctrl && gyroLog.wantsRollingShutterSkew()
@@ -2837,6 +2859,8 @@ class CameraEngine internal constructor(
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                 makerLog = makerLogWanted() && !makerLogRefused,
+                // Re-derived from the installed selection: [caps] already carry this route's span.
+                makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
@@ -3045,7 +3069,9 @@ class CameraEngine internal constructor(
             // camera, changes there); the rear split keeps its documented tele/mode-home routing.
             val id = when {
                 activeCameraRoute == CameraRoute.FRONT -> cachedFront()?.logicalId
-                teleconverterMode -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                // Photo TC is always the standalone host; Video TC follows maker Log onto the
+                // logical camera, so a TC Photo↔Video flip with maker Log changes the CAMERA.
+                teleconverterMode -> teleRouteCameraId()
                 else -> resolveNonTeleId(lensChoice)
             }
             if (id == null) {
@@ -3228,7 +3254,7 @@ class CameraEngine internal constructor(
             val id = when {
                 route == CameraRoute.FRONT -> cachedFront()?.logicalId
                 route == CameraRoute.EXTERNAL -> cachedExternal()?.logicalId
-                routeTeleconverter -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                routeTeleconverter -> teleRouteCameraId()
                 else -> resolveNonTeleId(resolvedLens)
             }
             if (id == null) {
@@ -3380,11 +3406,15 @@ class CameraEngine internal constructor(
         )
         val makerBefore = makerLogWanted(t = transfer)
         val makerAfter = makerLogWanted(t = activeTransfer)
+        val retryMaker = makerAfter && cameraReady && controller?.makerLogConfigured == false
         val publish = {
             remapMakerRouteBoundary(makerBefore, makerAfter)
+            // An explicit retry after a refusal: with the converter on, the refusal moved TELE to
+            // the standalone host, whose id is cached; the retry must re-resolve onto the logical
+            // camera (makerLogRefused was cleared above). Off TC this re-resolves to the same camera.
+            if (retryMaker) overrideId = userCameraPin
             publishVideoPipelineLocked(targetPipeline)
         }
-        val retryMaker = makerAfter && cameraReady && controller?.makerLogConfigured == false
         if ((sessionShapeChanged || retryMaker) && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
             postGlTransfer(activeTransfer)
@@ -3957,7 +3987,12 @@ class CameraEngine internal constructor(
             if (!activeCameraFailureBelongsToController(controller, failedController)) return
             // Before recovery reopens: that reopen must not repeat the attempt that failed the device.
             if (failure is RawLogConfigureFatalException) rawLogRefusedRoute = failure.routeKey
-            if (failedController.makerLogFailed) makerLogRefused = true
+            if (failedController.makerLogFailed) {
+                makerLogRefused = true
+                // With the converter on, the refusal moves TELE back to the standalone host: drop
+                // the cached logical id so the bounded recovery reopen re-resolves the route.
+                if (teleconverterMode) overrideId = userCameraPin
+            }
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             val tapPublication = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
@@ -4042,6 +4077,22 @@ class CameraEngine internal constructor(
         // The recorder has been claimed before recovery checks its invariant, so a failed Camera2
         // producer cannot strand UI/audio/encoder state and then suppress the bounded reopen.
         scheduleCameraRecovery(failedController)
+    }
+
+    /**
+     * The maker TC route was refused without a device failure (configure/session-parameter rejection,
+     * or a source that never confirmed): latch the refusal, which moves TELE back to its ordinary
+     * route (standalone host + 0x80b4, [teleRouteCameraId]), drop the cached logical id, and reopen.
+     * Quiet like the non-TC refusal: the Gamma row and OSD read the S-Log3 the new session records.
+     * Identity-gated — a replaced controller's late report is inert.
+     */
+    private fun handleMakerLogTeleRefused(refused: CameraController) {
+        synchronized(this) {
+            if (controller !== refused || !teleconverterMode) return
+            makerLogRefused = true
+            overrideId = userCameraPin
+        }
+        reopenForSession(refused)
     }
 
     /**
@@ -4429,8 +4480,11 @@ class CameraEngine internal constructor(
             if (resolved.teleconverter) {
                 // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
                 // onto that lens, so the logical camera's seamless switching would zoom right off it.
-                // Digital 1–10× only, afocal flip on, RAW available (standalone id).
-                val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                // Digital 1–10× only, afocal flip on, RAW available (standalone id). The one
+                // exception is Video + Log (maker): that pipeline exists only on the logical camera,
+                // so it opens there, held on the host tele by the route's measured zoom span and
+                // watched by the lens guard (MakerLog.kt).
+                val id = teleRouteCameraId()
                 if (id == null) {
                     rollbackOptics(transaction, CameraStatusMessage.TELE_LENS_UNAVAILABLE_UNCHANGED.status())
                     return@execute
@@ -4811,7 +4865,7 @@ class CameraEngine internal constructor(
                 )
                 return@execute
             }
-            val c = cachedCaps(sel.logicalId, sel.physicalId)
+            val rawCaps = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
                     handlePreflightFailure(
                         transaction,
@@ -4821,6 +4875,10 @@ class CameraEngine internal constructor(
                     )
                     return@execute
                 }
+            // TC + maker Log: the logical camera's caps re-expressed as the route's TC-local zoom span
+            // (makerTeleRouteCaps). Every other route installs the camera's own caps, unchanged.
+            val makerTele = makerTeleRouteFor(sel)
+            val c = makerTele?.let { makerTeleRouteCaps(rawCaps, it) } ?: rawCaps
             if (!ownsOpticsTransaction(transaction)) {
                 startupTraceOwnership.revoke(startupTraceOwner)
                 return@execute
@@ -4924,6 +4982,7 @@ class CameraEngine internal constructor(
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                     makerLog = makerLogWanted() && !makerLogRefused,
+                    makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
@@ -5137,8 +5196,10 @@ class CameraEngine internal constructor(
         // proven rear standalone path.
         if (activeCameraRoute == CameraRoute.FRONT) return cachedFront()
         if (activeCameraRoute == CameraRoute.EXTERNAL) return cachedExternal()
+        // TC + maker Log opens the LOGICAL camera (teleRouteCameraId); every other TC case keeps
+        // the historical fall-through onto the TELE3X band's standalone id, byte-identical.
         val id = overrideId
-            ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
+            ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else if (makerLogTeleRouteWanted()) cachedLogicalBack() else null)
             ?: cachedIdForFocal(lensChoice.targetEquivMm)
             ?: return null
         return CameraSelector2.select(manager, id)
@@ -8545,12 +8606,62 @@ class CameraEngine internal constructor(
         fps: Double = videoFrameRate.encoderRate,
         gate: Boolean = openGate,
     ): Boolean = makerLogSessionWanted(mode, t, makerLogOffered(
-        deviceProfile.makerLogPipeline, route, tc, userCameraPin, fps, gate,
+        deviceProfile.makerLogPipeline, deviceProfile.makerLogTeleMaxWireZoom != null, route, tc, userCameraPin, fps, gate,
     ))
+
+    /**
+     * Whether TELE opens the LOGICAL camera for the maker pipeline instead of the standalone host
+     * tele: the converter is on, maker Log is wanted on this route, and no refusal is latched (a
+     * refused or failed maker attempt reopens the ordinary TC route — standalone host + 0x80b4 —
+     * until the operator selects Log (maker) again, which clears [makerLogRefused]).
+     */
+    private fun makerLogTeleRouteWanted(): Boolean =
+        teleconverterMode && makerLogWanted() && !makerLogRefused
+
+    /**
+     * The maker TC route for an opened selection, or null: TC on and the selection IS the logical back
+     * camera — the only way a TELE door reaches it ([teleRouteCameraId]). Derived from the selection
+     * rather than re-asking [makerLogTeleRouteWanted], so the session and its zoom wire can never
+     * disagree with the camera actually opened; a stale pairing self-heals through the controller's
+     * refusal callback. The wire scale is snapshotted per open, like the rest of the route.
+     */
+    private fun makerTeleRouteFor(sel: TeleSelection): MakerTeleRoute? {
+        if (!teleconverterMode || activeCameraRoute != CameraRoute.BACK) return null
+        if (sel.physicalId != null || sel.logicalId != cachedLogicalBack()) return null
+        val ceiling = deviceProfile.makerLogTeleMaxWireZoom ?: return null
+        return MakerTeleRoute(
+            wireZoomScale = makerTeleWireZoomScale(acceptedOpticalPresets, zoomPresets),
+            wireZoomCeiling = ceiling,
+            hostPhysicalId = cachedMakerTeleHost(sel.logicalId),
+        )
+    }
+
+    /**
+     * The ROUTE caps of the maker TC route: the logical camera's caps with `zoomRatioRange` re-expressed
+     * as the TC-local span it can reach ([makerTeleLocalZoomWindow]). Every zoom consumer — the ruler,
+     * TC rail marks, engine/VM clamps, caps reconciliation, the controller's own normalization — then
+     * reads the reachable span in the scale `zoomRatio` is in, and only the controller converts to the
+     * logical wire. Never written into [capsCache]: the photo-home inventory reads the same camera's
+     * true range.
+     */
+    private fun makerTeleRouteCaps(raw: CameraCaps, route: MakerTeleRoute): CameraCaps {
+        val window = makerTeleLocalZoomWindow(
+            raw.zoomRatioRange?.lower, raw.zoomRatioRange?.upper, route.wireZoomScale, route.wireZoomCeiling,
+        ) ?: return raw
+        return raw.copy(zoomRatioRange = android.util.Range(window.start, window.endInclusive))
+    }
 
     /** Same unified/local conversion as the lens and DNG doors; called inside the optics mutation. */
     private fun remapMakerRouteBoundary(before: Boolean, after: Boolean) {
-        if (before == after || activeCameraRoute.lensLocalZoom || teleconverterMode) return
+        if (before == after || activeCameraRoute.lensLocalZoom) return
+        if (teleconverterMode) {
+            // TC keeps its TC-local zoom on both TC routes (only the wire scale and reachable span
+            // differ, owned by the route caps + controller), so nothing is remapped — but the TC
+            // route's CAMERA flips between the standalone host and the logical maker camera, so the
+            // cached id of the previous accepted session must not be reused.
+            overrideId = userCameraPin
+            return
+        }
         val unified = unifiedZoomOf(lensChoice, controls.zoomRatio, !before, acceptedOpticalPresets, zoomPresets)
         if (after) {
             controls = controls.copy(zoomRatio = unified)

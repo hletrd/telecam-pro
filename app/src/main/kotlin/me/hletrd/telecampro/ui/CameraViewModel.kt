@@ -252,6 +252,7 @@ class CameraViewModel private constructor(
             nativeLogEiSupported = engine.nativeLogEiSupported,
             nativeLogCurveVerified = engine.nativeLogCurveMeasured,
             makerLogSupported = engine.makerLogSupported,
+            makerLogTeleSupported = engine.makerLogTeleSupported,
         ),
     )
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
@@ -1688,13 +1689,17 @@ class CameraViewModel private constructor(
         // The restored route's zoom SCALE: lens-local on any standalone route (VIDEO, or PHOTO with
         // DNG on PMA110), unified only on the logical seamless camera. One answer feeds both the
         // preserve branch and restoredOptics so they can never disagree about what the ratio means.
+        // Whether the restored packet asks for the maker pipeline. With TC it moves the CAMERA (the
+        // logical maker camera instead of the standalone host) but never the TC-local zoom scale, so
+        // the scale question below excludes it, exactly as before TC could ride maker Log.
+        val restoredMakerLog = e.mode == CaptureMode.VIDEO && safeTransfer == ColorTransfer.MAKER_LOG &&
+            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, engine.makerLogTeleSupported,
+                CameraRoute.BACK, requestedTeleconverter, null, e.videoFrameRate.encoderRate, e.openGate)
         val restoredRouteStandalone = standaloneRouteWanted(
             e.mode == CaptureMode.VIDEO,
             requestedFormats.dngRaw,
             engine.rawForcesStandalone,
-            makerLog = e.mode == CaptureMode.VIDEO && safeTransfer == ColorTransfer.MAKER_LOG &&
-                me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, CameraRoute.BACK,
-                    requestedTeleconverter, null, e.videoFrameRate.encoderRate, e.openGate),
+            makerLog = restoredMakerLog && !requestedTeleconverter,
         )
         // The RESTORED phone's chips: a preset lands where that maker puts it, and a unified ratio
         // re-bands on that phone's chip positions, never the outgoing phone's.
@@ -1762,9 +1767,15 @@ class CameraViewModel private constructor(
             targetTeleconverter = restoredTeleconverter,
             currentFrontFacing = currentState.facing == CameraFacing.FRONT,
             // DNG is a route input too (AGG2-13). TC is already standalone, so it counts as such on
-            // both sides and a DNG difference under TC never discards the same camera's caps.
-            currentStandalone = currentState.teleconverterMode || standaloneRouteFor(currentState),
-            targetStandalone = restoredTeleconverter || restoredRouteStandalone,
+            // both sides and a DNG difference under TC never discards the same camera's caps — except
+            // the maker TC route, which is the LOGICAL camera (its caps describe a different camera
+            // from the standalone host's, so the two TC routes never share an exposure range).
+            currentStandalone = if (currentState.teleconverterMode) {
+                !currentState.makerLogTeleRoute
+            } else {
+                standaloneRouteFor(currentState)
+            },
+            targetStandalone = if (restoredTeleconverter) !restoredMakerLog else restoredRouteStandalone,
         )
         val lastCapsExp = currentState.caps
             ?.takeIf { currentCapsDescribeTarget }
@@ -2974,7 +2985,19 @@ class CameraViewModel private constructor(
     }
     /** Native maker video changes the rear zoom scale just like the DNG route door. */
     private fun makerRouteOptics(before: CameraUiState, after: CameraUiState): ModeOptics? {
-        if (before.makerLogRoute == after.makerLogRoute) return null
+        if (before.makerLogRoute == after.makerLogRoute) {
+            // TC: maker Log moves the TELE route between the standalone host and the logical maker
+            // camera. The TC-local zoom is kept (nothing to remap), but the reachable span and the
+            // wire scale change under it, so the remap-door hygiene still runs: an in-flight glide's
+            // pendingRatio/easeTarget must not land on the new route's clamp later.
+            if (before.makerLogTeleRoute != after.makerLogTeleRoute) {
+                drainPendingControls()
+                cancelPendingControls()
+                invalidateOpticsDerivedState()
+                clearTapFocusUi()
+            }
+            return null
+        }
         drainPendingControls()
         cancelPendingControls()
         invalidateOpticsDerivedState()
@@ -3667,9 +3690,10 @@ class CameraViewModel private constructor(
         state: CameraUiState,
         videoMode: Boolean = state.mode == CaptureMode.VIDEO,
     ): Boolean = standaloneRouteWanted(videoMode, state.photoFormats.dngRaw, engine.rawForcesStandalone,
+        // TC false: this is the non-TC route's scale question (a TC session keeps TC-local zoom).
         makerLog = videoMode && state.transfer == ColorTransfer.MAKER_LOG &&
-            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, CameraRoute.BACK,
-                false, state.cameraOverrideId, state.videoFrameRate.encoderRate, state.openGate))
+            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, engine.makerLogTeleSupported,
+                CameraRoute.BACK, false, state.cameraOverrideId, state.videoFrameRate.encoderRate, state.openGate))
 
     /** Converts the canonical rear snapshot into the route a save/recall will actually restore. */
     private fun retainedRearZoomRatio(state: CameraUiState, teleconverter: Boolean): Float {

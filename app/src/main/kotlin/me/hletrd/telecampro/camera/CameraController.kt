@@ -170,6 +170,13 @@ class CameraController internal constructor(
         private set
     @Volatile var makerLogFailed = false
         private set
+    // The maker TC route (MakerLog.kt): non-null when this controller opened the LOGICAL camera
+    // because the converter rides the maker pipeline. Set once per open() on setupExecutor and read on
+    // the camera thread, hence @Volatile. Its session may only ever be the maker one: an ordinary
+    // session on the logical camera with the converter declared would sit wherever the logical camera
+    // put it, and the ordinary TC route is a different CAMERA (standalone host tele + 0x80b4), which
+    // only the engine can reopen — see [onMakerLogTeleRefused].
+    @Volatile private var makerTeleRoute: MakerTeleRoute? = null
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -357,6 +364,11 @@ class CameraController internal constructor(
     // Face Priority AF frames (FacePriority.kt). Camera-thread callback, at most 10 Hz and only on a
     // MATERIAL change ([FaceReadoutGate]); an empty frame clears the overlay. Never drives a request.
     @Volatile var onFaces: ((FaceFrame) -> Unit)? = null
+    // Maker TC route refused (MakerLog.kt): the maker attempt failed or never applied on the logical
+    // camera, and this controller will NOT configure an ordinary session there. The engine marks the
+    // maker route refused and reopens the ordinary TC route (standalone host tele + 0x80b4). Camera
+    // thread; identity-gated by the engine like every controller callback.
+    @Volatile var onMakerLogTeleRefused: (() -> Unit)? = null
     // Camera-thread confined: paces the STATISTICS_FACES read and change-gates publication.
     private val faceReadoutGate = FaceReadoutGate()
     private var lastReportedFocus = Float.NaN
@@ -380,6 +392,10 @@ class CameraController internal constructor(
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
         makerLog: Boolean = false,
+        // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
+        // an open path that forgot it would open the logical camera with the converter declared and
+        // its TC-local zoom on the logical wire — the main lens, not the tele the converter is on.
+        makerTeleRoute: MakerTeleRoute?,
         highSpeedFps: Int = 0,
         // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
         // that forgot one compiled and silently opened with stabilization off, the TC hints off,
@@ -433,6 +449,7 @@ class CameraController internal constructor(
         this.makerLogConfigured = false
         this.makerLogFailed = false
         this.pendingMakerConfirmation = null
+        this.makerTeleRoute = makerTeleRoute
         this.tenBitHlg = tenBitHlg
         // Re-checked against THIS camera's caps: the engine resolves the same predicate from the
         // same caps, so this only matters if a future caller passes intent instead of a decision.
@@ -708,9 +725,12 @@ class CameraController internal constructor(
     private fun CaptureRequest.Builder.applyTeleconverterHints() {
         // Measured-on-PMA110 vendor request hints stay off any other vendor's HAL (DeviceProfile).
         if (!deviceProfile.vendorOplusRequestHints) return
-        val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
-            if (teleconverterMode) teleconverterMagnification else 1f
-        if (teleconverterMode) {
+        val effectiveZoom = originalZoomHint(controls.zoomRatio)
+        // Not on the maker TC route: `com.oplus.camera.mode` is the SAME key the maker protocol
+        // fills with `pro_video_log_mode`, and the measured maker session is stock PRO VIDEO, which
+        // never carries the Hasselblad mode. The converter's TC context was not demonstrated to change
+        // anything even on its own route (FIELD_CHECKS C3).
+        if (teleconverterMode && makerTeleRoute == null) {
             runCatching {
                 set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
             }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
@@ -718,6 +738,20 @@ class CameraController internal constructor(
         runCatching {
             set(oplusOriginalZoomRatioKey, effectiveZoom)
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "original zoom ratio hint rejected: ${it.message}") }
+    }
+
+    /**
+     * The `com.oplus.original.zoomRatio` value for the TC-local/route [ratio]: on the maker TC route
+     * the logical WIRE zoom (what the non-TC maker route sends at the same framing, i.e. what stock
+     * PRO VIDEO sends — the measured state); elsewhere the historical effective zoom, unchanged.
+     */
+    private fun originalZoomHint(ratio: Float): Float {
+        val route = makerTeleRoute
+        return if (route != null) {
+            makerTeleWireZoom(ratio, route)
+        } else {
+            ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
+        }
     }
 
     /**
@@ -772,12 +806,16 @@ class CameraController internal constructor(
         }
         runCatching {
             caps.zoomRatioRange?.let {
-                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, clampToOrderedBounds(ratio, it.lower, it.upper))
+                // Clamped in the route's own scale (TC-local window on the maker TC route, whose
+                // caps are the route caps), then carried onto the logical wire — the same order as
+                // applyZoom, so the fast path and a full rebuild put one value on the wire.
+                val local = clampToOrderedBounds(ratio, it.lower, it.upper)
+                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, makerTeleRoute?.let { route -> makerTeleWireZoom(local, route) } ?: local)
             }
             // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
             // same guarded write as applyTeleconverterHints.
             if (deviceProfile.vendorOplusRequestHints) {
-                val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
+                val effectiveZoom = originalZoomHint(ratio)
                 runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
             }
             s.setRepeatingRequest(b.build(), cb, handler)
@@ -857,6 +895,19 @@ class CameraController internal constructor(
         makerLogConfigured = false
         val useMakerLog = makerLogRequested && !makerLogRefused
         makerLogAttempt = useMakerLog
+        // The maker TC route never falls back IN PLACE. Every maker refusal below (configure failure,
+        // session-parameter rejection, a source that never confirms) re-enters here with the maker
+        // half refused; the non-TC route then rebuilds an ordinary session on this same logical
+        // camera, but with the converter declared that would be the logical camera's own lens choice
+        // plus the TC ladder's 0x80b4 on a camera it was never measured on. The ordinary TC route is a
+        // different camera, so hand the decision back to the engine and configure nothing.
+        if (makerTeleRoute != null && !useMakerLog) {
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                android.util.Log.i(TAG, "MakerTele: maker session refused on the logical camera; reopening the ordinary TC route")
+            }
+            onMakerLogTeleRefused?.invoke()
+            return
+        }
         val attempt = configAttempt
         val attemptToken = configureGate.begin()
         // The measured JPEG-blob failure belongs to PMA110's LOGICAL camera only. FRONT uses YUV on
@@ -1141,7 +1192,7 @@ class CameraController internal constructor(
                 // camera client's potentially multi-second low-light exposure.
                 sp.applyManualControls(controls, caps, pinAutoFps = pinAutoFps,
                     previewExposureCap = true, enforceFrameRate = pinAutoFps, videoMode = true,
-                    nativeLogEiStops = 0)
+                    nativeLogEiStops = 0, zoomWire = makerTeleRoute)
             }
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
@@ -1451,6 +1502,7 @@ class CameraController internal constructor(
                     enforceFrameRate = pinAutoFps,
                     videoMode = pinAutoFps,
                     nativeLogEiStops = repeatingNativeLogEiStops(controls),
+                    zoomWire = makerTeleRoute,
                 )
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -1491,7 +1543,10 @@ class CameraController internal constructor(
                     // The RAW developer's white balance, black level, shading map and crop zoom come
                     // from the frame results, exactly as the ISP would have taken them.
                     rawLogBridge?.onResult(result)
-                    result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { rz ->
+                    result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { wireZoom ->
+                        // The maker TC route reads its logical wire zoom back in TC-local units: the
+                        // GL compensation divides the REQUESTED (TC-local) ratio by this one.
+                        val rz = makerTeleRoute?.let { route -> makerTeleLocalZoom(wireZoom, route) } ?: wireZoom
                         // Change-gated: this callback runs 30-60 Hz and the GL compensation only
                         // needs FRESH values while the HAL is actually ramping — forwarding a
                         // steady value allocated a capturing lambda + GL handler post per frame
@@ -2635,6 +2690,9 @@ class CameraController internal constructor(
                         // ...and never the Log EI offset: the in-REC snapshot is a normal still at
                         // the operator's intended exposure, under the stock tone map below.
                         nativeLogEiStops = 0,
+                        // A maker session has no still readers, so this is null in practice; passed
+                        // anyway so a still can never frame on a different scale than the preview.
+                        zoomWire = makerTeleRoute,
                     )
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).

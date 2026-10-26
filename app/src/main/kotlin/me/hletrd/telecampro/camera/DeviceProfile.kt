@@ -103,6 +103,18 @@ internal data class DeviceProfile(
     val tenBitNativeLogBridge: Boolean = false,
     /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
     val makerLogPipeline: Boolean = false,
+    /**
+     * The highest LOGICAL-camera wire zoom measured to stay on the converter's host tele, or null
+     * where Gamma = Log (maker) has not been measured with the teleconverter (it is then not offered
+     * while TC is on). The maker pipeline only exists on the logical camera, which crosses physical
+     * lenses on its own; the converter clamps onto ONE of them, so the TC route may only use the
+     * logical zoom span that stays there. PMA110 = [MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110] (9.8),
+     * measured on this route 2026-10-26: wire 9.89 stayed on the tele, every entry to 10.0 handed
+     * over to the 10× periscope for 1–2 s. Low light was NOT tested — the lens guard
+     * (`makerTeleLensOffHost`) is what catches a HAL handover the measurement did not see
+     * (FIELD_CHECKS A22).
+     */
+    val makerLogTeleMaxWireZoom: Float? = null,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -117,6 +129,7 @@ internal data class DeviceProfile(
             nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
+            makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
         )
 
         val GENERIC = DeviceProfile(

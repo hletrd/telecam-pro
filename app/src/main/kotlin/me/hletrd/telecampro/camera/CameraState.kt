@@ -2215,6 +2215,8 @@ data class CameraUiState(
      */
     val glTenBitOutput: Boolean = false,
     val makerLogSupported: Boolean = false,
+    /** [DeviceProfile.makerLogTeleMaxWireZoom] non-null: Log (maker) is also offered with TC on. */
+    val makerLogTeleSupported: Boolean = false,
     /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a
@@ -2290,11 +2292,24 @@ data class CameraUiState(
                 transfer == ColorTransfer.MAKER_LOG && !photoSessionOutputs.makerLog))
 
     val makerLogOffered: Boolean
-        get() = makerLogOffered(makerLogSupported, activeCameraRoute, teleconverterMode,
+        get() = makerLogOffered(makerLogSupported, makerLogTeleSupported, activeCameraRoute, teleconverterMode,
             cameraOverrideId, videoFrameRate.encoderRate, openGate)
 
+    /**
+     * Maker Log moves the rear ZOOM SCALE onto the logical camera's unified one ([standaloneRouteWanted]).
+     * Not with TC: the converter keeps its TC-local zoom on both TC routes and only the controller
+     * converts to the logical wire (MakerLog.kt), so a TC session never changes scale here.
+     */
     val makerLogRoute: Boolean
-        get() = makerLogSessionWanted(mode == CaptureMode.VIDEO, transfer, makerLogOffered)
+        get() = !teleconverterMode && makerLogSessionWanted(mode == CaptureMode.VIDEO, transfer, makerLogOffered)
+
+    /**
+     * The REQUESTED maker TC route: the converter rides the maker pipeline on the logical camera.
+     * Request-side, like [makerLogRoute] (a latched engine refusal reopens the ordinary TC route, and
+     * the accepted session then says so through [photoSessionOutputs]).
+     */
+    val makerLogTeleRoute: Boolean
+        get() = teleconverterMode && makerLogSessionWanted(mode == CaptureMode.VIDEO, transfer, makerLogOffered)
 
     val effectiveVideoTransfer: ColorTransfer
         get() = effectiveRecordingTransfer(transfer,

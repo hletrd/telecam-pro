@@ -14,19 +14,42 @@ internal object MakerLogProtocol {
 }
 
 /**
+ * PMA110's measured [DeviceProfile.makerLogTeleMaxWireZoom], device-measured in THIS route on
+ * 2026-10-26 (logical camera 0, maker session, Hasselblad 300 mm mounted, dim room, chart ~1 m):
+ * LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID stayed on the host tele (4) at wire 8.91, 9.61 and 9.89,
+ * but EVERY entry to 10.0 (5 of 5) handed the frame to the 10× periscope (5) for 1.6–1.9 s before
+ * the HAL fell back to the tele. The owner's stock check the same day (PRO VIDEO / O-Log2 at the 3×,
+ * 6× and 10× presets showing the converter's field, moderate light) saw that fallback, not the
+ * handover; with a distant subject in good light the HAL may well STAY on the periscope at 10×. So
+ * the ceiling sits below the periscope's own field (230 ÷ 23.4 mm ≈ 9.83 on the logical scale),
+ * where the logical camera physically cannot serve the frame from it: 9.8 — ≈42.6× TOTAL through
+ * the 300 mm kit. Low light, where a logical camera may hand DOWN to the brighter main lens at any
+ * zoom, was not tested; the lens guard is what catches it (FIELD_CHECKS A22).
+ */
+internal const val MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110 = 9.8f
+
+/**
  * The measured factory path is the rear logical camera, STANDARD PRIVATE/TP10, ordinary 16:9 video
- * at up to 30 fps. TC has a different operation mode and has NOT produced the same Log gamma.
- * Keep unsupported requests as intent; their effective output is the ordinary S-Log3 fallback.
+ * at up to 30 fps. Keep unsupported requests as intent; their effective output is the ordinary
+ * S-Log3 fallback.
+ *
+ * The teleconverter no longer withholds it (owner request 2026-10-26) where the profile measured a
+ * TC span ([teleconverterRouteMeasured], i.e. [DeviceProfile.makerLogTeleMaxWireZoom] non-null):
+ * stock never combines its own TC mode with Log, and the TC session type 0x80b4 (standalone 4) gives
+ * an SDR-like gamma under `pro_video_log_mode`, so TC + maker Log keeps the converter's GL/readout
+ * world and only moves the SESSION onto the logical camera's measured maker protocol, zoomed onto
+ * the host tele ([MakerTeleRoute]). Losing 0x80b4 costs nothing demonstrated (FIELD_CHECKS C3).
  */
 fun makerLogOffered(
     profileAllows: Boolean,
+    teleconverterRouteMeasured: Boolean,
     route: CameraRoute,
     teleconverter: Boolean,
     cameraOverride: String?,
     frameRate: Double,
     openGate: Boolean,
-): Boolean = profileAllows && route == CameraRoute.BACK && !teleconverter && cameraOverride == null &&
-    frameRate.isFinite() && frameRate > 0.0 && frameRate <= 30.0 && !openGate
+): Boolean = profileAllows && route == CameraRoute.BACK && (!teleconverter || teleconverterRouteMeasured) &&
+    cameraOverride == null && frameRate.isFinite() && frameRate > 0.0 && frameRate <= 30.0 && !openGate
 
 internal fun makerLogSessionWanted(video: Boolean, transfer: ColorTransfer, offered: Boolean): Boolean =
     video && transfer == ColorTransfer.MAKER_LOG && offered
@@ -44,3 +67,62 @@ fun effectiveRecordingTransfer(requested: ColorTransfer, makerLogAccepted: Boole
 internal fun makerLogSourceConfirmed(operationMode: Int?, logMode: Int?, gamma: IntArray?): Boolean =
     operationMode == MakerLogProtocol.SESSION_TYPE && logMode == 0 && gamma?.size == 1024 &&
         gamma[0] == 754 && gamma[255] > gamma[0]
+
+/**
+ * The teleconverter riding the maker pipeline: the LOGICAL camera, zoomed onto the converter's host
+ * tele. Everything the converter owns — the afocal 180°, the TC-local zoom the UI and readouts use,
+ * the declared focal/magnification, EXIF and OSD — stays exactly as on the ordinary TC route; only
+ * the camera, its session and the zoom's WIRE scale differ, and those live in the controller.
+ *
+ * [wireZoomScale] is the host tele's position on the logical camera's unified scale (the value the
+ * 3× chip applies, [makerTeleWireZoomScale]); the controller multiplies every CONTROL_ZOOM_RATIO it
+ * writes by it and divides every one it reads back, so engine, GL compensation and UI keep seeing
+ * TC-local values. [wireZoomCeiling] is the measured [DeviceProfile.makerLogTeleMaxWireZoom].
+ * [hostPhysicalId] is the logical camera's physical member under the converter, resolved by
+ * enumerated focal ([CameraSelector2.pickPhysicalMember]) — never a literal id — or null when the
+ * enumeration could not name it (the lens guard then cannot prove anything and stays quiet).
+ */
+data class MakerTeleRoute(
+    val wireZoomScale: Float,
+    val wireZoomCeiling: Float,
+    val hostPhysicalId: String?,
+)
+
+/**
+ * The host tele's position on the logical wire scale: [unifiedZoomOf] for a TC-local 1× on the
+ * TELE3X preset, i.e. the declared phone's tele chip position over the optical lens it reaches
+ * (3.0 on PMA110 — exactly the ratio the 3× chip applies). Same machinery as every other
+ * standalone↔logical conversion, so the two scales cannot drift apart.
+ */
+internal fun makerTeleWireZoomScale(optical: Set<LensChoice>, presets: ZoomPresets): Float =
+    unifiedZoomOf(LensChoice.TELE3X, 1f, standaloneRoute = true, optical = optical, presets = presets)
+
+/**
+ * The TC-local span the maker TC route can reach: the logical camera's advertised range expressed
+ * in TC-local units, cut to [1, ceiling ÷ scale] — below the host tele's own field the logical camera
+ * hands over to a wider lens the converter is not on, and above the measured ceiling the handover to
+ * the next lens is unmeasured. Published as the route caps' `zoomRatioRange` (CameraEngine), so the
+ * ruler, the TC rail marks, every clamp and the ordinary caps reconciliation all read the reachable
+ * span: ≈42.6× on PMA110 instead of the usual 60× TOTAL ceiling. Null when the HAL advertised no range.
+ */
+internal fun makerTeleLocalZoomWindow(
+    rawLower: Float?,
+    rawUpper: Float?,
+    wireScale: Float,
+    wireCeiling: Float,
+): ClosedFloatingPointRange<Float>? {
+    if (rawLower == null || rawUpper == null || !(wireScale > 0f) || !wireScale.isFinite()) return null
+    val upper = minOf(rawUpper, wireCeiling) / wireScale
+    val lower = maxOf(1f, rawLower / wireScale)
+    return if (lower <= upper) lower..upper else upper..upper
+}
+
+/** TC-local zoom → logical wire zoom, clamped to the measured [scale, ceiling] span. */
+internal fun makerTeleWireZoom(local: Float, route: MakerTeleRoute): Float =
+    (local * route.wireZoomScale).coerceIn(
+        route.wireZoomScale,
+        maxOf(route.wireZoomScale, route.wireZoomCeiling),
+    )
+
+/** Logical wire zoom (a CaptureResult) → the TC-local value engine and GL compare against. */
+internal fun makerTeleLocalZoom(wire: Float, route: MakerTeleRoute): Float = wire / route.wireZoomScale

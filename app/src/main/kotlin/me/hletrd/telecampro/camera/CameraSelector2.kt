@@ -364,6 +364,19 @@ object CameraSelector2 {
     fun pickBest(candidates: List<TeleSelection>): TeleSelection? = pickClosest(candidates, TARGET_EQUIV_MM)
 
     /**
+     * The PHYSICAL member of logical camera [logicalId] whose 35mm-equiv is closest to
+     * [targetEquivMm] — an identity to COMPARE against a result's LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID
+     * (the maker TC lens guard), never one to route a stream to (the QTI-HAL crash class above). The
+     * logical camera's member id need not equal the standalone id that [pickClosest] opens for the
+     * same lens, which is why it is resolved here by focal and not reused from the TC route. Null
+     * when no member has a readable focal. Pure, like [pickClosest].
+     */
+    fun pickPhysicalMember(candidates: List<TeleSelection>, logicalId: String, targetEquivMm: Float): String? =
+        candidates.filter { it.logicalId == logicalId && it.physicalId != null && it.equivFocalMm > 0f }
+            .minByOrNull { abs(it.equivFocalMm - targetEquivMm) }
+            ?.physicalId
+
+    /**
      * The front (selfie) camera, opened PLAINLY like every other selection — never via
      * setPhysicalCameraId routing (the QTI-HAL crash class documented on [pickBest]). Returns a
      * standalone-shaped [TeleSelection] (physicalId = null) so the whole session/controller path is

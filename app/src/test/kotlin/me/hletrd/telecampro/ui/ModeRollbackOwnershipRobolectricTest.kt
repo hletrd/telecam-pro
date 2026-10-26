@@ -270,6 +270,63 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(1.25f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 1e-6f)
     }
 
+    @Test
+    fun `maker gamma under TC keeps the TC-local zoom and re-resolves the TELE camera`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO, ColorTransfer.SLOG3, ColorTransfer.SLOG3,
+        )
+        setField(engine, "deviceProfile", me.hletrd.telecampro.camera.DeviceProfile.resolve("PMA110"))
+        setField(engine, "lensChoice", me.hletrd.telecampro.camera.LensChoice.TELE3X)
+        setBoolean(engine, "teleconverterMode", true)
+        val controls = me.hletrd.telecampro.camera.ManualControls(zoomRatio = 2f)
+        setField(engine, "controls", controls)
+        setField(viewModel, "pendingControls", controls)
+        // The ordinary TC route's accepted camera: the standalone host tele.
+        setField(engine, "overrideId", "4")
+        state(viewModel).value = state(viewModel).value.copy(
+            makerLogSupported = true,
+            makerLogTeleSupported = true,
+            teleconverterMode = true,
+            lens = me.hletrd.telecampro.camera.LensChoice.TELE3X,
+            controls = controls,
+        )
+        val teleRouteWanted = CameraEngine::class.java.getDeclaredMethod("makerLogTeleRouteWanted")
+            .apply { isAccessible = true }
+        assertFalse(teleRouteWanted.invoke(engine) as Boolean)
+
+        viewModel.onTransfer(ColorTransfer.MAKER_LOG)
+        // TC-local on both sides: no unified remap (that would read 6.0 here)...
+        assertEquals(2f, viewModel.state.value.controls.zoomRatio, 0f)
+        assertEquals(2f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 0f)
+        // ...but the cached standalone id is dropped so the reopen resolves the logical maker camera.
+        assertEquals(null, field(engine, "overrideId"))
+        assertTrue(teleRouteWanted.invoke(engine) as Boolean)
+        assertTrue(viewModel.state.value.makerLogTeleRoute)
+        assertFalse(viewModel.state.value.makerLogRoute)
+
+        // A maker refusal latched on the logical camera hands TELE back to the ordinary route.
+        setField(engine, "overrideId", "0")
+        setBoolean(engine, "makerLogRefused", true)
+        assertFalse(teleRouteWanted.invoke(engine) as Boolean)
+        // Selecting Log (maker) again is the explicit retry: it clears the latch and the cached id.
+        viewModel.onTransfer(ColorTransfer.MAKER_LOG)
+        assertFalse(field(engine, "makerLogRefused") as Boolean)
+        assertTrue(teleRouteWanted.invoke(engine) as Boolean)
+
+        // Above 30 fps the TC route is the ordinary standalone one again, still at TC-local 2.0.
+        setField(engine, "overrideId", "0")
+        viewModel.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60)
+        assertEquals(2f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 0f)
+        assertEquals(null, field(engine, "overrideId"))
+        assertFalse(teleRouteWanted.invoke(engine) as Boolean)
+
+        viewModel.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_29_97)
+        viewModel.onTransfer(ColorTransfer.SLOG3)
+        assertEquals(2f, viewModel.state.value.controls.zoomRatio, 0f)
+        assertEquals(2f, (field(engine, "controls") as me.hletrd.telecampro.camera.ManualControls).zoomRatio, 0f)
+        assertFalse(teleRouteWanted.invoke(engine) as Boolean)
+    }
+
     private fun createAccepted(
         mode: CaptureMode,
         acceptedTransfer: ColorTransfer = transferFor(mode),

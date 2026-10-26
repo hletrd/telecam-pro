@@ -755,6 +755,11 @@ internal fun CaptureRequest.Builder.applyManualControls(
     // native-log session's REPEATING request — the controller passes 0 for every still. No default,
     // same rule as above: a still that inherited a default offset would come out N stops dark.
     nativeLogEiStops: Int,
+    // The maker TC route's wire mapping (MakerLog.kt), null everywhere else. [c] carries the TC-LOCAL
+    // zoom the engine and UI own; on that route the logical camera needs it multiplied onto the host
+    // tele's position. No default, same rule: a builder that forgot it would put a TC-local 1.0 on
+    // the logical wire, i.e. the MAIN lens, with the converter on the tele.
+    zoomWire: MakerTeleRoute?,
 ): NativeLogEiApplied {
     applyFocus(c, caps, videoMode)
     val ei = applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate, nativeLogEiStops)
@@ -763,7 +768,7 @@ internal fun CaptureRequest.Builder.applyManualControls(
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
     // and must win over the AE mode that applyExposure set (see applyFlash).
     applyFlash(c, caps)
-    applyZoom(c, caps)
+    applyZoom(c, caps, zoomWire)
     set(CaptureRequest.JPEG_QUALITY, c.jpegQuality.coerceIn(1, 100).toByte())
 
     // OIS: physically counter-moves the lens during exposure → the only thing that cuts per-frame
@@ -1316,9 +1321,13 @@ private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCap
     }
 }
 
-private fun CaptureRequest.Builder.applyZoom(c: ManualControls, caps: CameraCaps) {
+private fun CaptureRequest.Builder.applyZoom(c: ManualControls, caps: CameraCaps, zoomWire: MakerTeleRoute?) {
     caps.zoomRatioRange?.let {
-        set(CaptureRequest.CONTROL_ZOOM_RATIO, clampToOrderedBounds(c.zoomRatio, it.lower, it.upper))
+        // On the maker TC route [caps] are the ROUTE caps, whose range is the TC-local window
+        // (makerTeleLocalZoomWindow); the clamp therefore happens in the scale [c] is in, and only
+        // the clamped value is carried onto the logical wire. Null leaves the value untouched.
+        val local = clampToOrderedBounds(c.zoomRatio, it.lower, it.upper)
+        set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomWire?.let { route -> makerTeleWireZoom(local, route) } ?: local)
     }
 }
 
