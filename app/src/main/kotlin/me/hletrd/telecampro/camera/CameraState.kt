@@ -2190,6 +2190,13 @@ data class CameraUiState(
     val tenBitEncodeAvailable: Boolean = false,
     /** [DeviceProfile.nativeLogEiSupported] of the host handset; false hides the Log EI offset. */
     val nativeLogEiSupported: Boolean = true,
+    /** [DeviceProfile.nativeLogCurveMeasured] of the host handset; false shows the Log warning. */
+    val nativeLogCurveVerified: Boolean = true,
+    /**
+     * Whether the current GL generation renders a ten-bit encoder target (`CameraEngine.glTenBitOutput`,
+     * sampled at each Ready). Captions claim ten bits for a GL-rendered file only when this is true.
+     */
+    val glTenBitOutput: Boolean = false,
     /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a

@@ -250,6 +250,7 @@ class CameraViewModel private constructor(
     private val _state = MutableStateFlow(
         CameraUiState(
             nativeLogEiSupported = engine.nativeLogEiSupported,
+            nativeLogCurveVerified = engine.nativeLogCurveMeasured,
         ),
     )
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
@@ -1138,6 +1139,7 @@ class CameraViewModel private constructor(
                             cameraReadyEstablished = true,
                             cameraTerminal = false,
                             photoSessionOutputs = publication.photoOutputs,
+                            glTenBitOutput = engine.glTenBitOutput,
                         )
                     }
                     if (acceptedApplied) {

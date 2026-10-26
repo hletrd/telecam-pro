@@ -1980,6 +1980,19 @@ class CameraEngine internal constructor(
         get() = callbackSink.function1(EngineCallbackKey.CAMERA_POLICY)
         set(value) = callbackSink.install(EngineCallbackKey.CAMERA_POLICY, value)
 
+    /**
+     * Whether the CURRENT GL generation renders through a ten-bit (RGBA1010102) encoder target — false
+     * where the device has no recordable 1010102 config and EglCore fell back to 8-bit. Read when a
+     * Ready is published, so captions only claim ten bits the file can carry.
+     */
+    val glTenBitOutput: Boolean get() = gl.tenBitOutput
+
+    /**
+     * The HOST handset's [DeviceProfile.nativeLogCurveMeasured]: false shows the short "unverified"
+     * warning under Gamma = Log on the native-curve path.
+     */
+    val nativeLogCurveMeasured: Boolean get() = deviceProfile.nativeLogCurveMeasured
+
     /** The HOST handset's [DeviceProfile.nativeLogEiSupported]: gates the Log EI offset setting. */
     val nativeLogEiSupported: Boolean get() = deviceProfile.nativeLogEiSupported
 
@@ -2133,13 +2146,15 @@ class CameraEngine internal constructor(
                 }
                 // The EGL config is per GL GENERATION (Java EGL cannot create the no-config context
                 // EGL_KHR_no_config_context needs), so a ten-bit encoder target means a ten-bit
-                // generation. A device whose profile takes the P010 native-log bridge runs every
-                // generation on RGBA1010102: the bridge's ten bits would otherwise be quantized back
-                // to eight (plus GL dither) at the encoder surface — device-measured 2026-10-25, a
-                // 0.40–0.45 grey ramp reached the file as clean 10-bit steps through RGBA1010102 and
-                // as dithered 8-bit through RGBA8888. EglCore falls back to 8-bit when no recordable
-                // 1010102 config exists. The DEBUG flag file still forces it elsewhere.
-                val tenBit = deviceProfile.tenBitNativeLogBridge || tenBitExperimentEnabled()
+                // generation, and every generation asks for one (owner decision 2026-10-26): a
+                // ten-bit source — the P010 bridge, HLG10, the RAW log developer — is otherwise
+                // quantized back to eight (plus GL dither) at the encoder surface. Device-measured
+                // 2026-10-25 on PMA110, a 0.40–0.45 grey ramp reached the file as clean 10-bit steps
+                // through RGBA1010102 and as dithered 8-bit through RGBA8888, with SDR AVC/HEVC, HLG,
+                // preview and Photo unchanged; the Galaxy Z Flip6 recorded HLG and RAW log cleanly
+                // through it (2026-10-26). EglCore falls back to 8-bit when no recordable 1010102
+                // config exists, and the generation reports which one it got ([glTenBitOutput]).
+                val tenBit = true
                 val ownedGl = glOwners.current()
                 glInputPending = true
                 ownedGl.start(tenBit) { _ ->
@@ -8539,17 +8554,6 @@ class CameraEngine internal constructor(
             nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)) &&
                 tenBitNativeLogBridgeSupported(deviceProfile, c, it.width, it.height)
         }
-
-    /**
-     * DEBUG-only RGBA1010102 EGL experiment gate. It does not arm native log or the shipping HLG10
-     * Camera2 session; release builds always use the stable 8-bit EGL target. (It used to also OR
-     * into the session's `tenBitHlg`, so a leftover flag file turned PHOTO into the still-less HLG10
-     * rung — a debug photo mode that could not shoot, contradicting this very doc; AGG-45.)
-     */
-    internal fun tenBitExperimentEnabled(): Boolean =
-        BuildConfig.DEBUG &&
-            runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }
-                .getOrDefault(false)
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {

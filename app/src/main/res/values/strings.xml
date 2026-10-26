@@ -380,6 +380,8 @@
     <string name="video_native_log_source">Encoded by the camera’s ISP from its linear signal · 8-bit, clips at sensor white</string>
     <string name="video_native_log_source_10bit">Encoded by the camera’s ISP from its linear signal · 10-bit, clips at sensor white</string>
     <string name="video_raw_log_source">Developed in-app from the sensor RAW · 10-bit, clips at sensor white</string>
+    <string name="video_raw_log_source_8bit">Developed in-app from the sensor RAW · 8-bit output on this phone, clips at sensor white</string>
+    <string name="warning_native_log_unverified">Unverified on this phone · check exposure</string>
     <!-- Gamma modes (VideoColorMode): Off reuses value_off. HLG is the standard's name, kept in
          Latin in Korean too (like S-Log3 / LogC3), but it is not on the closed abbreviation list. -->
     <string name="gamma_mode_hlg">HLG</string>

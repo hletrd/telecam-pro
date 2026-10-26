@@ -152,4 +152,27 @@ class NativeLogCaptionTest {
         assertEquals("", logEiOsdSuffix(ColorTransfer.HLG, true, 2))
         assertEquals("", logEiOsdSuffix(ColorTransfer.SDR, true, 3))
     }
+
+    @Test
+    fun `a RAW log caption claims ten bits only through a ten-bit GL target`() {
+        assertEquals(
+            R.string.video_raw_log_source,
+            transferSourceCaption(ColorTransfer.SLOG3, true, rawLogSession = true, glTenBitOutput = true),
+        )
+        assertEquals(
+            R.string.video_raw_log_source_8bit,
+            transferSourceCaption(ColorTransfer.SLOG3, true, rawLogSession = true, glTenBitOutput = false),
+        )
+    }
+
+    @Test
+    fun `the unverified warning shows only for Log on an unmeasured native curve`() {
+        val m = me.hletrd.telecampro.camera.VideoColorMode.entries
+        for (mode in m) {
+            val expected = mode == me.hletrd.telecampro.camera.VideoColorMode.LOG
+            assertEquals("$mode", expected, nativeLogUnverifiedWarningVisible(mode, nativeLogCurveSupported = true, nativeLogCurveVerified = false))
+            assertFalse("$mode verified", nativeLogUnverifiedWarningVisible(mode, nativeLogCurveSupported = true, nativeLogCurveVerified = true))
+            assertFalse("$mode GL fallback", nativeLogUnverifiedWarningVisible(mode, nativeLogCurveSupported = false, nativeLogCurveVerified = false))
+        }
+    }
 }

@@ -98,6 +98,12 @@ object CameraColors {
      */
     val ManualActive = Color(0xFFFFD60A)
     /**
+     * Caution text in the menu: a short line where a path is offered but unverified on this device
+     * (Gamma = Log on an unmeasured native curve). Orange, not [ManualActive]'s yellow — that one
+     * means "not in its default state", and a warning is a different statement.
+     */
+    val Caution = Color(0xFFFFA94D)
+    /**
      * The ONE raised-block FILL: the white wash that lifts a small INTERACTIVE block off whatever it
      * sits on. Three sites draw it — the sheet's CloseButton pill, MiniTextButton, and FnOverlayTile —
      * and they had drifted to two spellings 0.01 apart (0.08 / 0.09), i.e. three blocks and two

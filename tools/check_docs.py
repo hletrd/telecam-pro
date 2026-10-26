@@ -2663,15 +2663,17 @@ check(
     "zoom-route table keeps RAW/DNG on its standalone lens-local home",
 )
 if backlog is None:
-    skip_private("native-log history preserves the surviving debug EGL flag", "docs/BACKLOG.md")
+    skip_private("native-log history records the retired debug EGL flag", "docs/BACKLOG.md")
 else:
+    # The flag's last job (a debug RGBA1010102 gate) ended 2026-10-26 when every GL generation began
+    # requesting the ten-bit target: history must say so, and the code must not bring the gate back.
     check(
-        "The `nativelog` filename survives only as the separate debug EGL precision gate" in backlog
-        and "tenBitExperimentEnabled" in backlog
-        and "getExternalFilesDir(null), \"nativelog\"" in read(
+        "that gate was deleted on 2026-10-26" in backlog
+        and "tenBitExperimentEnabled" not in read(
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
-        ),
-        "native-log history preserves the surviving debug EGL flag without reviving vendor plumbing",
+        )
+        and "\"nativelog\"" not in read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"),
+        "native-log history records the retired debug EGL flag without reviving vendor plumbing",
     )
 readme = read("README.md")
 check(

@@ -1654,11 +1654,27 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             hint = if (state.videoColorModes.size > 1) stringResource(R.string.hint_gamma) else null,
         )
     }
+    // One short highlighted line (owner direction 2026-10-26: visible, not wordy) where Log rides a
+    // native curve nobody has measured on this handset.
+    if (nativeLogUnverifiedWarningVisible(
+            colorMode,
+            me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+            state.nativeLogCurveVerified,
+        )
+    ) {
+        Text(
+            stringResource(R.string.warning_native_log_unverified),
+            color = CameraColors.Caution,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+        )
+    }
     val sourceCaption = transferSourceCaption(
         state.transfer,
         me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
         tenBitNativeLogSession = state.cameraReady && state.photoSessionOutputs.tenBitNativeLog,
         rawLogSession = state.cameraReady && state.photoSessionOutputs.rawLog,
+        glTenBitOutput = state.glTenBitOutput,
     )?.let { stringResource(it) }
     if (colorMode == VideoColorMode.LOG || colorMode == VideoColorMode.RAW_LOG) {
         Captioned(sourceCaption) {

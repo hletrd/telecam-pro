@@ -290,6 +290,14 @@ class GlPipeline(
     private var sourceTransformEmulation = 0
     private var onInputReady: ((Surface) -> Unit)? = null
 
+    /**
+     * Whether this generation's EGL config is RGBA1010102 (a ten-bit encoder target). Written once on
+     * the GL thread when EglCore is created; read by the Engine when it publishes Ready.
+     */
+    @Volatile
+    var tenBitOutput: Boolean = false
+        private set
+
     fun start(tenBit: Boolean, onInputReady: (Surface) -> Unit) {
         // Double-start guard (CR-7). One GL generation owns the HandlerThread + EGL context +
         // analysis executor/FBO/gates, and stop() is the ONLY thing that retires that owner (it
@@ -336,6 +344,7 @@ class GlPipeline(
             beforeNativeAcquisition?.invoke()
             val admitted = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
                 egl = runCatching { EglCore(tenBit = tenBit) }.onSuccess { core ->
+                    tenBitOutput = core.tenBitConfig
                     // One row per GL generation (quota-safe): the device evidence for which encoder
                     // target bit depth this generation records through.
                     if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {

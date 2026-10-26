@@ -110,4 +110,13 @@ class DeviceProfileTest {
         assertTrue(DeviceProfile.GENERIC.nativeLogEiSupported)
         assertTrue(DeviceProfile.resolve("CPH2791").nativeLogEiSupported)
     }
+
+    @Test
+    fun `only the measured profile vouches for the native log curve`() {
+        // The Flip6 advertised CONTRAST_CURVE yet decoded a chart ~5–6 stops dark (2026-10-26): an
+        // unmeasured curve keeps working but earns the Gamma warning.
+        for (model in listOf("PMA110", "CPH2841", "PMA120")) assertTrue(model, DeviceProfile.resolve(model).nativeLogCurveMeasured)
+        assertFalse(DeviceProfile.GENERIC.nativeLogCurveMeasured)
+        assertFalse(DeviceProfile.resolve("SM-F741N").nativeLogCurveMeasured)
+    }
 }

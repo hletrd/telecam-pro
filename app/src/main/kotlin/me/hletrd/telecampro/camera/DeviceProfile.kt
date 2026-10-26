@@ -80,6 +80,14 @@ internal data class DeviceProfile(
      */
     val nativeLogEiSupported: Boolean = true,
     /**
+     * Whether the programmed native-log curve (`TONEMAP_CURVE`) has been MEASURED to land scene
+     * levels where the S-Log3 convention puts them on this handset. Capability alone is not that
+     * proof: the Galaxy Z Flip6 advertises CONTRAST_CURVE yet decoded a chart's white patch to
+     * 0.015 linear, ~5–6 stops under (2026-10-26). Owner decision: keep trusting the curve where it is
+     * advertised — it is the device's own log path — and show a short warning where it is unmeasured.
+     */
+    val nativeLogCurveMeasured: Boolean = false,
+    /**
      * Whether a native-log VIDEO session may carry its stream as YCBCR_P010 under the STANDARD
      * dynamic-range profile, bridged into GL through an ImageWriter ([P010InputBridge]): ten bits of
      * the ISP's S-Log3 curve WITH the full-res JPEG and RAW readers kept. PMA110 is MEASURED
@@ -102,6 +110,7 @@ internal data class DeviceProfile(
             rawRequiresStandalone = true,
             videoMinFrameDurationsUnderstated = true,
             nativeLogEiSupported = false,
+            nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
         )
 

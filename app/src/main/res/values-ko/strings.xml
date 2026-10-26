@@ -346,6 +346,8 @@
     <string name="video_native_log_source">카메라 ISP가 선형 신호를 직접 인코딩합니다 · 8비트, 센서 화이트에서 클리핑</string>
     <string name="video_native_log_source_10bit">카메라 ISP가 선형 신호를 직접 인코딩합니다 · 10비트, 센서 화이트에서 클리핑</string>
     <string name="video_raw_log_source">센서 RAW에서 앱이 직접 현상합니다 · 10비트, 센서 화이트에서 클리핑</string>
+    <string name="video_raw_log_source_8bit">센서 RAW에서 앱이 직접 현상합니다 · 이 기기는 8비트 출력, 센서 화이트에서 클리핑</string>
+    <string name="warning_native_log_unverified">이 기기에서 미검증 · 노출을 확인하세요</string>
     <string name="gamma_mode_hlg">HLG</string>
     <string name="gamma_mode_log">로그</string>
     <string name="gamma_mode_raw_log">RAW 로그</string>

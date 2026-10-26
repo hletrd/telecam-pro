@@ -1025,13 +1025,28 @@ internal fun transferSourceCaption(
     // Accepted truth (PhotoSessionOutputs.rawLog): the EXPERIMENTAL RAW log developer made the
     // frames, not the ISP, so the ISP-source captions below would misname where the curve came from.
     rawLogSession: Boolean = false,
+    // The GL generation's encoder target depth (CameraUiState.glTenBitOutput): the developer renders
+    // ten bits, but a device without a recordable RGBA1010102 config writes them through 8-bit GL.
+    glTenBitOutput: Boolean = true,
 ): Int? = when {
     transfer == ColorTransfer.SDR -> null
-    transfer.isLog && rawLogSession -> R.string.video_raw_log_source
+    transfer.isLog && rawLogSession && glTenBitOutput -> R.string.video_raw_log_source
+    transfer.isLog && rawLogSession -> R.string.video_raw_log_source_8bit
     transfer.isLog && nativeLogCurveSupported && tenBitNativeLogSession -> R.string.video_native_log_source_10bit
     transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
     else -> R.string.video_tone_mapped_source
 }
+
+/**
+ * The one-line caution under Gamma: Log on the native ISP curve of a handset whose curve has not
+ * been measured ([me.hletrd.telecampro.camera.DeviceProfile.nativeLogCurveMeasured]). The GL fallback
+ * and RAW Log are the app's own math, so they carry no such line.
+ */
+internal fun nativeLogUnverifiedWarningVisible(
+    mode: me.hletrd.telecampro.camera.VideoColorMode,
+    nativeLogCurveSupported: Boolean,
+    nativeLogCurveVerified: Boolean,
+): Boolean = mode == me.hletrd.telecampro.camera.VideoColorMode.LOG && nativeLogCurveSupported && !nativeLogCurveVerified
 
 /**
  * Whether the Video tab offers the Log EI offset row: only where it can act — a log transfer on a

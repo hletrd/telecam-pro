@@ -179,11 +179,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the inverse HLG decode/reference-white normalization from its HLG10 Camera2 stream. The common
   display-light signal then maps through linear BT.709→BT.2020, the explicit reference-white/OOTF
   scale, and the BT.2100 HLG OETF (`Shaders.kt`; CPU anchors host-tested). In both cases the ISP has
-  already tone-mapped the scene, so clipped/rolled-off highlights cannot be recovered. The EGL target
-  is 8-bit except on a `tenBitNativeLogBridge` profile, whose every GL generation runs RGBA1010102
-  (2026-10-25, P010 bridge bullet) — so on PMA110 the HLG10 source now reaches the Main10 encoder at
-  ten bits too; playback appearance still needs a real HDR display and none of this is a
-  scene-referred claim.
+  already tone-mapped the scene, so clipped/rolled-off highlights cannot be recovered. Every GL
+  generation asks for an RGBA1010102 encoder target (2026-10-26, owner decision; PMA110 since
+  2026-10-25) and falls back to RGBA8888 only where no recordable 1010102 config exists — so the
+  HLG10 source reaches the Main10 encoder at ten bits wherever the device allows; playback
+  appearance still needs a real HDR display and none of this is a scene-referred claim.
 - **RAW only on the standalone camera — in BOTH failure modes (extended 2026-07-14).** RAW routed
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
@@ -1107,12 +1107,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   helpers and toe constants, `shaderTransferCode`'s `delogAssist` parameter, `VendorLogMode`,
   `CameraEngine.vendorLogMode`, `GlPipeline.setNativeLog`, and `CameraController`'s
   `com.oplus.log.video.mode` + `com.oplus.VideoColorBT709` request keys.
-  **The `nativelog` FLAG FILE itself survives, and this bullet used to claim it did not (corrected
-  2026-08-05).** What went is the native-LOG plumbing that read it; the file is still the gate for a
-  SEPARATE debug-only 10-bit experiment — `CameraEngine.tenBitExperimentEnabled()` reads
-  `getExternalFilesDir(null)/nativelog` and is `BuildConfig.DEBUG &&`-guarded, so release builds
-  always read false. Either delete that gate too or leave it; do not re-delete it from the DOC while
-  the code keeps it. **Shader code 3 is now permanently VACANT and the surviving codes keep their
+  **The `nativelog` FLAG FILE is gone too (2026-10-26).** It survived the native-log removal as the
+  gate of a debug-only RGBA1010102 experiment (`CameraEngine.tenBitExperimentEnabled()`); once every
+  GL generation asked for the ten-bit target the flag had nothing left to force, so the gate was
+  deleted with it. A leftover file on a device is simply ignored. **Shader code 3 is now permanently VACANT and the surviving codes keep their
   numbers** (0/1/2/4/5; 6/7/8, the removed phone-maker curves, are vacant too) — renumbering would silently re-map every branch and the shader's own
   `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
@@ -1144,9 +1142,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   shader's 709→target gamut matrix is a decode of that, not a choice. The ENCODER target must be ten-bit too — a 0.40–0.45 grey ramp
   reached the file as clean 10-bit steps through RGBA1010102 and as dithered 8-bit through RGBA8888 —
   and Java EGL cannot create the `EGL_KHR_no_config_context` context a per-surface config needs (EGL14
-  rejects a null config), so a `tenBitNativeLogBridge` profile starts EVERY GL generation on
-  RGBA1010102; SDR AVC/HEVC, HLG, preview and Photo were device-checked unchanged through it (no
-  colour shift; FIELD_CHECKS A18). That RGBA input costs a conversion INSIDE the encoder (perfetto,
+  rejects a null config), so EVERY GL generation starts on RGBA1010102 where the device has a
+  recordable one (all profiles since 2026-10-26; the bridge profile first); SDR AVC/HEVC, HLG, preview
+  and Photo were device-checked unchanged through it on PMA110 (no colour shift; FIELD_CHECKS A18), and
+  the Galaxy Z Flip6 recorded HLG and RAW log through it. `GlPipeline.tenBitOutput` reports which
+  config the generation got; the Ready publication copies it to `CameraUiState.glTenBitOutput`, and
+  the RAW log caption says "10-bit" only then. That RGBA input costs a conversion INSIDE the encoder (perfetto,
   4K 29.97 native-log take, 2026-10-26): `c2.qti.hevc.encoder`'s image-transformer thread in
   `media.hwcodec` ran 2.43 CPU-s over the ~8 s take with two GPU `QueueSubmit`s per encoded frame and
   964 buffer import/free pairs. **Rendering YUV straight into the encoder works at 8 bit ONLY
