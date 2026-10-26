@@ -64,6 +64,7 @@ import me.hletrd.telecampro.camera.WaveformData
 import me.hletrd.telecampro.camera.displayedStillAspect
 import me.hletrd.telecampro.camera.largestCenteredRect
 import me.hletrd.telecampro.camera.teleFinderVisible
+import me.hletrd.telecampro.camera.teleconverterLensSwitchedTagVisible
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.ui.controls.transferLabelShort
 import me.hletrd.telecampro.ui.controls.logEiOsdSuffix
@@ -821,6 +822,7 @@ internal data class StatusBarPriorityResetKey(
     val mode: CaptureMode,
     val compact: Boolean,
     val focalLabel: String?,
+    val teleLensSwitchedTagVisible: Boolean,
     val memorySlot: String?,
     val routeTag: me.hletrd.telecampro.camera.CameraRoute?,
     val videoOutput: StatusBarVideoOutputIdentity?,
@@ -866,6 +868,12 @@ internal fun statusBarPriorityResetKey(
         mode = state.mode,
         compact = compact,
         focalLabel = focalLabel,
+        teleLensSwitchedTagVisible = teleconverterLensSwitchedTagVisible(
+            teleconverter = state.teleconverterMode,
+            videoMode = videoMode,
+            makerSessionAccepted = state.cameraReady && state.photoSessionOutputs.makerLog,
+            lensOffHost = state.teleconverterLensSwitched,
+        ),
         memorySlot = state.activeMemorySlot?.name,
         routeTag = state.activeCameraRoute.takeIf { it != me.hletrd.telecampro.camera.CameraRoute.BACK },
         videoOutput = if (videoMode && !compact) {
@@ -986,6 +994,19 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
     ) {
         focalLabel?.let {
             Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        }
+        // Maker TC lens guard, right beside the focal it falsifies: the "300 mm TELE" readout above
+        // describes the converter, and this says the logical camera is recording through another
+        // lens. Alarm red like a running interval — a take from the wrong lens is the one state here
+        // that ruins footage silently. Rendered in the compact strip too (Video always shows it).
+        if (teleconverterLensSwitchedTagVisible(
+                teleconverter = state.teleconverterMode,
+                videoMode = state.mode == CaptureMode.VIDEO,
+                makerSessionAccepted = state.cameraReady && state.photoSessionOutputs.makerLog,
+                lensOffHost = state.teleconverterLensSwitched,
+            )
+        ) {
+            Text(stringResource(R.string.osd_tele_lens_switched), color = CameraColors.AlarmText, style = MaterialTheme.typography.labelMedium)
         }
         state.activeMemorySlot?.let {
             Text(it.name, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

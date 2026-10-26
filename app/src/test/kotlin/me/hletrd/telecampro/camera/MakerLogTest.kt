@@ -115,6 +115,24 @@ class MakerLogTest {
         assertEquals(42.6f, total, 0.1f)
     }
 
+    @Test fun `the lens guard fires only on a proven lens handover`() {
+        assertFalse(makerTeleLensOffHost("4", "4"))
+        assertTrue(makerTeleLensOffHost("2", "4"))
+        assertTrue(makerTeleLensOffHost("5", "4"))
+        // Unknown on either side proves nothing.
+        assertFalse(makerTeleLensOffHost(null, "4"))
+        assertFalse(makerTeleLensOffHost("2", null))
+        assertFalse(makerTeleLensOffHost(null, null))
+    }
+
+    @Test fun `the lens-switched tag needs TC, Video, an accepted maker session and a proven handover`() {
+        assertTrue(teleconverterLensSwitchedTagVisible(true, true, true, true))
+        assertFalse(teleconverterLensSwitchedTagVisible(false, true, true, true))
+        assertFalse(teleconverterLensSwitchedTagVisible(true, false, true, true))
+        assertFalse(teleconverterLensSwitchedTagVisible(true, true, false, true))
+        assertFalse(teleconverterLensSwitchedTagVisible(true, true, true, false))
+    }
+
     @Test fun `the TC host is the logical member nearest the converter lens, never a literal id`() {
         val candidates = listOf(
             TeleSelection("0", "3", 14f), TeleSelection("0", "2", 23f),

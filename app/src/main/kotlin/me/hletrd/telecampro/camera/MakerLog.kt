@@ -126,3 +126,25 @@ internal fun makerTeleWireZoom(local: Float, route: MakerTeleRoute): Float =
 
 /** Logical wire zoom (a CaptureResult) → the TC-local value engine and GL compare against. */
 internal fun makerTeleLocalZoom(wire: Float, route: MakerTeleRoute): Float = wire / route.wireZoomScale
+
+/**
+ * Lens guard: whether a maker TC session is PROVABLY recording through a lens other than the one the
+ * converter sits on. The logical camera crosses physical lenses itself, and in low light a HAL may
+ * prefer a brighter one; the result's LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID names the lens of each
+ * frame. Unknown on either side is NOT a mismatch: a guard that fires without proof would teach the
+ * operator to ignore it.
+ */
+internal fun makerTeleLensOffHost(activePhysicalId: String?, hostPhysicalId: String?): Boolean =
+    activePhysicalId != null && hostPhysicalId != null && activePhysicalId != hostPhysicalId
+
+/**
+ * The OSD's lens-switched tag: only while the converter is declared, in Video, on an ACCEPTED maker
+ * session (the only route that can leave the host lens — the ordinary TC route is the standalone host
+ * camera itself), and with a proven [makerTeleLensOffHost] reading.
+ */
+internal fun teleconverterLensSwitchedTagVisible(
+    teleconverter: Boolean,
+    videoMode: Boolean,
+    makerSessionAccepted: Boolean,
+    lensOffHost: Boolean,
+): Boolean = teleconverter && videoMode && makerSessionAccepted && lensOffHost

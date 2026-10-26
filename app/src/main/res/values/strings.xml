@@ -527,6 +527,7 @@
     <string name="osd_loupe">LOUPE</string>
     <string name="osd_overview">OVERVIEW</string>
     <string name="osd_tele">TELE</string>
+    <string name="osd_tele_lens_switched">LENS SWITCHED</string>
     <plurals name="a11y_seconds_remaining">
         <item quantity="one">%1$d second remaining</item>
         <item quantity="other">%1$d seconds remaining</item>

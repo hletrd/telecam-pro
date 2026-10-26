@@ -2071,6 +2071,13 @@ class CameraEngine internal constructor(
     var onFaceBoxes: ((List<FaceBox>) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.FACE_BOXES)
         set(value) = callbackSink.install(EngineCallbackKey.FACE_BOXES, value)
+
+    // Maker TC lens guard (MakerLog.kt `makerTeleLensOffHost`): true while the logical camera
+    // provably records through a lens other than the converter's host. Camera thread, change-gated
+    // by the controller; every replacement controller starts by publishing false.
+    var onTeleconverterLensSwitched: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.TELE_LENS_SWITCHED)
+        set(value) = callbackSink.install(EngineCallbackKey.TELE_LENS_SWITCHED, value)
     // The most recently saved displayable media (HEIF/JPEG/video) URI + its capture-sequence id, for
     // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
     // id groups every output of one shutter press so review-Delete can remove the whole shot.
@@ -2731,6 +2738,11 @@ class CameraEngine internal constructor(
         // A replacement controller starts with no faces; frames from the outgoing route's geometry
         // must not linger over the new one until its first readout.
         onFaceBoxes?.invoke(emptyList())
+        ctrl.onTeleconverterLensSwitched = { switched ->
+            if (controller === ctrl) onTeleconverterLensSwitched?.invoke(switched)
+        }
+        // Same rule as the faces: the outgoing maker TC session's lens verdict must not outlive it.
+        onTeleconverterLensSwitched?.invoke(false)
         ctrl.onMakerLogTeleRefused = { handleMakerLogTeleRefused(ctrl) }
         ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
             override fun wantsRollingShutterSkew(): Boolean =

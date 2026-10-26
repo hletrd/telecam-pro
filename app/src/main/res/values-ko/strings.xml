@@ -491,6 +491,7 @@
     <string name="osd_loupe">루페</string>
     <string name="osd_overview">오버뷰</string>
     <string name="osd_tele">텔레</string>
+    <string name="osd_tele_lens_switched">렌즈 전환됨</string>
     <plurals name="a11y_seconds_remaining">
         <item quantity="other">%1$d초 남음</item>
     </plurals>

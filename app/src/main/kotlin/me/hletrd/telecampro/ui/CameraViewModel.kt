@@ -1372,6 +1372,11 @@ class CameraViewModel private constructor(
         engine.onFaceBoxes = { boxes ->
             _state.update { if (it.faceBoxes == boxes) it else it.copy(faceBoxes = boxes) }
         }
+        // Maker TC lens guard: already change-gated by the controller and reset to false by every
+        // replacement controller, so the state copy here is at most a few per lens handover.
+        engine.onTeleconverterLensSwitched = { switched ->
+            _state.update { if (it.teleconverterLensSwitched == switched) it else it.copy(teleconverterLensSwitched = switched) }
+        }
         engine.onAnalysis = { h, w, f, m ->
             // Publish scope data into UI state only when something actually renders it: the
             // histogram/waveform overlays while ACTUALLY COMPOSED (scope settings alone are not

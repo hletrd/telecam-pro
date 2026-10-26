@@ -2218,6 +2218,12 @@ data class CameraUiState(
     /** [DeviceProfile.makerLogTeleMaxWireZoom] non-null: Log (maker) is also offered with TC on. */
     val makerLogTeleSupported: Boolean = false,
     /**
+     * Maker TC lens guard ([makerTeleLensOffHost], controller-published, false on every new
+     * controller): the logical camera is provably recording through a lens other than the
+     * converter's host. Displayed only through [teleconverterLensSwitchedTagVisible].
+     */
+    val teleconverterLensSwitched: Boolean = false,
+    /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a
      * standalone one, and wanting DNG is itself a standalone door — so the UI cannot decide the

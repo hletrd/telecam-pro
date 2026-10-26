@@ -177,6 +177,12 @@ class CameraController internal constructor(
     // put it, and the ordinary TC route is a different CAMERA (standalone host tele + 0x80b4), which
     // only the engine can reopen — see [onMakerLogTeleRefused].
     @Volatile private var makerTeleRoute: MakerTeleRoute? = null
+    // Lens guard (camera-thread confined): the last LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID read, the
+    // last published verdict (null = none yet, so a fresh session always publishes once), and the read
+    // pacing — result.get() allocates a String per call in the hottest callback in the app.
+    private var lastActivePhysicalId: String? = null
+    private var lastLensSwitchedPublished: Boolean? = null
+    private var lastActivePhysicalReadMs = 0L
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -369,6 +375,10 @@ class CameraController internal constructor(
     // maker route refused and reopens the ordinary TC route (standalone host tele + 0x80b4). Camera
     // thread; identity-gated by the engine like every controller callback.
     @Volatile var onMakerLogTeleRefused: (() -> Unit)? = null
+    // Lens guard verdict ([makerTeleLensOffHost]) on the maker TC route: true while the logical
+    // camera provably records through a lens other than the converter's host. Camera thread, at most
+    // MAKER_TELE_LENS_READ_INTERVAL_MS apart and only on a change.
+    @Volatile var onTeleconverterLensSwitched: ((Boolean) -> Unit)? = null
     // Camera-thread confined: paces the STATISTICS_FACES read and change-gates publication.
     private val faceReadoutGate = FaceReadoutGate()
     private var lastReportedFocus = Float.NaN
@@ -1565,6 +1575,7 @@ class CameraController internal constructor(
                             android.util.Log.i(TAG, "ZoomTrace: result=$rz t=$zoomResultNowMs")
                         }
                     }
+                    makerTeleRoute?.let { route -> observeMakerTeleLens(result, route) }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
                     // Superseded requests stay silent: a late result from a face-reading request
                     // must not repaint frames after the newer request cleared them.
@@ -2383,6 +2394,30 @@ class CameraController internal constructor(
         onNativeLogEiFactor?.invoke(applied.factor.toFloat())
     }
 
+    /**
+     * Lens guard for the maker TC route (camera thread): reads which physical lens the logical camera
+     * used for this frame, at most every [MAKER_TELE_LENS_READ_INTERVAL_MS] (a String allocation per
+     * read in the hottest callback), and publishes [makerTeleLensOffHost] only on a change. The debug
+     * row is change-gated on the id itself and spends the shared recurring budget, so a HAL that
+     * toggles lenses in low light cannot flood the ColorOS log quota.
+     */
+    private fun observeMakerTeleLens(result: TotalCaptureResult, route: MakerTeleRoute) {
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (lastLensSwitchedPublished != null && nowMs - lastActivePhysicalReadMs < MAKER_TELE_LENS_READ_INTERVAL_MS) return
+        lastActivePhysicalReadMs = nowMs
+        val active = result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+        if (active != lastActivePhysicalId || lastLensSwitchedPublished == null) {
+            lastActivePhysicalId = active
+            if (BuildConfig.DEBUG && processDiagnosticLogBudget.tryAcquire()) {
+                android.util.Log.i(TAG, "MakerTele: activePhysical=$active host=${route.hostPhysicalId}")
+            }
+        }
+        val switched = makerTeleLensOffHost(active, route.hostPhysicalId)
+        if (switched == lastLensSwitchedPublished) return
+        lastLensSwitchedPublished = switched
+        onTeleconverterLensSwitched?.invoke(switched)
+    }
+
     private fun publishPreviewDigitalGain() {
         val gain = previewDigitalGain(controls, caps.controlCapabilities())
         if (gain == lastPublishedDigitalGain) return
@@ -3123,6 +3158,10 @@ class CameraController internal constructor(
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
         // The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type.
         const val VENDOR_TC_SESSION_TYPE = 0x80b4
+        // Maker TC lens guard read pacing: a lens handover is a sustained state, not a frame event,
+        // so a quarter-second reaction costs nothing while the per-result String read drops to about
+        // one frame in eight at 30 fps.
+        const val MAKER_TELE_LENS_READ_INTERVAL_MS = 250L
     }
 }
 
