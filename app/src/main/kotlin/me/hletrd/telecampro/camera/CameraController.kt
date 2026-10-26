@@ -667,19 +667,36 @@ class CameraController internal constructor(
     private var customWbSampleSequence = 0L
     private var pendingCustomWbSample: PendingCustomWbSample? = null
 
-    /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
-    private fun CaptureRequest.Builder.applyVideoStab() {
+    /**
+     * The HAL video stabilization mode the session's repeating request carries — the one value the
+     * preview, the encoder and every pseudo-ZSL ring frame are framed by.
+     */
+    private fun sessionVideoStabMode(): Int =
         // A RAW log session with the app's gyro EIS runs the HAL stabilization OFF — which on this HAL
         // is what disengages OIS (result ois=1 under vstab=2, measured 2026-10-25). Two reasons, both
         // physics: the HAL's EIS works on ISP output and never reaches RAW, and its OIS compensates as
         // if no converter were there — through the inverting Keplerian converter the image moves by
         // −M·f per radian, so an OIS adding −f moves it FURTHER (×(M+1)/M), and no OIS samples are
         // published to let the EIS subtract it. With OIS off the EIS model is exact.
-        val mode = if (rawLogBridge != null && rawEis != null) {
+        if (rawLogBridge != null && rawEis != null) {
             CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
         } else {
             videoStabHalMode
         }
+
+    /**
+     * The mode a STILL request writes (null = the still template's own value): the session's on a
+     * profile whose stills follow the preview framing (StillFraming.kt).
+     */
+    private fun stillVideoStabMode(): Int? =
+        stillVideoStabilizationMode(deviceProfile.stillKeepsSessionStabilization, sessionVideoStabMode())
+
+    /**
+     * Sets the HAL video stabilization: the standard mode plus the vendor mirror. The repeating
+     * request and the session parameters take [sessionVideoStabMode]; a still passes the mode
+     * [stillVideoStabMode] chose, which is that same value.
+     */
+    private fun CaptureRequest.Builder.applyVideoStab(mode: Int = sessionVideoStabMode()) {
         set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, mode)
         if (rawLogBridge != null && rawEis != null) {
             // vstab OFF alone left the result reading ois=1 (measured 2026-10-25): ask for OIS OFF
@@ -2274,13 +2291,16 @@ class CameraController internal constructor(
             // result carries what the wire actually applied, so a mid-ramp frame refuses.
             zoomRatio = c.zoomRatio,
             gestureActive = smoothPreviewBoost,
+            // The ring frame carries the repeating request's mode; the real still would carry
+            // stillVideoStabMode(). Equal on PMA110 by construction; a stabilized spec session refuses.
+            framedLikeRing = zslStillFramingMatches(stillVideoStabMode(), sessionVideoStabMode()),
         )
         if (!zslIntentEligible(intent)) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                 android.util.Log.i(
                     TAG,
                     "ZslRefuse: intent manualAe=${intent.manualAe} raw=${intent.wantRaw} " +
-                        "flash=${intent.flash} gesture=${intent.gestureActive}",
+                        "flash=${intent.flash} gesture=${intent.gestureActive} framing=${intent.framedLikeRing}",
                 )
             }
             return false
@@ -2886,13 +2906,14 @@ class CameraController internal constructor(
                         // still taken while the route still primes carries the AUTO the preview shows.
                         wb = stillWb,
                     )
-                    // A matrix-WB still on a measured HAL must ride the session's stabilization
-                    // mode, or it renders some other white balance than the one it carries
-                    // (DeviceProfile.matrixWbStillKeepsSessionStabilization). AUTO stills keep the
-                    // template's OFF, their measured shape.
-                    if (stillWb is WbWire.Matrix && deviceProfile.matrixWbStillKeepsSessionStabilization) {
-                        applyVideoStab()
-                    }
+                    // EVERY still — any WB mode, single, burst/AEB/timelapse step or in-REC snapshot
+                    // — rides the session's stabilization mode on a profile whose stills follow the
+                    // preview framing (DeviceProfile.stillKeepsSessionStabilization, StillFraming.kt):
+                    // at the template's OFF the HAL hands a processed still the full field, ~16 %
+                    // wider than the stabilized finder and than a ZSL-served still, and on PMA110 a
+                    // matrix-WB still at OFF also renders the wrong white balance. Null = the spec
+                    // path, nothing written. RAW targets on this request are never cropped by it.
+                    stillVideoStabMode()?.let { applyVideoStab(it) }
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
                     // Null — no key written — in every other session, so the photo path is unchanged.

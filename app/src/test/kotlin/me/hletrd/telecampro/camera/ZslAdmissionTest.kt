@@ -32,7 +32,8 @@ class ZslAdmissionTest {
         iso: Int = 400,
         zoomRatio: Float = 2f,
         gestureActive: Boolean = false,
-    ) = ZslStillIntent(manualAe, wantProcessed, wantRaw, flash, exposureNs, iso, zoomRatio, gestureActive)
+        framedLikeRing: Boolean = true,
+    ) = ZslStillIntent(manualAe, wantProcessed, wantRaw, flash, exposureNs, iso, zoomRatio, gestureActive, framedLikeRing)
 
     private fun frame(
         ageNs: Long = 50_000_000L,
@@ -59,6 +60,30 @@ class ZslAdmissionTest {
         assertFalse(zslIntentEligible(intent(wantProcessed = false)))
         // TORCH lights the buffered frames exactly like the still — eligible.
         assertTrue(zslIntentEligible(intent(flash = FlashMode.TORCH)))
+    }
+
+    @Test
+    fun `a still framed unlike the ring never consults it, however exact its sensor values`() {
+        // A ring frame carries the repeating request's stabilization mode; a still that would be
+        // captured at another mode is framed differently (~16 % wider on PMA110's logical 1×,
+        // FIELD_CHECKS A23), so the press real-captures even with exposure, ISO and zoom identical.
+        assertFalse(zslIntentEligible(intent(framedLikeRing = false)))
+        assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = false), nowNs))
+    }
+
+    @Test
+    fun `framing term follows the still-stabilization law end to end`() {
+        val off = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        val on = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+        // PMA110: every still carries the session's mode, so a stabilized session still serves.
+        val pma110 = zslStillFramingMatches(stillVideoStabilizationMode(true, on), on)
+        assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = pma110), nowNs))
+        // GENERIC under a stabilized session: the still keeps the template's OFF → real capture.
+        val generic = zslStillFramingMatches(stillVideoStabilizationMode(false, on), on)
+        assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = generic), nowNs))
+        // GENERIC with stabilization off: both sides OFF → serves exactly as before.
+        val genericOff = zslStillFramingMatches(stillVideoStabilizationMode(false, off), off)
+        assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = genericOff), nowNs))
     }
 
     // ---- the honest gate: actual vs intended sensor values ----

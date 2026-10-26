@@ -126,19 +126,30 @@ internal data class DeviceProfile(
      */
     val awbPresetModesIgnored: Boolean = false,
     /**
-     * A STILL whose white balance rides TRANSFORM_MATRIX must carry the session's video
-     * stabilization mode. PMA110 MEASURED 2026-10-27 (isolated probe, logical camera 0; then the
-     * app's photo routes): with ON or PREVIEW_STABILIZATION on the session/repeating request and the
-     * still at the template's OFF — the app's still shape — the still reports AWB AUTO / INACTIVE
-     * and renders a WB that is not the requested one (gains 2.6 / 1.2, i.e. orange, came out blue;
-     * the app's 3200 K came out deep cyan, R ≈ 2 of 255), while the preview beside it is right. The
-     * same still carrying the session's mode renders exactly the requested gains. Its cost: in the
-     * app it is then framed like the stabilized preview, about 10 % narrower than an AUTO still
-     * (FIELD_CHECKS A23 — whether every still should follow is an owner decision). AUTO stills are
-     * unaffected and keep their measured OFF shape. Spec behaviour (a still honours its own
-     * TRANSFORM_MATRIX keys) is assumed elsewhere.
+     * EVERY still carries the session's video stabilization mode, so it is framed like the
+     * stabilized preview: what you frame is what you get (owner decision 2026-10-27, "Auto and
+     * manual stills must match"). Two PMA110 measurements, 2026-10-27, made it the only consistent
+     * direction:
+     *  1. A TRANSFORM_MATRIX still at the template's stabilization OFF inside a stabilized session
+     *     renders a white balance it was not asked for (isolated probe on logical camera 0, then the
+     *     app's photo routes: gains 2.6 / 1.2, i.e. orange, came out blue; the app's 3200 K came out
+     *     deep cyan, R ≈ 2 of 255) while its result reports AWB AUTO / INACTIVE; the same still
+     *     carrying the session's mode renders exactly the requested gains. So matching the other
+     *     way — every still at OFF — would bring that colour bug back.
+     *  2. Riding the session's mode on matrix-WB stills only (the first fix, 24f5baa1) left an AUTO
+     *     still about 16 % WIDER than the preview (FoV 1.15–1.16 against the finder under Active
+     *     and Standard alike, logical 1×), while a pseudo-ZSL-served AUTO still — a repeating-request
+     *     frame — and every manual / preset still matched the finder: one press in bright light
+     *     and the next in dim light framed differently (FIELD_CHECKS A23,
+     *     .context/still-framing-2026-10-27/).
+     * RAW is never cropped by stabilization (Camera2: PREVIEW_STABILIZATION stabilizes "all other
+     * non-RAW streams"), so a DNG keeps the full sensor field beside its narrower processed sibling;
+     * that is the sensor-native file, not a framing bug. Hi-res stills follow too (dormant on
+     * PMA110, so that combination is unmeasured). GENERIC keeps the spec path — the still
+     * template's own value — and pseudo-ZSL there refuses a buffered frame whose stabilization
+     * differs from the real still's ([zslStillFramingMatches]).
      */
-    val matrixWbStillKeepsSessionStabilization: Boolean = false,
+    val stillKeepsSessionStabilization: Boolean = false,
     /**
      * The FACE_PRIORITY scene mode (CONTROL_MODE = USE_SCENE_MODE, Face Priority AF) overrides an
      * app-owned white balance on STILLS. Camera2 says FACE_PRIORITY keeps awbMode active, and the
@@ -167,7 +178,7 @@ internal data class DeviceProfile(
             makerLogPipeline = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
-            matrixWbStillKeepsSessionStabilization = true,
+            stillKeepsSessionStabilization = true,
             facePrioritySceneOverridesManualWb = true,
         )
 

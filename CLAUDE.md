@@ -609,9 +609,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement. **Two PMA110
   STILL traps, both profile-gated and both invisible in the preview:** (1) a matrix still at the
   template's stabilization OFF inside a stabilized session renders some other WB (orange came out
-  blue; `matrixWbStillKeepsSessionStabilization` makes it ride the session's mode, so a manual-WB
-  still is framed like the stabilized preview — about 10 % narrower than an AUTO still when
-  stabilization is on; whether every still should follow is an open owner decision, A23); (2) Face
+  blue), so on `stillKeepsSessionStabilization` EVERY still rides the session's mode and is framed
+  like the preview (owner decision 2026-10-27, `StillFraming.kt`); (2) Face
   Priority's FACE_PRIORITY scene (CONTROL_MODE USE_SCENE_MODE) overrides an app-owned WB on stills —
   the result echoes the gains, the pixels carry the fixed blue cast
   (`facePrioritySceneOverridesManualWb`: the scene half stands down while WB is app-owned, detection

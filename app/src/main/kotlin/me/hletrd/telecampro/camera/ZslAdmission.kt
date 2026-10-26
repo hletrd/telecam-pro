@@ -17,6 +17,10 @@ import kotlin.math.ln
  * intended still (true long exposure), so admission honestly fails and a REAL capture runs at full
  * quality. Quality is never silently degraded — this predicate is the one gate that guarantees it.
  *
+ * FRAMING follows the same rule (2026-10-27): a ring frame is framed by the repeating request's
+ * video stabilization mode, so it serves only when the real still would carry that same mode
+ * (StillFraming.kt). On PMA110 every still does; on a spec device a stabilized session real-captures.
+ *
  * Deliberately NOT "HAL-AE only": photo PROGRAM runs app-side AE-OFF with fresh iso/exposure in
  * the control packet, so its bright-light shots — most real shots — are servable. HAL-AE modes
  * (video-P, flash-metered P) have no app-known intended values and always real-capture.
@@ -66,18 +70,27 @@ internal data class ZslStillIntent(
     val zoomRatio: Float,
     /** A live zoom gesture invalidates buffered framing wholesale (belt to the zoom check). */
     val gestureActive: Boolean,
+    /**
+     * The real still this press would capture carries the ring's video stabilization mode, so a
+     * buffered frame is framed like it ([zslStillFramingMatches]). A ring frame is a REPEATING
+     * frame and always carries the session's mode; serving it for a still that would be captured
+     * at another mode silently swaps the still's field of view — about 16 % on PMA110's logical 1×
+     * (FIELD_CHECKS A23) — for latency, the framing twin of the exposure rule above.
+     */
+    val framedLikeRing: Boolean,
 )
 
 /**
  * Whether this shutter press may consult the ring at all. RAW wants a real capture (the ring holds
  * processed YUV only); AE-driven flash needs the HAL's precapture sequence (TORCH lights the
  * buffered frames exactly like the still, so it stays eligible — and under app-side AE the
- * AUTO/ON variants are wire-inert anyway, this is defense in depth).
+ * AUTO/ON variants are wire-inert anyway, this is defense in depth); and a still that would be
+ * framed unlike the ring ([ZslStillIntent.framedLikeRing]) must be captured for real.
  */
 internal fun zslIntentEligible(intent: ZslStillIntent): Boolean =
     intent.manualAe && intent.wantProcessed && !intent.wantRaw &&
         (intent.flash == FlashMode.OFF || intent.flash == FlashMode.TORCH) &&
-        !intent.gestureActive
+        !intent.gestureActive && intent.framedLikeRing
 
 /**
  * Whether one buffered frame IS the requested still. [nowNs] shares the SENSOR_TIMESTAMP clock
