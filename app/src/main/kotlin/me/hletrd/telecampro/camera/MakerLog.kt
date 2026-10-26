@@ -15,16 +15,16 @@ internal object MakerLogProtocol {
 
 /**
  * PMA110's measured [DeviceProfile.makerLogTeleMaxWireZoom], device-measured in THIS route on
- * 2026-10-26 (logical camera 0, maker session, Hasselblad 300 mm mounted, dim room, chart ~1 m):
+ * 2026-10-26 (logical camera 0, maker session, dim room, chart ~1 m; converter glass NOT mounted):
  * LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID stayed on the host tele (4) at wire 8.91, 9.61 and 9.89,
  * but EVERY entry to 10.0 (5 of 5) handed the frame to the 10× periscope (5) for 1.6–1.9 s before
  * the HAL fell back to the tele. The owner's stock check the same day (PRO VIDEO / O-Log2 at the 3×,
- * 6× and 10× presets showing the converter's field, moderate light) saw that fallback, not the
- * handover; with a distant subject in good light the HAL may well STAY on the periscope at 10×. So
+ * 6× and 10× presets, moderate light; passive glass does not change HAL routing) saw that fallback,
+ * not the handover; with a distant subject in good light the HAL may well STAY on the periscope. So
  * the ceiling sits below the periscope's own field (230 ÷ 23.4 mm ≈ 9.83 on the logical scale),
  * where the logical camera physically cannot serve the frame from it: 9.8 — ≈42.6× TOTAL through
- * the 300 mm kit. Low light, where a logical camera may hand DOWN to the brighter main lens at any
- * zoom, was not tested; the lens guard is what catches it (FIELD_CHECKS A22).
+ * the 300 mm kit. Low light (a hand-DOWN to the brighter main lens) held the host in the one dim room
+ * measured (HAL AE pegged at ISO 12404, FIELD_CHECKS A22); the lens guard catches it elsewhere.
  */
 internal const val MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110 = 9.8f
 
