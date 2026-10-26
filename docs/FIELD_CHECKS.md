@@ -869,6 +869,30 @@ delta exactly 4004 ticks at 120 kHz (3654 / 1858 deltas), full FFmpeg decode exi
 request keys only and did not change the container/codec/cadence. (A first pair recorded from an
 ordinary debug build of the same change matched; ordinary builds are not field evidence.)
 
+**Existing-recording exposure-lift experiment, 2026-10-27 (no new capture).** The archived app
+ISO-800 recording contains highlight signal that the app's ISO-3200 recording clips. Decode the
+former with OPPO's official O-Log2 V2 inverse, multiply scene-linear light by 4 (+2 EV), and
+re-encode with the official function; no fitted gain, black offset or replacement tone curve.
+Comparing the archived 30-frame means, using their geometric registration and only flat 16×16
+blocks (Y standard deviation < 2 codes in all three images), gives 5400 blocks. In the 84 bright
+blocks where stock ISO 3200 G is 730–750, the mean 10-bit green code is:
+
+| Existing source | Mean G10 |
+|---|---:|
+| Stock ISO 3200 | 732.451 |
+| App ISO 3200 | 708.920 (clipped plateau) |
+| App ISO 800 | 560.320 |
+| App ISO 800, offline +2 EV | 732.267 |
+
+The lifted low-ISO error is −0.184 ± 0.383 codes in those bright blocks; the six neutral chart
+patches are within 1.6 codes of stock ISO 3200 after the same fixed lift. This establishes a
+possible exposure-index workaround for highlights, not a recovered dual-gain capture or a
+shipping EI control. The low-ISO code-189 floor itself lifts to code 290, and already-clamped
+shadows cannot be reconstructed. Temporal noise, shadow detail and full-colour equivalence were
+not measured. Geometric registration is approximate and restricted to flat regions. Keep the
+native gain-split investigation separate from this candidate. The plot, sample array and script
+are preserved in `.context/log-gamma-review-2026-10-27/`.
+
 **Remaining:** the DCG/DRC highlight range is reopened for investigation (2026-10-27);
 the manual-WB override is resolved by A23 (TRANSFORM_MATRIX, all routes); additional TC
 operation-mode combinations, a sustained soak of this rear 1× route (A21's soak covers the TC
