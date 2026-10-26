@@ -292,6 +292,7 @@
     <string name="settings_tab_focus">초점</string>
     <string name="settings_tab_lens">렌즈</string>
     <string name="settings_tab_video">동영상</string>
+    <string name="settings_tab_audio">오디오</string>
     <string name="settings_tab_image">이미지</string>
     <string name="settings_tab_assist">보조 기능</string>
     <string name="settings_tab_setup">설정</string>

@@ -145,7 +145,7 @@ import kotlin.math.roundToInt
  * category tabs on a left rail (mirroring Sony's own camera menu), rather than one long scroll.
  * Every row is a thin wrapper around a [CameraActions] method; this file owns no camera state.
  */
-internal enum class ProSheetTab { MY_MENU, SHOOTING, EXPOSURE, FOCUS, LENS, VIDEO, PROCESSING, ASSISTS, ADVANCED }
+internal enum class ProSheetTab { MY_MENU, SHOOTING, EXPOSURE, FOCUS, LENS, VIDEO, AUDIO, PROCESSING, ASSISTS, ADVANCED }
 
 @Composable
 private fun proSheetTabLabel(tab: ProSheetTab): String = stringResource(
@@ -156,6 +156,7 @@ private fun proSheetTabLabel(tab: ProSheetTab): String = stringResource(
         ProSheetTab.FOCUS -> R.string.settings_tab_focus
         ProSheetTab.LENS -> R.string.settings_tab_lens
         ProSheetTab.VIDEO -> R.string.settings_tab_video
+        ProSheetTab.AUDIO -> R.string.settings_tab_audio
         ProSheetTab.PROCESSING -> R.string.settings_tab_image
         ProSheetTab.ASSISTS -> R.string.settings_tab_assist
         ProSheetTab.ADVANCED -> R.string.settings_tab_setup
@@ -427,6 +428,7 @@ internal fun ProSheet(
                             ProSheetTab.FOCUS -> FocusTab(state, actions)
                             ProSheetTab.LENS -> LensTab(state, actions)
                             ProSheetTab.VIDEO -> VideoTab(state, actions)
+                            ProSheetTab.AUDIO -> AudioTab(state, actions)
                             ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
                             ProSheetTab.ASSISTS -> AssistsTab(state, actions)
                             ProSheetTab.ADVANCED -> AdvancedTab(
@@ -623,6 +625,27 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
                 close()
             }
             drawPath(path, color)
+        }
+        ProSheetTab.AUDIO -> {
+            // Microphone: a capsule, the U-shaped yoke around its lower half, a stem and a base.
+            drawRoundRect(
+                color,
+                topLeft = Offset(size.width * 0.36f, size.height * 0.08f),
+                size = androidx.compose.ui.geometry.Size(size.width * 0.28f, size.height * 0.48f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.width * 0.14f),
+                style = stroke,
+            )
+            drawArc(
+                color,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(size.width * 0.22f, size.height * 0.22f),
+                size = androidx.compose.ui.geometry.Size(size.width * 0.56f, size.height * 0.52f),
+                style = stroke,
+            )
+            drawLine(color, Offset(size.width * 0.5f, size.height * 0.74f), Offset(size.width * 0.5f, size.height * 0.9f), strokeWidth = 1.6.dp.toPx())
+            drawLine(color, Offset(size.width * 0.34f, size.height * 0.9f), Offset(size.width * 0.66f, size.height * 0.9f), strokeWidth = 1.6.dp.toPx())
         }
         ProSheetTab.PROCESSING -> {
             val xs = listOf(0.28f, 0.5f, 0.72f)
@@ -1680,8 +1703,21 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             enabled = recordingMutable,
         )
     }
+}
 
-    SectionHeader(stringResource(R.string.label_audio))
+@Composable
+private fun AudioTab(state: CameraUiState, actions: CameraActions) {
+    // Its own tab since 2026-10-26 (owner request): the soundtrack rows outgrew the bottom of the
+    // Video tab. Same recording lock as Video — every row here changes the take's audio track.
+    val labelContext = LocalContext.current
+    val recordingMutable = !state.isRecording
+    TabTitle(stringResource(R.string.settings_tab_audio))
+    if (state.isRecording) {
+        LabelValueRow(
+            label = stringResource(R.string.label_recording),
+            valueLabel = stringResource(R.string.settings_locked),
+        )
+    }
     ToggleRow(
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).

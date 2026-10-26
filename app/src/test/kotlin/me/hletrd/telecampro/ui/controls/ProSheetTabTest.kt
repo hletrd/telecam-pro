@@ -15,8 +15,8 @@ class ProSheetTabTest {
     }
 
     @Test
-    fun `nine tab selection model always has exactly one selected item`() {
-        assertEquals(9, ProSheetTab.entries.size)
+    fun `ten tab selection model always has exactly one selected item`() {
+        assertEquals(10, ProSheetTab.entries.size) // Audio split out of Video, 2026-10-26
         for (selected in ProSheetTab.entries) {
             val items = proSheetTabSelection(selected)
             assertEquals(ProSheetTab.entries.toList(), items.map { it.tab })

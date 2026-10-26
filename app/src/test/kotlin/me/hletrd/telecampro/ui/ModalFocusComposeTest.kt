@@ -235,6 +235,7 @@ class ModalFocusComposeTest {
             R.string.settings_tab_focus,
             R.string.settings_tab_lens,
             R.string.settings_tab_video,
+            R.string.settings_tab_audio,
             R.string.settings_tab_image,
             R.string.settings_tab_assist,
             R.string.settings_tab_setup,

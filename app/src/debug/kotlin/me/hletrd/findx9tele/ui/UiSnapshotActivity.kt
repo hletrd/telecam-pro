@@ -246,6 +246,7 @@ private fun snapshotSettingsTab(scenario: String?): ProSheetTab? = when (scenari
     "settings_focus" -> ProSheetTab.FOCUS
     "settings_lens" -> ProSheetTab.LENS
     "settings_video" -> ProSheetTab.VIDEO
+    "settings_audio" -> ProSheetTab.AUDIO
     "settings_image" -> ProSheetTab.PROCESSING
     "settings_assist" -> ProSheetTab.ASSISTS
     UiSnapshotActivity.SCENARIO_SETTINGS_FN, "settings_setup" -> ProSheetTab.ADVANCED

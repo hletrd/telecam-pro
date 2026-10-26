@@ -301,6 +301,7 @@
     <string name="settings_tab_focus">Focus</string>
     <string name="settings_tab_lens">Lens</string>
     <string name="settings_tab_video">Video</string>
+    <string name="settings_tab_audio">Audio</string>
     <string name="settings_tab_image">Image</string>
     <string name="settings_tab_assist">Assist</string>
     <string name="settings_tab_setup">Setup</string>

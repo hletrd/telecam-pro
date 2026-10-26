@@ -938,7 +938,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   every reading early, so a clap take is the remaining ground truth (`docs/FIELD_CHECKS.md` D6).
 - **The soundtrack format is a device-enumerated choice, AAC only (2026-10-25).** MediaMuxer's MP4
   writer (`MPEG4Writer.getFourCCForMime`) takes AAC, AMR-NB and AMR-WB audio and nothing else; AMR is
-  narrowband speech, and the Opus/FLAC encoders this phone ships cannot be muxed. So the Video tab
+  narrowband speech, and the Opus/FLAC encoders this phone ships cannot be muxed. So the Audio tab
   offers AAC-LC (default 256 kb/s since 2026-10-26; it was 192), HE-AAC, HE-AAC v2 and xHE-AAC, each ONLY when a
   REGULAR encoder advertises that profile at 48 kHz (`video/AudioEncoding.kt`), with bitrate presets
   inside its advertised range — a board whose image lacks an encoder or its licence lists fewer, and
