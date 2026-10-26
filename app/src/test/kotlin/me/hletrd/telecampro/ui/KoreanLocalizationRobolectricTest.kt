@@ -91,7 +91,7 @@ class KoreanLocalizationRobolectricTest {
         assertEquals("42장 촬영 가능", ko.resources.getQuantityString(R.plurals.a11y_shots_remaining, 42, 42))
         assertEquals("배터리 72퍼센트", ko.resources.getQuantityString(R.plurals.a11y_battery_percent, 72, 72))
         assertEquals(
-            "MR2: 비어 있음",
+            "MR2 비어 있음",
             CameraStatusMessage.MEMORY_SLOT_EMPTY
                 .status(CameraStatusArgument.Text("MR2"))
                 .resolve(ko, ZoomPresets.NOMINAL),

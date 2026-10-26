@@ -377,11 +377,11 @@
     <string name="stabilization_ois_eis">OIS+EIS</string>
     <string name="stabilization_ois_eis_crop">OIS+EIS · crop</string>
     <string name="video_tone_mapped_source">Applied to the camera’s already tone-mapped stream</string>
-    <string name="video_native_log_source">Encoded by the camera’s ISP from its linear signal · 8-bit, clips at sensor white</string>
-    <string name="video_native_log_source_10bit">Encoded by the camera’s ISP from its linear signal · 10-bit, clips at sensor white</string>
+    <string name="video_native_log_source">Encoded by the camera’s ISP in place of its tone curve · 8-bit, clips at sensor white</string>
+    <string name="video_native_log_source_10bit">Encoded by the camera’s ISP in place of its tone curve · 10-bit, clips at sensor white</string>
     <string name="video_raw_log_source">Developed in-app from the sensor RAW · 10-bit, clips at sensor white</string>
-    <string name="video_raw_log_source_8bit">Developed in-app from the sensor RAW · 8-bit output on this phone, clips at sensor white</string>
-    <string name="warning_native_log_unverified">Unverified on this phone · check exposure</string>
+    <string name="video_raw_log_source_8bit">Developed in-app from the sensor RAW · 8-bit output on this device, clips at sensor white</string>
+    <string name="warning_native_log_unverified">Unverified on this device · check exposure</string>
     <!-- Gamma modes (VideoColorMode): Off reuses value_off. HLG is the standard's name, kept in
          Latin in Korean too (like S-Log3 / LogC3), but it is not on the closed abbreviation list. -->
     <string name="gamma_mode_hlg">HLG</string>
@@ -391,12 +391,12 @@
     <string name="label_audio_channels">Channels</string>
     <string name="audio_channels_mono">Mono</string>
     <string name="audio_channels_stereo">Stereo</string>
-    <string name="caption_audio_aac_lc">Plays in every player and editor.</string>
+    <string name="caption_audio_aac_lc">The most widely supported format.</string>
     <string name="caption_audio_he_aac">Small files at low bitrates; high frequencies are reconstructed rather than coded.</string>
     <string name="caption_audio_he_aac_v2">Smallest stereo files; the stereo image is reconstructed from parameters.</string>
     <string name="caption_audio_xhe_aac">Efficient at every bitrate, but some players and editors cannot decode it yet.</string>
-    <string name="caption_raw_log">Experimental · the app develops the log from the sensor RAW: wide gamut, no ISP noise reduction or sharpening. 10-bit RAW, gyro stabilization with OIS off, no stills, up to 30 fps.</string>
-    <string name="caption_raw_log_inactive">Not active on this camera route · native log in use</string>
+    <string name="caption_raw_log">Experimental · wide gamut · no ISP noise reduction or sharpening · gyro stabilization, OIS off · no stills · up to 30 fps</string>
+    <string name="caption_raw_log_inactive">Unavailable on this lens · records Log instead</string>
     <string name="mr_default_photo_name">Photo %1$s</string>
     <string name="mr_default_video_name">Video %1$s</string>
     <string name="label_output">Output</string>
@@ -483,8 +483,8 @@
     <string name="review_error_open_video">Unable to open this video.</string>
     <string name="review_error_open_image">Unable to open this image.</string>
     <string name="review_error_play_video">Unable to play this video.</string>
-    <string name="review_error_timed_out">Review timed out. Try again.</string>
-    <string name="review_error_restart_required">Review is unavailable. Reopen the app.</string>
+    <string name="review_error_timed_out">Couldn\'t load media. Try again.</string>
+    <string name="review_error_restart_required">Can\'t verify the media. Reopen the app.</string>
     <string name="review_delete_raw_capture_title">Delete RAW capture?</string>
     <string name="review_delete_capture_title">Delete capture?</string>
     <string name="review_delete_family_body">All saved formats for this capture will be deleted.</string>
@@ -571,19 +571,19 @@
     <string name="legal_app_license">TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. Source: github.com/hletrd/telecam-pro</string>
     <!-- One-line menu hints (owner request 2026-10-25), one per setting row. -->
     <string name="hint_ae_lock">Holds the current exposure while you recompose.</string>
-    <string name="hint_af">AF-C keeps tracking focus, AF-S locks once, MF uses the focus ruler.</string>
+    <string name="hint_af">Continuous keeps tracking focus, Auto locks once, Manual uses the focus ruler.</string>
     <string name="hint_af_lock">Freezes focus at its current distance.</string>
     <string name="hint_aspect">4:3 uses the whole sensor; 16:9 crops the top and bottom.</string>
     <string name="hint_audio_bitrate">Higher keeps more detail; 256 kbps AAC-LC is transparent for most listeners.</string>
     <string name="hint_audio_channels">Stereo for ambience; Mono for a single voice or a mono microphone.</string>
-    <string name="hint_color">Colour effects baked into the file.</string>
+    <string name="hint_color">Color effects baked into the file.</string>
     <string name="hint_converter">The add-on lens you mounted. It sets the focal length shown and written to files.</string>
-    <string name="hint_directionality">Sound Focus favours the subject in frame; Sound Stage widens the stereo image.</string>
+    <string name="hint_directionality">Sound Focus favors the subject in frame; Sound Stage widens the stereo image.</string>
     <string name="hint_drive">Single shot, burst, exposure bracketing (AEB) or interval time-lapse.</string>
     <string name="hint_exposure_mode">P is automatic; S fixes the shutter; ISO fixes the sensitivity; M fixes both.</string>
     <string name="hint_flicker">Matches mains lighting (50 or 60 Hz) to stop banding under artificial light.</string>
     <string name="hint_gamma">Off is standard video; HLG suits HDR screens; Log and RAW Log are flat, for grading.</string>
-    <string name="hint_log_profile">The standard curve and gamut the file is graded from; S-Log3.Cine has the smaller gamut.</string>
+    <string name="hint_log_profile">Pick the one your grading LUTs expect. S-Log3.Cine has a smaller gamut than S-Log3.</string>
     <string name="hint_fps">29.97 and 59.94 are the video standard; 23.976 gives a film look.</string>
     <string name="hint_frame_lines">Guides for a crop to another aspect ratio.</string>
     <string name="hint_full_press_volume">What a full press of the camera key, or a volume key, does.</string>
@@ -598,9 +598,9 @@
     <string name="hint_metering">Matrix reads the whole frame, Center weights the middle, Spot reads where you tap.</string>
     <string name="hint_nr">In-camera noise reduction. Off keeps fine grain and texture.</string>
     <string name="hint_open_gate">Records the full 4:3 sensor, to reframe to any aspect later.</string>
-    <string name="hint_peaking_color">Pick a colour that stands out from your subject.</string>
+    <string name="hint_peaking_color">Pick a color that stands out from your subject.</string>
     <string name="hint_peaking_level">How strong an edge must be before it lights up.</string>
-    <string name="hint_phone">Selects this phone\'s official converters and lens labels; preselected when the model is recognised.</string>
+    <string name="hint_phone">Selects this phone\'s official converters and lens labels; preselected when the model is recognized.</string>
     <string name="hint_quick_button">What the side quick button does in this app.</string>
     <string name="hint_record_audio">Off records video without sound.</string>
     <string name="hint_remember_lens">Starts on the lens you used last.</string>
@@ -614,17 +614,17 @@
     <string name="hint_step">Exposure dial increments. 1/3 EV gives the finest control.</string>
     <string name="hint_still_quality">JPEG/HEIF compression. 90-95 looks lossless; lower values save space.</string>
     <string name="hint_tint">Green-magenta correction, for fluorescent or LED light.</string>
-    <string name="hint_video_bitrate">High suits most uses; Ultra and Max leave headroom for colour grading.</string>
-    <string name="hint_video_codec">HEVC halves the file size at the same quality; H.264 plays on older devices.</string>
-    <string name="hint_wb">Auto follows the light; a preset or Kelvin keeps colour fixed between shots.</string>
-    <string name="hint_zebra_level">Brightness where stripes start; 95 IRE and Clip warn of blown highlights.</string>
+    <string name="hint_video_bitrate">High suits most uses; Ultra and Max leave headroom for color grading.</string>
+    <string name="hint_video_codec">HEVC makes smaller files and is needed for HLG and Log; H.264 plays on older devices.</string>
+    <string name="hint_wb">Auto follows the light; a preset or Kelvin keeps color fixed between shots.</string>
+    <string name="hint_zebra_level">Brightness where stripes start; 95% and 100% warn of blown highlights.</string>
     <string name="hint_zoom">Digital zoom on the current lens. Past the lens\'s optical reach, detail drops.</string>
-    <string name="hint_false_color">Colours the image by brightness, to judge exposure at a glance.</string>
+    <string name="hint_false_color">Colors the image by brightness, to judge exposure at a glance.</string>
     <string name="hint_histogram">Distribution of brightness in the frame.</string>
     <string name="hint_level">Shows a horizon level.</string>
     <string name="hint_loupe">Magnifies the focus point to check sharpness.</string>
     <string name="hint_peaking">Highlights in-focus edges to help manual focus.</string>
-    <string name="hint_photo_ois">Optical stabilisation for photos. Turn it off on a tripod.</string>
+    <string name="hint_photo_ois">Optical stabilization for photos. Turn it off on a tripod.</string>
     <string name="hint_waveform">Brightness across the frame, from left to right.</string>
     <string name="hint_zebra">Stripes over areas close to clipping.</string>
 </resources>

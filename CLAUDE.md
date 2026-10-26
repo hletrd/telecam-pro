@@ -1250,9 +1250,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   tiles and resamples in linear light. (4) The developer swaps ASYNC (`eglSwapInterval 0`): a thread
   parked in eglSwapBuffers kept the GL input Surface connected past close's 1 s wait, and the next
   P010 writer was refused (one 8-bit landing in 22 OFF transitions before the fix). Costs, in the UI
-  caption: no stills, no ISP NR/sharpening, 10-bit sensor range. Colour vs a chart, a thermal
-  soak and clipped highlights remain A19 field checks — the ColorMatrix rendering differs visibly
-  from the ISP's tuned look and neither is claimed as ground truth.
+  caption: no stills, no ISP NR/sharpening, gyro stabilization with OIS off, ≤ 30 fps. Colour vs a
+  chart, a thermal soak and clipped highlights remain A19 field checks — the ColorMatrix rendering
+  differs visibly from the ISP's tuned look and neither is claimed as ground truth.
   **Stabilization is the app's GYRO EIS, and the converter is why it must be (2026-10-25).** The HAL's
   EIS works on ISP output and never reaches RAW, and its OIS, engaged even in a RAW-only session
   (`ois=1`), compensates as if no converter were there: through the inverting Keplerian converter a

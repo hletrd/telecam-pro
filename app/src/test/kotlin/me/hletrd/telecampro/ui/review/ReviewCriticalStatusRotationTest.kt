@@ -81,7 +81,7 @@ class ReviewCriticalStatusRotationTest {
             }
         }
 
-        compose.onNodeWithText("미디어를 확인할 수 없습니다. 앱을 다시 열어 주세요.")
+        compose.onNodeWithText("미디어를 확인할 수 없습니다. 앱을 다시 여세요.")
             .assertIsDisplayed()
     }
 
@@ -99,7 +99,7 @@ class ReviewCriticalStatusRotationTest {
             }
         }
 
-        compose.onNodeWithText("미디어를 불러오지 못했습니다. 다시 시도해 주세요.")
+        compose.onNodeWithText("미디어를 불러오지 못했습니다. 다시 시도하세요.")
             .assertIsDisplayed()
         compose.onNodeWithText("다시 시도").assertIsDisplayed()
     }
