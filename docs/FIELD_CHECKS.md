@@ -468,8 +468,15 @@ industry-standard curves; a maker's own log belongs to the maker's pipeline). Th
 above are the record of a removed option. What replaces the picker check: the Video tab's **Gamma**
 row lists Off / HLG / Log, plus RAW Log only on a route that can develop RAW at the selected rate,
 and **Log Profile** lists S-Log3 / S-Log3.Cine / LogC3 under both log modes, in EN and KO — checked
-on PMA110 2026-10-26 (below, A19). A second device is the remaining half: there RAW Log must appear
-only if its camera advertises a developable RAW stream.
+on PMA110 2026-10-26 (below, A19). Second devices, same immutable build `50e85d5c`, 2026-10-26:
+**Galaxy Z Flip6 (SM-F741N, Android 17, SM8650, GENERIC profile)** offers all four modes; Log
+configured `nativeLog=true p010=false` (its camera takes the programmed curve; the ten-bit bridge is
+PMA110-only), RAW Log `rawLog=true` on logical camera 0 (GENERIC keeps RAW there), HLG `hlg=true`;
+a 7 s RAW Log take was HEVC Main 10, bt2020 full, `bt2020-10`, exactly 30000/1001, 208 frames, a clean
+full decode with AAC, luma median Y10 392, and its preview was upright with plausible colour (not yet
+checked against a chart). **Lenovo TB331FC (Android 15, SM6225)** offers Off only: the encoder
+inventory found no Main10, so HLG and both logs are withheld, as designed; its Gamma hint, which
+compared modes the row did not offer, is now withheld when Off is the only mode.
 
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 

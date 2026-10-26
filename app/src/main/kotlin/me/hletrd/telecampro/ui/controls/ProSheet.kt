@@ -1625,7 +1625,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             // Gamma is part of the encoded image format and the session shape (RAW Log replaces
             // the session), so it is locked while recording like codec and rate.
             enabled = codec == VideoCodec.HEVC && recordingMutable,
-            hint = stringResource(R.string.hint_gamma),
+            // The hint compares the modes, so it is withheld where Off is the only one (an encoder
+            // without Main10 — device-seen on TB331FC 2026-10-26, where it described three modes
+            // the row did not offer).
+            hint = if (state.videoColorModes.size > 1) stringResource(R.string.hint_gamma) else null,
         )
     }
     val sourceCaption = transferSourceCaption(
