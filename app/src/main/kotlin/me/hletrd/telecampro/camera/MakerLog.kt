@@ -59,6 +59,28 @@ fun effectiveRecordingTransfer(requested: ColorTransfer, makerLogAccepted: Boole
     if (requested == ColorTransfer.MAKER_LOG && !makerLogAccepted) ColorTransfer.SLOG3 else requested
 
 /**
+ * White balance for a maker (OEM `0x830b` extension) REQUEST: force AWB AUTO for any non-AUTO
+ * selection, keeping every other control untouched.
+ *
+ * The OEM session does not honour a third-party Camera2 client's white balance — device-measured
+ * on PMA110 2026-10-26 (immutable debug `ea063eeb`, chart A/B + an isolated Camera2 probe): AWB
+ * preset modes (Daylight/Cloudy/Tungsten) all record the AWB-AUTO gains, and AWB OFF + manual
+ * COLOR_CORRECTION gains applies a fixed WRONG WB (R 0.851 / B 5.263, a strong blue cast) no
+ * matter what gains or `colorTemperature` or the `com.oplus.manualWB.*` keys ask for. Only AWB
+ * AUTO is honoured, and it is neutral. (Stock reaches manual WB through its authenticated
+ * CameraUnit configure path — the SDK this app deliberately does not use; FIELD_CHECKS A20.)
+ *
+ * So the maker route cannot deliver the operator's WB on this HAL; what it CAN do is not ship the
+ * blue cast. A non-AUTO selection therefore records under AWB AUTO (a correct neutral image)
+ * rather than AWB OFF (the fixed blue). The operator's WB choice is preserved in state and takes
+ * effect on every non-maker route the device lets it; only this OEM session overrides it. Pure so
+ * it is host-tested; `awbLock` is cleared because an AUTO lock on a freshly forced AUTO is a no-op
+ * that would only pin whatever AUTO first resolved.
+ */
+internal fun makerLogWbControls(controls: ManualControls): ManualControls =
+    if (controls.wbMode == WbMode.AUTO) controls else controls.copy(wbMode = WbMode.AUTO, awbLock = false)
+
+/**
  * A tag echo is insufficient: the full OEM path publishes its actual 1024-entry Log gamma. The
  * measured O-Log2 black entry is 754; the TC/SDR gamma starts at zero. Check before publishing Ready,
  * once per session, rather than copying this array on every frame throughout a recording. Only the

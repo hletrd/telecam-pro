@@ -1199,8 +1199,11 @@ class CameraController internal constructor(
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             if (useMakerLog) {
                 // Seed the factory warm-start with this take's exposure/FPS, rather than a previous
-                // camera client's potentially multi-second low-light exposure.
-                sp.applyManualControls(controls, caps, pinAutoFps = pinAutoFps,
+                // camera client's potentially multi-second low-light exposure. WB is forced AUTO
+                // here too (makerLogWbControls): the OEM session ignores manual WB and otherwise
+                // blue-casts (MakerLog.kt), and the session parameters must agree with the repeating
+                // request below or the warm-start would seed a WB the per-frame request then drops.
+                sp.applyManualControls(makerLogWbControls(controls), caps, pinAutoFps = pinAutoFps,
                     previewExposureCap = true, enforceFrameRate = pinAutoFps, videoMode = true,
                     nativeLogEiStops = 0, zoomWire = makerTeleRoute)
             }
@@ -1505,7 +1508,11 @@ class CameraController internal constructor(
                 // builders inherit the target automatically (they ARE this builder).
                 if (zslTargetAttached) jpegReader?.surface?.let(::addTarget)
                 builtNativeLogEi = applyManualControls(
-                    controls,
+                    // On a maker (OEM 0x830b) session WB is forced AUTO: this HAL ignores a
+                    // third-party client's manual WB and otherwise applies a fixed blue cast
+                    // (makerLogWbControls / MakerLog.kt). Every other control is untouched, and
+                    // every non-maker route keeps the operator's WB exactly as before.
+                    if (makerLogAttempt) makerLogWbControls(controls) else controls,
                     caps,
                     pinAutoFps = pinAutoFps || smoothPreviewBoost,
                     previewExposureCap = true,

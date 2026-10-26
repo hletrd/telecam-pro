@@ -147,6 +147,30 @@ class MakerLogTest {
         assertNull(CameraSelector2.pickPhysicalMember(listOf(TeleSelection("0", "4", 0f)), "0", 70f))
     }
 
+    @Test fun `a maker request forces AWB AUTO and leaves every other control alone`() {
+        // The OEM 0x830b session ignores a third-party client's manual WB and otherwise applies a
+        // fixed blue cast (device-measured; FIELD_CHECKS A20), so a maker request records under AWB
+        // AUTO. AUTO passes through byte-identical.
+        val auto = ManualControls(wbMode = WbMode.AUTO, awbLock = true)
+        assertSame(auto, makerLogWbControls(auto))
+        // Every non-AUTO selection resolves to AUTO with the lock cleared.
+        for (wb in listOf(WbMode.MANUAL, WbMode.CUSTOM, WbMode.DAYLIGHT, WbMode.CLOUDY,
+            WbMode.INCANDESCENT, WbMode.FLUORESCENT, WbMode.SHADE)) {
+            val out = makerLogWbControls(ManualControls(wbMode = wb, awbLock = true))
+            assertEquals(WbMode.AUTO, out.wbMode)
+            assertFalse(out.awbLock)
+        }
+        // Only WB moves: exposure, focus and WB memory are preserved so the forced-AUTO request is
+        // identical to the operator's except for the one control this HAL cannot honour.
+        val manual = ManualControls(
+            wbMode = WbMode.MANUAL, wbKelvin = 3200, wbTint = 7, awbLock = false,
+            exposureMode = ExposureMode.MANUAL, iso = 1600, exposureTimeNs = 20_000_000L,
+            focusMode = FocusMode.MANUAL, focusDistanceDiopters = 0.3f,
+        )
+        val forced = makerLogWbControls(manual)
+        assertEquals(manual.copy(wbMode = WbMode.AUTO), forced)
+    }
+
     @Test fun `only the measured profile carries the TC span`() {
         for (model in listOf("PMA110", "CPH2841", "PMA120")) {
             assertEquals(model, MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110, DeviceProfile.resolve(model).makerLogTeleMaxWireZoom)
