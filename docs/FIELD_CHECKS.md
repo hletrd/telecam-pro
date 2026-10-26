@@ -21,8 +21,8 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** needs exact stock/product gamut comparison, further TC operation-mode research and a sustained native-Log soak,
-**A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light) with a thermal soak,
+**A20** needs the product session's missing DCG/DRC highlight range and the maker-session white balance resolved, further TC operation-mode research and a rear 1× native-Log soak,
+**A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
 **A22** needs a dim-scene Log (maker) TC session watched for a lens hand-down,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
@@ -746,10 +746,53 @@ No camera session error occurred in these transitions or the take. This is a sho
 not the outstanding thermal soak. All 2956 host JVM tests passed after the final failure-path review;
 manufacturer failure state now travels separately so policy/quarantine exception types stay intact.
 
-**Remaining:** exact colour/gamut equivalence (stock VideoColorBT709=1, extension result=0),
-matched highlight/clipping comparison of the product encode, long thermal soak, and additional
-TC operation-mode combinations. Earlier stock/probe matched-exposure gamma arrays were exactly
-equal, which establishes reported curves, not pixel identity. ColorOS 16 is source-compared,
+**Stock vs product A/B at matched exposure, immutable debug `ea063eebf6df-abc1cc63` (SHA-256
+`9d4d8b7d…`), same device/date.** Logical camera 0, 0x830b, main lens (`activePhysicalId` 2), TC off,
+4K 30p, chart ~0.8 m, manual exposure in both apps: ISO 800 · 33,333,333 ns requested (33,322,214
+actual), then ISO 3200 at the same shutter (+2 EV; four times the exposure time does not fit a 30 fps
+frame). Both apps on AWB Auto (same CCM, gains within 0.8 % at ISO 800 and 2.2 % R at ISO 3200), NR and
+edge FAST, video stabilization OFF, OIS on. Patch means over 30 frames from 3 s, raw Y'CbCr codes
+(no autorotate, no conversion); the portrait product frame is rotated back and mapped by a fitted
+scale and offset:
+
+| Pair | max / mean \|ΔY\| | max / mean \|ΔCb\| | max / mean \|ΔCr\| |
+|---|---|---|---|
+| ISO 800 | 6.8 / 1.7 | 10.5 / 3.4 | 3.5 / 0.6 |
+| ISO 3200 | 3.5 / 0.9 | 1.8 / 0.6 | 4.7 / 2.4 (signed −2.4, the R-gain gap) |
+
+**Not pixel-identical; the measured differences come from the camera session.** Stock ran the DOL/DCG
+merge with `com.oplus.conversion.gain` 7.998, `com.qti.stats_control.drc_gain` 8 and the short frame
+at gain 1 (ISO 100 against 800). The product session reports conversion gain 1, `drc_gain` 1 and
+short gain = long gain. This also holds in the earlier P-mode product dump and with Flicker set to
+Auto. Both sessions report `HDRFeatureMode` 1/2. All Log LUTs seen are one master curve sampled over
+different input ranges: product `gamma.info[4k]` equals the earlier stock/probe night LUT `[k]` (64 of
+64 exact), and today's stock index k equals product index 5.33k. So mid-tones agree (Y 260–700 within
+±2 codes), but the product LUT ends at 2843 and the file clips at Y ≈ 711 (R ≤ 725), while stock's
+ends at 3685 (Y up to ≈ 921): **about 2.4 stops less highlight range in the product**. At ISO 3200
+the lit wall clipped flat at 710–711 in the product and read 734–740 in stock. In the deep toe,
+stock's coarser LUT interpolates higher: the product is −18.6 codes at stock Y 192–223 and −6.5 at
+224–255, which is also what moves the warm patches' Cb at ISO 800 (their B' sits there). The earlier
+probe kept the 4× LUT with a single P010 reader and no encoder, so a missing encoder stream does not
+by itself explain the product's 1× LUT. The product's PRIVATE/TP10 GPU stream and its other request
+differences are untested candidates; the trigger is not isolated.
+`VideoColorBT709` (stock 1, product 0) shows no gamut difference in pixels. Saturated patches' Cr
+agrees within 1.5 codes; a 709↔2020 primaries change would move them by tens of codes. Stock also
+crops 3.1 % (`FinalScalerCropRegion` 250..15820 of 16320, request `eis.record.state` 1) and the product
+does not. Stock records 3840×2160 P010 to GraphicBufferSource beside a 1080p TP10 reader, rotation
+hint 90, 90 kHz PTS from sensor timestamps (3005/3006 ± 9 ticks). The product records one 3840×2160
+TP10 GPU stream, portrait encode, exactly 4000 ticks at 120 kHz. Both are Main10, BT.2020/full/
+`bt2020-10`, and decode clean.
+
+**Defect, same run:** the maker session ignores the app's white balance. Daylight, Cloudy and
+Tungsten report their preset mode but carry the AWB-Auto gains. Manual Kelvin (AWB OFF plus gains)
+results in fixed gains R 0.851 / B 5.263 for requests at 4503 K, 5579 K and 10000 K, which gives a
+strong blue cast. Stock's manual WB works (5000 K → R 2.172 / B 1.649 through `colorTemperature`).
+Local evidence: `.context/stock-log-2026-10-26/ab-soak/` (SHA-256 manifest included).
+
+**Remaining:** the product session's missing DCG/DRC highlight range (or an owner decision to
+document it), the white-balance defect above, additional TC operation-mode combinations, and a
+sustained soak of this rear 1× route (A21's soak covers the TC route). Gamut equivalence at
+ColorChecker saturation is now measured; colours beyond it are not. ColorOS 16 is source-compared,
 not verified with this integrated APK. Local evidence: `.context/stock-log-2026-10-26/product/`.
 
 ### A21. Log (maker) through the teleconverter — ◐ HALF DONE 2026-10-26
@@ -790,11 +833,31 @@ working snapshot whose code was then committed unchanged as `b46f8285` + `8b7628
 - **Not exercised on device:** the refusal hand-back (`onMakerLogTeleRefused` → ordinary TC route) is
   host-tested only; no refusal occurred.
 
+**Ten-minute soak, immutable debug `ea063eebf6df-abc1cc63`, same day.** TELE + Video + Log (maker),
+TC-local 1× (wire 3.0), 4K 29.97, Active stabilization, P mode, phone in a stand on USB power, chart
+~0.8 m, phone already warm from the A20 A/B takes. One take,
+`VID_TELECAM_F1_1793017646870_0000000001.mp4`, 6.24 GB:
+18 474 frames over 616.38 s, every PTS delta exactly 4004 ticks at 120 kHz, `EncoderClock:
+placed=18495 dropped=23 filled=2 maxFillBurstMs=14.4`, no FrameGap row, `RecordingStored ...
+PUBLISHED`, full FFmpeg decode exit 0 with no messages. HEVC Main10 2160×3840, BT.2020/full/
+`bt2020-10`, AAC 48 kHz stereo. The measured video bitrate was 80.8 Mb/s against the 64.6 Mb/s
+request. Android thermal status stayed 0 and every HAL cooling device stayed 0. Battery went
+34.5 → 38.0 °C, skin 34.4 → 37.9 °C, CPU maximum 45.7 → 53.9 °C, GPU maximum 43.8 → 51.5 °C, and
+the tele sensor (OV52A) 49 → 53 °C. The ColorOS thermal level went 4 → 5 (+1:40) → 6 (+6:35) → 7
+(≈ +9:54) while `currentThermalStatus` stayed 0. `activePhysicalId` read "4" before and after;
+there was no `LENS SWITCHED` tag and no lens-guard row. The cold-start `MakerTele` row itself fell
+into a `LOG_FLOWCTRL` drop (19 rows at process start), so the dumps, not the log, carry the initial
+id. `drc_gain` read 1.0, as in A20. **Caveat:** in this session the bare 3× route showed the chart
+erect and at about 3× its 1× size, and the soak frames show the bare 70 mm field. The converter was
+therefore not in the 3× optical path: this soak measures the TC route's heat, cadence and lens
+choice, not light through the converter.
+
 **Remaining:** a real take through the converter outdoors — a distant subject in good light is exactly
 where the HAL could keep the 10× periscope near the ceiling, so watch for `LENS SWITCHED` across the
-whole span — plus a thermal soak of the TC route and a handheld stabilization judgement through the
-converter on the logical camera's OEM session. Local evidence:
-`.context/stock-log-2026-10-26/product-tc/` (SHA-256 manifest included).
+whole span — plus a handheld stabilization judgement through the converter on the logical camera's
+OEM session, with the glass confirmed in the optical path (a 4.29× field and the inverted raw image
+on the bare 3× route). Local evidence: `.context/stock-log-2026-10-26/product-tc/` and
+`.context/stock-log-2026-10-26/ab-soak/soak/` (SHA-256 manifests included).
 
 ### A22. Log (maker) TC route in low light — ◯ OPEN 2026-10-26
 
