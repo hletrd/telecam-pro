@@ -76,13 +76,13 @@ class ZslAdmissionTest {
         val off = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
         val on = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
         // PMA110: every still carries the session's mode, so a stabilized session still serves.
-        val pma110 = zslStillFramingMatches(stillVideoStabilizationMode(true, on), on)
+        val pma110 = zslStillFramingMatches(stillVideoStabilizationMode(true, on, 8_000_000L, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, false), on)
         assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = pma110), nowNs))
         // GENERIC under a stabilized session: the still keeps the template's OFF → real capture.
-        val generic = zslStillFramingMatches(stillVideoStabilizationMode(false, on), on)
+        val generic = zslStillFramingMatches(stillVideoStabilizationMode(false, on, 8_000_000L, null, false), on)
         assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = generic), nowNs))
         // GENERIC with stabilization off: both sides OFF → serves exactly as before.
-        val genericOff = zslStillFramingMatches(stillVideoStabilizationMode(false, off), off)
+        val genericOff = zslStillFramingMatches(stillVideoStabilizationMode(false, off, 8_000_000L, null, false), off)
         assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = genericOff), nowNs))
     }
 

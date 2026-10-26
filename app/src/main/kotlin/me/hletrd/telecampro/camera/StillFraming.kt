@@ -24,13 +24,47 @@ import android.hardware.camera2.CameraMetadata
  */
 
 /**
+ * PMA110's longest still exposure measured to complete while carrying PREVIEW_STABILIZATION
+ * ([DeviceProfile.previewStabilizedStillMaxExposureNs]).
+ */
+internal const val PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS = 3_200_000_000L
+
+/**
  * The CONTROL_VIDEO_STABILIZATION_MODE a STILL request writes, or null to write nothing and keep
  * the still template's own value (the spec path). [sessionMode] is the effective mode the session's
  * repeating request carries — the one value the preview and every pseudo-ZSL ring frame are framed
- * by — so a non-null answer is always exactly that mode, never a third one.
+ * by — and a following profile answers exactly that mode, with one measured exception.
+ *
+ * A still longer than [previewStabilizedStillMaxExposureNs] in a PREVIEW_STABILIZATION session is
+ * lost outright on PMA110 (`onCaptureBufferLost`, no image), so a HAL-white-balanced still that long
+ * carries ON instead: measured to complete, framed like the Active finder (logical 1×: FoV 0.847 of
+ * an unstabilized still for ON and for PREVIEW_STABILIZATION alike) and with the same AWB colour.
+ * An app-owned white balance ([wbAppOwned] — AWB OFF + TRANSFORM_MATRIX) has no such way out: at ON
+ * or OFF inside an Active session the HAL renders some other white balance (3200 K came out deep
+ * blue at ON, cyan at OFF, also with the vendor stabilization mirror held at the session's value),
+ * so it keeps the session's mode and that still is still lost — unchanged since the matrix-WB fix,
+ * and an open owner decision (FIELD_CHECKS A23). [stillExposureNs] is the sensor exposure the still
+ * request carries; null (HAL AE owns it — flash-metered P, video P) keeps the session's mode, since
+ * a HAL-AE still is never seconds long.
  */
-internal fun stillVideoStabilizationMode(keepsSessionStabilization: Boolean, sessionMode: Int): Int? =
-    if (keepsSessionStabilization) sessionMode else null
+internal fun stillVideoStabilizationMode(
+    keepsSessionStabilization: Boolean,
+    sessionMode: Int,
+    stillExposureNs: Long?,
+    previewStabilizedStillMaxExposureNs: Long?,
+    wbAppOwned: Boolean,
+): Int? {
+    if (!keepsSessionStabilization) return null
+    val tooLongForPreviewStabilization =
+        sessionMode == CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION &&
+            previewStabilizedStillMaxExposureNs != null && stillExposureNs != null &&
+            stillExposureNs > previewStabilizedStillMaxExposureNs
+    return if (tooLongForPreviewStabilization && !wbAppOwned) {
+        CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+    } else {
+        sessionMode
+    }
+}
 
 /**
  * Whether a pseudo-ZSL ring frame — a REPEATING-request frame, framed by [repeatingMode] — is framed

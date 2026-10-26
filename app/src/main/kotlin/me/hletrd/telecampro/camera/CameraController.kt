@@ -686,10 +686,32 @@ class CameraController internal constructor(
 
     /**
      * The mode a STILL request writes (null = the still template's own value): the session's on a
-     * profile whose stills follow the preview framing (StillFraming.kt).
+     * profile whose stills follow the preview framing, ON for a HAL-white-balanced still too long
+     * for PREVIEW_STABILIZATION (StillFraming.kt). [c] is the still's own packet and [wbAppOwned]
+     * whether its white balance rides AWB OFF + TRANSFORM_MATRIX ([WbWire.awbOff]).
      */
-    private fun stillVideoStabMode(): Int? =
-        stillVideoStabilizationMode(deviceProfile.stillKeepsSessionStabilization, sessionVideoStabMode())
+    private fun stillVideoStabMode(c: ManualControls, wbAppOwned: Boolean): Int? =
+        stillVideoStabilizationMode(
+            keepsSessionStabilization = deviceProfile.stillKeepsSessionStabilization,
+            sessionMode = sessionVideoStabMode(),
+            stillExposureNs = stillSensorExposureNs(c),
+            previewStabilizedStillMaxExposureNs = deviceProfile.previewStabilizedStillMaxExposureNs,
+            wbAppOwned = wbAppOwned,
+        )
+
+    /**
+     * The sensor exposure a still built from [c] carries — the clamp [applyManualControls] applies
+     * — or null while the HAL AE owns it. The capture watchdog reads the same value.
+     */
+    private fun stillSensorExposureNs(c: ManualControls): Long? =
+        if (!c.autoExposure && caps.supportsManualSensor) {
+            c.clampedEffectiveExposureNs(
+                minNs = caps.exposureTimeRange?.lower,
+                maxNs = caps.exposureTimeRange?.upper,
+            )
+        } else {
+            null
+        }
 
     /**
      * Sets the HAL video stabilization: the standard mode plus the vendor mirror. The repeating
@@ -2292,8 +2314,12 @@ class CameraController internal constructor(
             zoomRatio = c.zoomRatio,
             gestureActive = smoothPreviewBoost,
             // The ring frame carries the repeating request's mode; the real still would carry
-            // stillVideoStabMode(). Equal on PMA110 by construction; a stabilized spec session refuses.
-            framedLikeRing = zslStillFramingMatches(stillVideoStabMode(), sessionVideoStabMode()),
+            // stillVideoStabMode(c, …). Equal on PMA110 for every servable (sub-1/15 s) still; a
+            // stabilized spec session refuses.
+            framedLikeRing = zslStillFramingMatches(
+                stillVideoStabMode(c, wbAppOwned = wbWireFor(c).awbOff),
+                sessionVideoStabMode(),
+            ),
         )
         if (!zslIntentEligible(intent)) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
@@ -2836,14 +2862,7 @@ class CameraController internal constructor(
             if (allowZsl && jpeg != null && tryServeZslFrame(requestControls, wantRaw = raw != null, cb)) {
                 return@postToCamera
             }
-            val watchdogExposureNs = if (!requestControls.autoExposure && caps.supportsManualSensor) {
-                requestControls.clampedEffectiveExposureNs(
-                    minNs = caps.exposureTimeRange?.lower,
-                    maxNs = caps.exposureTimeRange?.upper,
-                )
-            } else {
-                null
-            }
+            val watchdogExposureNs = stillSensorExposureNs(requestControls)
             val watchdogTimeoutMs = captureWatchdogTimeoutMs(watchdogExposureNs)
             val newPending = Pending(jpeg != null, raw != null, cb)
             pending = newPending
@@ -2911,9 +2930,11 @@ class CameraController internal constructor(
                     // preview framing (DeviceProfile.stillKeepsSessionStabilization, StillFraming.kt):
                     // at the template's OFF the HAL hands a processed still the full field, ~16 %
                     // wider than the stabilized finder and than a ZSL-served still, and on PMA110 a
-                    // matrix-WB still at OFF also renders the wrong white balance. Null = the spec
-                    // path, nothing written. RAW targets on this request are never cropped by it.
-                    stillVideoStabMode()?.let { applyVideoStab(it) }
+                    // matrix-WB still at OFF also renders the wrong white balance. A HAL-AWB still
+                    // longer than the profile's PREVIEW_STABILIZATION limit rides ON (framed alike;
+                    // PREVIEW_STABILIZATION loses it). Null = the spec path, nothing written. RAW
+                    // targets on this request are never cropped by it.
+                    stillVideoStabMode(requestControls, wbAppOwned = stillWb.awbOff)?.let { applyVideoStab(it) }
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
                     // Null — no key written — in every other session, so the photo path is unchanged.

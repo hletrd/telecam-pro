@@ -29,6 +29,7 @@ class DeviceProfileTest {
             // (owner decision 2026-10-27: stills follow the preview framing, StillFraming.kt).
             assertTrue(model, p.awbPresetModesIgnored)
             assertTrue(model, p.stillKeepsSessionStabilization)
+            assertEquals(model, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, p.previewStabilizedStillMaxExposureNs)
             // ...and the FACE_PRIORITY scene must stand down while WB is app-owned.
             assertTrue(model, p.facePrioritySceneOverridesManualWb)
         }
@@ -54,6 +55,7 @@ class DeviceProfileTest {
             assertFalse("$model", p.videoMinFrameDurationsUnderstated)
             assertFalse("$model", p.awbPresetModesIgnored)
             assertFalse("$model", p.stillKeepsSessionStabilization)
+            assertNull("$model", p.previewStabilizedStillMaxExposureNs)
             assertFalse("$model", p.facePrioritySceneOverridesManualWb)
         }
     }

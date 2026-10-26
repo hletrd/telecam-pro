@@ -151,6 +151,18 @@ internal data class DeviceProfile(
      */
     val stillKeepsSessionStabilization: Boolean = false,
     /**
+     * The longest still exposure measured to complete while the still carries
+     * PREVIEW_STABILIZATION; a longer HAL-white-balanced still in an Active session carries ON
+     * instead ([stillVideoStabilizationMode]). Null = no limit known. PMA110 MEASURED 2026-10-27
+     * (app, Active, M mode, logical 1× / 3× and TELE): 1 s, 2 s, 3 s and 3.2 s stills completed,
+     * every 4 s still carrying PREVIEW_STABILIZATION was lost (`onCaptureBufferLost`, no image),
+     * while 4 s stills at ON completed on all three routes, framed like the Active finder. A 4 s
+     * TRANSFORM_MATRIX still has no working mode: at ON or OFF it renders another white balance, so
+     * it keeps the session's mode and stays lost (FIELD_CHECKS A23, open owner decision). Only
+     * meaningful where [stillKeepsSessionStabilization] is true.
+     */
+    val previewStabilizedStillMaxExposureNs: Long? = null,
+    /**
      * The FACE_PRIORITY scene mode (CONTROL_MODE = USE_SCENE_MODE, Face Priority AF) overrides an
      * app-owned white balance on STILLS. Camera2 says FACE_PRIORITY keeps awbMode active, and the
      * preview does honour AWB OFF + TRANSFORM_MATRIX under it, but PMA110 MEASURED 2026-10-27 (app,
@@ -179,6 +191,7 @@ internal data class DeviceProfile(
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             stillKeepsSessionStabilization = true,
+            previewStabilizedStillMaxExposureNs = PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS,
             facePrioritySceneOverridesManualWb = true,
         )
 
