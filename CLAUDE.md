@@ -580,6 +580,43 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   2026-10-26: an 18 s S-mode take absorbed 107 loop ticks with the request generation unchanged
   (that dark room had the loop pegged at the ISO ceiling, so it shows the hold engaging, not a
   correction being held back).
+- **White balance = TRANSFORM_MATRIX with the ROUTE'S OWN colour transform (owner request "WB must
+  be fixed", device-measured 2026-10-27, `WhiteBalance.kt`, `docs/FIELD_CHECKS.md` A23).** Isolated
+  Camera2 probe + ColorChecker on PMA110, every route (logical photo 0, standalone 2 SDR and native
+  S-Log3, TELE 4 + 0x80b4, maker 0x830b at 1× and on the 3×): AWB PRESETS are accepted, echoed and
+  IGNORED (AUTO gains); FAST/HIGH_QUALITY + `COLOR_CORRECTION_GAINS` — the app's manual WB until
+  this fix — is ignored too (a fixed R 0.851 / B 5.263 blue cast; the Galaxy Z Flip6 also ignores
+  FAST gains, and Camera2 documents the gains as camera-owned outside TRANSFORM_MATRIX); CCT mode
+  (`COLOR_CORRECTION_MODE_CCT`, API 36, advertised [0 1 2 3] / 1500–10000 K) applies the HAL's own
+  Kelvin table but an IDENTITY colour transform (pixels identical to TRANSFORM_MATRIX with the same
+  gains and I — visibly desaturated) and on the maker session ignores the temperature outright;
+  TRANSFORM_MATRIX with gains AND a transform is honoured byte-exactly everywhere, maker included.
+  So: AWB OFF + TRANSFORM_MATRIX + gains from the active SENSOR's ColorMatrix calibration
+  (`wbTargetGains`, Krystek Planckian locus, tint = Camera2's ±50 = ±0.01 Duv, + = magenta) + the
+  transform the route's own AWB-AUTO frames report (`WbReferenceStore`, keyed by camera, session
+  shape and physical sensor, looked up EXACTLY; mirrored to `wb_route_reference` prefs). The
+  transform MUST be the route's own: the normal routes' tuned CCM, the maker route's wide log gamut,
+  the 1× and 3× sensors of one logical camera, and the TC route (identity in a bare probe session,
+  [1.39 −0.45 0.05 …] in the app's) all differ, and PMA110's logical camera 0 calibration even
+  yields an identity CCM — no single calibrated matrix is right everywhere. A route/sensor never
+  seen in AUTO "primes": AUTO until its first converged frame (6–9 frames measured, ≤ 3 s), then one
+  rebuild. Calibration cross-check: 5000 K → R 2.13 / B 1.645 against the STOCK camera's own manual
+  5000 K (R 2.172 / B 1.649). PMA110's ignored presets ride the same path at fixed Kelvin targets
+  (`DeviceProfile.awbPresetModesIgnored`, `wbPresetTarget`: Incandescent 2856 K = CIE A, Fluorescent
+  4230 K +10 = CIE F2, Daylight 5500, Cloudy 6500, Shade 7500); GENERIC keeps CONTROL_AWB_MODE
+  presets (Flip6 honours them). Path order is by CAPABILITY, never a model string: calibration →
+  matrix; else CCT mode; else uncalibrated matrix. The maker route's forced-AUTO stopgap
+  (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement. **Two PMA110
+  STILL traps, both profile-gated and both invisible in the preview:** (1) a matrix still at the
+  template's stabilization OFF inside a stabilized session renders some other WB (orange came out
+  blue; `matrixWbStillKeepsSessionStabilization` makes it ride the session's mode, so a manual-WB
+  still is framed like the stabilized preview — about 10 % narrower than an AUTO still when
+  stabilization is on; whether every still should follow is an open owner decision, A23); (2) Face
+  Priority's FACE_PRIORITY scene (CONTROL_MODE USE_SCENE_MODE) overrides an app-owned WB on stills —
+  the result echoes the gains, the pixels carry the fixed blue cast
+  (`facePrioritySceneOverridesManualWb`: the scene half stands down while WB is app-owned, detection
+  stays, the settings row reads disabled). A still's result metadata is NOT proof of its white
+  balance here; measure the pixels (`cmd media.camera watch` shows the per-frame keys).
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value every 40 ms (25 Hz) *while* a gesture continues (a debounce starved: continuous pinch reset the
   timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom
@@ -840,7 +877,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   three paths share); a held tap-AF or AF Lock keeps precedence by writing AUTO/DISABLED there instead.
   Per spec FACE_PRIORITY is the one scene mode that keeps `aeMode`/`awbMode`/`afMode` active, so it
   also rides AE-OFF (S/ISO/M, app-side P) requests and manual exposure must stay in force — A16 checks
-  exactly that, and a failure means restricting the scene half to HAL-AE packets. **Do not add
+  exactly that, and a failure means restricting the scene half to HAL-AE packets. The same "keeps
+  awbMode active" promise FAILED for white balance on PMA110 (measured 2026-10-27, A23): under the
+  scene half an app-owned WB still carries the fixed blue cast, so the scene half stands down while
+  WB is app-owned (`DeviceProfile.facePrioritySceneOverridesManualWb`; detection stays). **Do not add
   per-frame AF/AE regions from face results**: every repeating-request swap stalls this HAL ~180 ms,
   so app-steered face AF would make a moving face a slideshow. `STATISTICS_FACES` is read only to draw
   frames: time-gated to 10 Hz BEFORE the metadata read, change-gated, never logged, mapped to the view
@@ -1082,20 +1122,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   this route remaps lens-local/unified zoom in the same optics transaction. Native mode drops stills,
   bypasses the P010/RAW bridges and the programmed S-Log3 curve/EI offset; its own inverse is used
   only for monitor assists. The app's remembered standard Log Profile remains independent.
-  **WB on the maker route is forced AUTO (`makerLogWbControls`, MakerLog.kt; device-measured
-  2026-10-26).** This HAL does not honour a third-party client's white balance in the OEM `0x830b`
-  session: AWB preset modes record the AWB-AUTO gains and AWB OFF + manual gains/`colorTemperature`/
-  the `com.oplus.manualWB.*`/`qcamera3.manualWB.*` keys all leave a FIXED wrong WB (R 0.851 / B 5.263,
-  a strong blue cast) — stock reaches manual WB only through the declined CameraUnit configure path.
-  The override is HAL-wide (a plain regular/standalone session ignores third-party WB too), so the
-  maker route cannot deliver the operator's WB; what it CAN do is not ship the blue cast, so any
-  non-AUTO selection records under AWB AUTO (neutral). The operator's WB is preserved in state and
-  takes effect wherever the device lets it; only this session overrides it (the WB chip still names
-  the selection while AUTO is applied). The maker route's missing DCG/DRC highlight range (stock
-  `drc_gain` 8 vs the app's 1, ~2.4 stops in a bright scene) is the SAME root — the DOL/DCG merge is
-  a system-camera AEC decision behind that configure path — and is an ACCEPTED limitation, not a bug:
-  it is unreachable through any Camera2 request/session key or stream shape (bisected) and cannot be
-  fixed without re-adding the declined SDK. Both are `docs/FIELD_CHECKS.md` A20.
+  **WB on the maker route is the operator's (since 2026-10-27; see the White balance bullet).**
+  The 2026-10-26 forced-AUTO stopgap (`makerLogWbControls`) rested on a FAST-mode measurement: the
+  OEM session ignores presets, FAST gains and CCT temperature, but honours TRANSFORM_MATRIX with gains
+  AND a transform exactly, like every other route — so it was deleted. The maker route's missing
+  DCG/DRC highlight range (stock `drc_gain` 8 vs the app's 1, ~2.4 stops in a bright scene) remains an
+  ACCEPTED limitation, not a bug: the DOL/DCG merge is a system-camera AEC decision behind the
+  authenticated configure path, unreachable through any Camera2 request/session key or stream shape
+  (bisected), and cannot be fixed without re-adding the declined SDK (`docs/FIELD_CHECKS.md` A20).
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
   work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
   mode offers 1080p/4K at 30/60 fps and no O-Log2), and the full maker signature exists only on
@@ -1281,13 +1315,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Refusal rebuilds without any SDK tag. A camera-device failure disables the native attempt for the
   recovery sequence; explicit mode selection can retry. Product evidence is in FIELD_CHECKS A20:
   4K Main10 + AAC, 345 frames / 11.5115 s, maximum PTS interval 33.367 ms, full decode clean.
-  **What the extension route does NOT grant (device-measured 2026-10-26, A20):** system-camera 3A.
-  The DOL/DCG exposure merge that gives stock its highlight headroom (`drc_gain` 8 vs the app's 1,
-  ~2.4 stops) and white balance are both reserved for the authenticated CameraUnit configure path;
-  a third-party client gets the OEM pipeline + native Log curve but AEC chooses DOL ratio 1 in bright
-  scenes and ignores WB (fixed blue cast under AWB-OFF). Neither is reachable through any Camera2
-  request/session key or stream shape — the DRC gap is an accepted limitation, and WB is forced AUTO
-  (above) to avoid the cast. Do not chase either with request keys.
+  **What the extension route does NOT grant (device-measured 2026-10-26, A20):** the system camera's
+  DOL/DCG exposure merge that gives stock its highlight headroom (`drc_gain` 8 vs the app's 1, ~2.4
+  stops) — reserved for the authenticated CameraUnit configure path; AEC chooses DOL ratio 1 in bright
+  scenes for a third-party client. It is unreachable through any Camera2 request/session key or
+  stream shape — an accepted limitation; do not chase it with request keys. (White balance, once
+  listed here too, IS reachable: TRANSFORM_MATRIX, 2026-10-27, A23.)
   The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
   has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor

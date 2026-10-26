@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -21,8 +21,9 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** resolved the maker white balance (fixed: forced AUTO — the HAL ignores third-party WB) and the DCG/DRC highlight range (accepted limitation: it needs the declined CameraUnit SDK); it still needs further TC operation-mode research, a rear 1× native-Log soak, and the non-maker manual-WB owner decision,
+**A20** resolved the DCG/DRC highlight range (accepted limitation: it needs the declined CameraUnit SDK; its white-balance finding is superseded by A23); it still needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
+**A23** needs white balance checked on the HLG10, RAW log and front routes, under a known illuminant, on a spec device in-app, and an owner decision on manual-WB still framing,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -814,7 +815,11 @@ Neither defect is reachable through any Camera2 request key, session parameter o
   re-adding the declined CameraUnit SDK; documented as an accepted limitation — the maker route
   carries ~2.4 stops less highlight range than stock in a bright scene, and closer in the dark.**
 
-- **White balance (FIXED, mitigated).** The maker OEM session ignores a third-party client's WB:
+- **White balance — SUPERSEDED 2026-10-27 by A23.** The analysis below was right about FAST gains,
+  presets and `colorTemperature`, and wrong about the conclusion: AWB OFF + TRANSFORM_MATRIX with
+  gains AND a transform is honoured on the maker session (and on every other route), so the
+  forced-AUTO stopgap was removed and the maker route records the operator's WB. Kept as history:
+  The maker OEM session ignores a third-party client's WB:
   AWB preset modes (Daylight/Cloudy/Tungsten) all record the AWB-AUTO gains, and AWB OFF + manual
   gains / `colorTemperature` / the `com.oplus.manualWB.*` and `qcamera3.manualWB.*` keys all leave a
   FIXED wrong WB (R 0.851 / B 5.263, a strong blue cast). The same holds on a plain regular/standalone
@@ -863,7 +868,7 @@ request keys only and did not change the container/codec/cadence. (A first pair 
 ordinary debug build of the same change matched; ordinary builds are not field evidence.)
 
 **Remaining:** the DCG/DRC highlight range is now an accepted limitation (above), not a bug to chase;
-the HAL-wide manual-WB override on non-maker routes needs an owner decision; additional TC
+the manual-WB override is resolved by A23 (TRANSFORM_MATRIX, all routes); additional TC
 operation-mode combinations, a sustained soak of this rear 1× route (A21's soak covers the TC
 route), gamut beyond ColorChecker saturation, and ColorOS 16 remain open. Local evidence:
 `.context/stock-log-2026-10-26/product/` and `.context/stock-log-2026-10-26/fix-drc-wb/`.
@@ -978,6 +983,84 @@ operation mode CUSTOM 32948 (0x80b4): 4K PRIVATE + 4096×3072 JPEG + RAW16, `com
 (a street at night), and a departure — none occurred, so the guard's truth on a low-light departure
 is unexercised here (A21 exercised it on the 10.0 periscope handovers). Local evidence:
 `.context/stock-log-2026-10-26/fix-drc-wb/a22/` (CSVs, UI dumps, screenshots, dumps; SHA-256 manifest).
+
+### A23. White balance on every route — ◐ HALF DONE 2026-10-27
+
+Owner request: "White balance must be fixed." PMA110, ColorOS 17
+(`OPPO/PMA110/OP61BDL1:17/CP2A.260605.016/B.30d6865-a9327b-aae421`), ColorChecker ~1 m in front
+of the 1× main, owner-fixed DIM tungsten-ish room (HAL AE pegged near ISO 9052 at 1/15 s; the light also carries a green
+component, so AUTO greys read yellow-green). Local evidence: `.context/wb-fix-2026-10-27/` (probe
+source + APK, every trial's frames/results, app runs with dumps, `cmd media.camera watch` logs,
+screenshots, stills, clips, `matrix-summary-*.json`; SHA-256 manifest).
+
+**Mechanism, measured with an isolated Camera2 probe (one session per route, variants applied in
+sequence, frames written as Y/Cb/Cr planes and grey patches measured on the host):**
+
+| Route | AWB AUTO | presets 2/5/6 | CCT mode (API 36, advertised [0 1 2 3], 1500–10000 K) | FAST + gains | TRANSFORM_MATRIX + gains + transform |
+|---|---|---|---|---|---|
+| Photo, logical 0 (phys 2) | ✓ | ignored (AUTO gains) | K + tint applied, transform = I (desaturated) | fixed R 0.851 / B 5.263 | honoured exactly |
+| Video SDR, standalone 2 | ✓ | ignored | K + tint, I | fixed blue | honoured exactly |
+| Native S-Log3, standalone 2 | ✓ | ignored | K + tint, I | fixed blue | honoured exactly |
+| TELE, standalone 4 + 0x80b4 | ✓ | ignored | K + tint, I | fixed (0.915 / 5.247) | honoured exactly |
+| Log (maker) 0x830b, 1× and 3.2× (phys 4) | ✓ | ignored | tint only; K IGNORED | ignored (AUTO gains) | honoured exactly (pixels follow) |
+
+CCT mode is pixel-identical to TRANSFORM_MATRIX with the same gains and an identity transform. The
+Galaxy Z Flip6 (SM-F741N, probe only): no CCT advertised, presets HONOURED (four distinct gain /
+transform pairs: Incandescent ≈ 2870 K, Fluorescent ≈ 3975 K, Daylight ≈ 5160 K, Cloudy ≈ 6310 K
+through its own calibration), FAST gains IGNORED, TRANSFORM_MATRIX honoured. The calibration law the
+app uses (cam 2) gives 5000 K → R 2.13 / B 1.645 against the STOCK camera's manual 5000 K, R 2.172 /
+B 1.649 (A20 dump).
+
+**Shipped design:** see CLAUDE.md "White balance = TRANSFORM_MATRIX with the route's own colour
+transform". Two still traps found on the way, both PMA110-profile-gated: a TRANSFORM_MATRIX still at
+stabilization OFF inside a stabilized session renders a white balance it was not asked for (probe:
+gains 2.6 / 1.2 came out blue or right from shot to shot; the app's 3200 K came out deep cyan) —
+fixed by riding the session's stabilization mode; and Face Priority's FACE_PRIORITY scene overrides
+an app-owned WB on stills (result echoes the gains, pixels R 3 / G 32 / B 51 of 255) — fixed by
+standing the scene half down while WB is app-owned (same shot then R 30 / G 35 / B 16, like the
+preview). A still's result metadata is not evidence of its WB on this HAL; the pixels are.
+
+**App verification.** Immutable debug `e9c4f8f1d45b-56996381` (SHA-256 `98b7aebc…`) for the matrix
+and `e9c4f8f1d45b-ef156a51` (SHA-256 `6af19ed9…`, the committed code: exact per-sensor transform
+lookup) for the priming, lens-crossing, TELE, custom and spot checks. Settings driven through the
+saved-settings file, exposure P, Face Priority ON, stabilization Active. Every manual / preset run's
+RESULT carried AWB OFF + TRANSFORM_MATRIX with exactly the calibrated gains (cam 2 / phys 2: 2856 K
+1.456 / 2.616, 3200 K 1.600 / 2.342, 5500 K 2.235 / 1.551, 5600 K 2.255 / 1.535, 6500 K 2.420 / 1.420,
+7500 K 2.524 / 1.326, 5600 K tint +30 2.392 / 1.610; cam 4 / phys 4: 3200 K 1.577 / 2.596, 5600 K
+2.199 / 1.739) and the route's learned transform. Grey-patch warmth (Cr − Cb, 8-bit codes; higher =
+warmer), preview / recorded file (still or clip frame):
+
+| WB | Photo (logical) | Video SDR | S-Log3 | Log (maker) 1× |
+|---|---|---|---|---|
+| Auto | +4.6 / +6.8 | +9.7 / +9.7 | +1.4 / +1.4 | +3.5 / +0.4 |
+| Tungsten (2856 K) | +2.0 / +2.6 | +0.9 / +0.7 | +0.8 / +0.8 | +3.2 / +2.5 |
+| 3200 K | +9.2 / +12.3 | +10.2 / +9.7 | +1.6 / +1.5 | +5.8 / +5.1 |
+| Daylight (5500 K) | +32.6 / +40.5 | +38.6 / – | +4.2 / – | +14.1 / – |
+| 5600 K | +31.0 / +40.6 | +39.3 / +37.9 | +4.3 / +4.0 | +13.3 / +13.9 |
+| Cloudy (6500 K) | +35.4 / +43.6 | +43.8 / – | +4.8 / – | +16.3 / – |
+| 7500 K | +38.2 / +46.2 | +47.1 / – | +5.1 / – | +17.4 / – |
+
+Monotonic in the assumed light on every route, file matching preview (log routes flat by design).
+Tint +30 at 5600 K moved Cb and Cr both up on Photo (+2.1 / +4.7) and SDR (+1.1 / +1.1) — magenta, as
+the API defines; on the log routes the 6 % gain step is below the measurement noise (the gains
+confirm it). TELE (chart mostly out of the converter-flipped 3× frame; wall chroma): Log (maker) TC
+Auto −0.7, 3200 K −0.7, 5600 K +1.7; TELE SDR (0x80b4) Auto +2.5, 3200 K 0.0, 5600 K +10.4. Custom
+WB replaying the AUTO gains matched the AUTO still within one code (Cb −5.3 / −5.3, Cr +0.3 / −0.3);
+custom 2.6 / 1.2 rendered orange. **Priming** from an empty store: `cmd media.camera watch` shows AWB
+AUTO for 6–9 frames, then AWB OFF + the matrix (photo, Log (maker) TC). **Lens crossing**: photo at
+5600 K on phys 2 (2.255 / 1.535) → debug zoom 3.0 → phys 4 with 2.199 / 1.739 and `WhiteBalance:
+primed 0|SDR|4`. The maker route's forced-AUTO stopgap (A20) is gone: maker Log records the
+operator's WB.
+
+**Remaining:** (1) the HLG10 video session, the RAW log session (its developer takes the result
+gains) and the FRONT route were not run; (2) the room light is not a known illuminant, so absolute
+Kelvin accuracy against a chart under e.g. CIE A / D65 is unproven (the stock 5000 K cross-check is
+the only anchor); (3) the Flip6 spec path (presets on CONTROL_AWB_MODE, manual on the matrix) is
+probe-verified only — the in-app run did not open the camera in that session; (4) a matrix still
+rides the session's stabilization, so with stabilization on it is framed like the preview, about
+10 % narrower than an AUTO still (grey-patch pitch 350 → 387 px) — whether every still should follow
+the preview's framing is an OWNER DECISION; (5) no attached device takes the CCT path (CCT advertised
+without a ColorMatrix calibration).
 
 ## B. Held in hand — 3 min
 
