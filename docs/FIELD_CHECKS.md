@@ -478,6 +478,29 @@ checked against a chart). **Lenovo TB331FC (Android 15, SM6225)** offers Off onl
 inventory found no Main10, so HLG and both logs are withheld, as designed; its Gamma hint, which
 compared modes the row did not offer, is now withheld when Off is the only mode.
 
+**Colour-chart pass, 2026-10-26 (ColorChecker-Classic clone, room light, same build).** Mean ΔE2000
+against the published sRGB reference after exposure + white-balance normalisation on the neutrals:
+**Galaxy Z Flip6** — SDR (ISP rendition, GL path) 5.1, greys neutral (a*/b* within ±3), chroma ×1.07,
+the residual being the ISP's contrast curve; **RAW Log** S-Log3.Cine 7.6 and LogC3 7.3 (the two agree,
+so the GL re-encode is consistent), but the developer leaves a warm cast on the greys (b* +6…+9) and
+oversaturates (chroma ×1.2, red/orange ΔE ≈ 19) — its white balance comes from
+`COLOR_CORRECTION_GAINS`, which on this Samsung do not neutralise the scene by themselves (the DNG
+as-shot neutral, `SENSOR_NEUTRAL_COLOR_POINT`, is the candidate source; not yet measured); **Log
+(ISP curve)** decodes the white patch to 0.015 linear (S-Log3 code 190/1023), about 5–6 stops under
+the S-Log3 convention, so this camera does NOT honour the programmed curve the way PMA110 does even
+though it advertises CONTRAST_CURVE — native log is unusable there until handled. **POCO X3 GT
+(21061110AG, MT6891, Android 13, GENERIC)**, preview only (MIUI blocks ADB input): greys b* +24 vs
++15 in the stock MIUI camera's own preview of the same chart, i.e. the HAL's default AWB is warmer
+than MIUI's tuned one; decode matrices cannot tint neutrals, so not a pipeline error. **TB331FC**:
+the "odd colour" report was the False Color assist (and NR/sharpening still OFF from the pre-10-26
+defaults); with it off, the preview matches the camera's own still within a few codes, and the
+app-side P program line exposed ~1 stop brighter than the stock app (ISO 1240 vs 308 at 1/25 s).
+**Ten-bit:** on every GENERIC device the GL generation renders RGBA8888 (the RGBA1010102 target is
+`tenBitNativeLogBridge`-gated), so their HLG / Log / RAW Log files are Main10 carrying 8-bit-plus-
+dither pictures; the Flip6 has a recordable RGBA1010102 config, and with it forced (debug flag)
+preview, HLG and RAW Log recorded cleanly — camera noise and GL dither hide the difference in real
+footage, so proving the gain needs a synthetic-ramp check like PMA110's.
+
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 
 Face Priority AF (`camera/FacePriority.kt`) puts `CONTROL_MODE = USE_SCENE_MODE`,
