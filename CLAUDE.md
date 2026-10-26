@@ -1183,9 +1183,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   colour shift; FIELD_CHECKS A18). That RGBA input costs a conversion INSIDE the encoder (perfetto,
   4K 29.97 native-log take, 2026-10-26): `c2.qti.hevc.encoder`'s image-transformer thread in
   `media.hwcodec` ran 2.43 CPU-s over the ~8 s take with two GPU `QueueSubmit`s per encoded frame and
-  964 buffer import/free pairs. Rendering YUV straight into the encoder (`EGL_EXT_yuv_surface` and
-  `GL_EXT_YUV_target` are both exposed) would remove that pass; it is not attempted — it needs its own
-  EGL config/context and an encode matrix that must match the container tags. Gating: `tenBitNativeLogBridgeSupported` = profile flag (PMA110
+  964 buffer import/free pairs. **Rendering YUV straight into the encoder works at 8 bit ONLY
+  (`YuvEncoderSurfaceProbeTest`, 2026-10-26).** `eglChooseConfig` returns NO YUV config even with
+  `EGL_COLOR_BUFFER_TYPE = EGL_YUV_BUFFER_EXT`, but `eglGetConfigs` lists 20 (all non-recordable,
+  limited range, 601-tagged): the QTI NV12 config (visual `0x7fa30c04`) into a 4K HEVC Main encoder
+  decoded to exactly the codes the shader wrote, and `rgb_2_yuv(itu_709)` lands within one code of the
+  encoder's own RGBA conversion (which follows the container tags: BT.709 limited at 8 bit, BT.2020 full
+  at 10). Per 90 frames the encoder's converter fell from 376 ms CPU / 180 GPU submits (RGBA8888; 558 ms
+  from the RGBA1010102 this profile renders) to 117 ms / 90. The P010 config (`0x36`) is REFUSED by the
+  Venus driver (`failed to queue buf for port:IN`, unrecoverable), so 10-bit log/HLG keep the RGBA path.
+  NOT integrated: it saves ~0.15 core only on 8-bit SDR takes and would need a second, shared YUV EGL
+  context plus an ESSL 3.00 port of the GLSL ES 1.00 renderer shader. Gating: `tenBitNativeLogBridgeSupported` = profile flag (PMA110
   family only — GENERIC unmeasured) + curve capability + `(P010, STANDARD)` advertised + the GL input
   size among the P010 sizes + not FRONT, resolved by `CameraEngine.tenBitNativeLogStreamFor` into
   `CameraController.open(tenBitNativeLogStream)`. The controller tries the bridge first on each rung
