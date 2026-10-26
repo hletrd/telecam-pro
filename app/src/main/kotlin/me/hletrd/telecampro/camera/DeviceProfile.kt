@@ -80,11 +80,13 @@ internal data class DeviceProfile(
      */
     val nativeLogEiSupported: Boolean = true,
     /**
-     * Whether the programmed native-log curve (`TONEMAP_CURVE`) has been MEASURED to land scene
-     * levels where the S-Log3 convention puts them on this handset. Capability alone is not that
-     * proof: the Galaxy Z Flip6 advertises CONTRAST_CURVE yet decoded a chart's white patch to
-     * 0.015 linear, ~5–6 stops under (2026-10-26). Owner decision: keep trusting the curve where it is
-     * advertised — it is the device's own log path — and show a short warning where it is unmeasured.
+     * Whether the programmed native-log curve (`TONEMAP_CURVE`) has been measured on this handset
+     * (PMA110, 2026-10-14/15). Capability is a claim, not a measurement, so an unmeasured handset gets
+     * a short warning under Gamma = Log; owner decision 2026-10-26: keep trusting the curve where it is
+     * advertised — it is the device's own log path. What a measurement shows is not always the curve's
+     * fault: in one dim room (2026-10-26) a chart's white patch decoded to 0.020 linear on PMA110 and
+     * 0.015 on the Galaxy Z Flip6, both ~5½ stops under the S-Log3 convention — the same level, from
+     * HAL AE plus the exposure-dependent gain ahead of the curve, not a Samsung defect.
      */
     val nativeLogCurveMeasured: Boolean = false,
     /**

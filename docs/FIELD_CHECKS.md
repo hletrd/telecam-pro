@@ -484,22 +484,31 @@ against the published sRGB reference after exposure + white-balance normalisatio
 the residual being the ISP's contrast curve; **RAW Log** S-Log3.Cine 7.6 and LogC3 7.3 (the two agree,
 so the GL re-encode is consistent), but the developer leaves a warm cast on the greys (b* +6…+9) and
 oversaturates (chroma ×1.2, red/orange ΔE ≈ 19) — its white balance comes from
-`COLOR_CORRECTION_GAINS`, which on this Samsung do not neutralise the scene by themselves (the DNG
-as-shot neutral, `SENSOR_NEUTRAL_COLOR_POINT`, is the candidate source; not yet measured); **Log
-(ISP curve)** decodes the white patch to 0.015 linear (S-Log3 code 190/1023), about 5–6 stops under
-the S-Log3 convention, so this camera does NOT honour the programmed curve the way PMA110 does even
-though it advertises CONTRAST_CURVE — native log is unusable there until handled. **POCO X3 GT
+`COLOR_CORRECTION_GAINS`, which here equal the inverse of the DNG as-shot neutral exactly (debug trace:
+1.36/1.00/2.66 vs 1/(0.738/1/0.378)), and an offline twin of the developer run on the same scene's DNG
+(its own ForwardMatrix pair at 3207 K, the as-shot neutral, the GainMaps — centres 1.000–1.010)
+reproduces the same cast and reds (ΔE 7.2) — the developer follows the DNG maths faithfully, the warmth
+is in this handset's calibration/as-shot neutral under ~3200 K light (the ISP's SDR output neutralises
+further), so it is kept as reference, not tuned (owner); **Log (ISP curve)** decodes the white patch
+to 0.015 linear (S-Log3 code 190/1023), ~5½ stops under the S-Log3 convention — but the **Find X9
+Ultra** in the same dim room decodes it to 0.020 (code 210, ISO 5425 at 1/120 s): the same level, so
+this is how native log behaves in dim light on both (HAL AE plus PMA110's measured exposure-dependent
+gain ahead of the curve), not a Samsung defect. The Find X9 Ultra's own chart (TELE, ~3200 K): SDR
+5.95, Log (10-bit P010) 5.9 with chroma ×0.74, RAW Log 4.4 with chroma ×1.08 (the best path measured;
+first column cropped by the EIS margin, scored on the other 20 patches); all three keep OPPO's warm
+AWB (greys b* +11…+21). **POCO X3 GT
 (21061110AG, MT6891, Android 13, GENERIC)**, preview only (MIUI blocks ADB input): greys b* +24 vs
 +15 in the stock MIUI camera's own preview of the same chart, i.e. the HAL's default AWB is warmer
 than MIUI's tuned one; decode matrices cannot tint neutrals, so not a pipeline error. **TB331FC**:
 the "odd colour" report was the False Color assist (and NR/sharpening still OFF from the pre-10-26
 defaults); with it off, the preview matches the camera's own still within a few codes, and the
 app-side P program line exposed ~1 stop brighter than the stock app (ISO 1240 vs 308 at 1/25 s).
-**Ten-bit:** on every GENERIC device the GL generation renders RGBA8888 (the RGBA1010102 target is
-`tenBitNativeLogBridge`-gated), so their HLG / Log / RAW Log files are Main10 carrying 8-bit-plus-
-dither pictures; the Flip6 has a recordable RGBA1010102 config, and with it forced (debug flag)
-preview, HLG and RAW Log recorded cleanly — camera noise and GL dither hide the difference in real
-footage, so proving the gain needs a synthetic-ramp check like PMA110's.
+**Ten-bit:** until `9fe9fd08` every GENERIC device rendered RGBA8888 (the RGBA1010102 target was
+`tenBitNativeLogBridge`-gated), so their HLG / Log / RAW Log files were Main10 carrying 8-bit-plus-
+dither pictures. Every GL generation now requests RGBA1010102; the Flip6 came up on it by default
+(`tenBit=true, RGBA1010102=true`) and recorded HLG and RAW log cleanly through it. Camera noise and GL
+dither hide the difference in real footage, so proving the gain needs a synthetic-ramp check like
+PMA110's.
 
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 
