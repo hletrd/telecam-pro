@@ -1082,6 +1082,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   this route remaps lens-local/unified zoom in the same optics transaction. Native mode drops stills,
   bypasses the P010/RAW bridges and the programmed S-Log3 curve/EI offset; its own inverse is used
   only for monitor assists. The app's remembered standard Log Profile remains independent.
+  **WB on the maker route is forced AUTO (`makerLogWbControls`, MakerLog.kt; device-measured
+  2026-10-26).** This HAL does not honour a third-party client's white balance in the OEM `0x830b`
+  session: AWB preset modes record the AWB-AUTO gains and AWB OFF + manual gains/`colorTemperature`/
+  the `com.oplus.manualWB.*`/`qcamera3.manualWB.*` keys all leave a FIXED wrong WB (R 0.851 / B 5.263,
+  a strong blue cast) — stock reaches manual WB only through the declined CameraUnit configure path.
+  The override is HAL-wide (a plain regular/standalone session ignores third-party WB too), so the
+  maker route cannot deliver the operator's WB; what it CAN do is not ship the blue cast, so any
+  non-AUTO selection records under AWB AUTO (neutral). The operator's WB is preserved in state and
+  takes effect wherever the device lets it; only this session overrides it (the WB chip still names
+  the selection while AUTO is applied). The maker route's missing DCG/DRC highlight range (stock
+  `drc_gain` 8 vs the app's 1, ~2.4 stops in a bright scene) is the SAME root — the DOL/DCG merge is
+  a system-camera AEC decision behind that configure path — and is an ACCEPTED limitation, not a bug:
+  it is unreachable through any Camera2 request/session key or stream shape (bisected) and cannot be
+  fixed without re-adding the declined SDK. Both are `docs/FIELD_CHECKS.md` A20.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
   work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
   mode offers 1080p/4K at 30/60 fps and no O-Log2), and the full maker signature exists only on
@@ -1113,7 +1127,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   0x80b4 is unmeasured there): the controller reports `onMakerLogTeleRefused`, the engine latches
   `makerLogRefused`, drops the cached id and reopens the ordinary TC route (standalone 4 + 0x80b4) —
   the route any other transfer, > 30 fps, Open Gate or a camera pin takes, byte-identical. Device
-  evidence: `docs/FIELD_CHECKS.md` A21; low light (a hand-down to the brighter main lens) is A22.
+  evidence: `docs/FIELD_CHECKS.md` A21; low light (a hand-down to the brighter main lens) is A22 —
+  passed 2026-10-26 in one dim room with HAL AE pegged at ISO 12404 / 1/30 s: 44 sampled frames at wire
+  3.0 / 6.0 / 9.8 and the plain route at unified 3× all reported physical `4`, never the main lens, no
+  tag. The converter was NOT mounted on any 2026-10-26 check (owner-confirmed): it is passive glass,
+  so route, session, zoom and lens-choice results stand without it; light through the glass does not.
   **The phone-maker CURVES are GONE (owner decision 2026-10-26, superseding 2026-10-15's "the
   phone's own log, per phone").** O-Log2 / O-Log / Mi-Log were GL approximations of each maker's
   published curve over this app's own S-Log3 transport, offered per `Build.MODEL` through
@@ -1263,6 +1281,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Refusal rebuilds without any SDK tag. A camera-device failure disables the native attempt for the
   recovery sequence; explicit mode selection can retry. Product evidence is in FIELD_CHECKS A20:
   4K Main10 + AAC, 345 frames / 11.5115 s, maximum PTS interval 33.367 ms, full decode clean.
+  **What the extension route does NOT grant (device-measured 2026-10-26, A20):** system-camera 3A.
+  The DOL/DCG exposure merge that gives stock its highlight headroom (`drc_gain` 8 vs the app's 1,
+  ~2.4 stops) and white balance are both reserved for the authenticated CameraUnit configure path;
+  a third-party client gets the OEM pipeline + native Log curve but AEC chooses DOL ratio 1 in bright
+  scenes and ignores WB (fixed blue cast under AWB-OFF). Neither is reachable through any Camera2
+  request/session key or stream shape — the DRC gap is an accepted limitation, and WB is forced AUTO
+  (above) to avoid the cast. Do not chase either with request keys.
   The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
   has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor

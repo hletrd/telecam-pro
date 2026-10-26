@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -21,9 +21,8 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** needs the product session's missing DCG/DRC highlight range and the maker-session white balance resolved, further TC operation-mode research and a rear 1× native-Log soak,
+**A20** resolved the maker white balance (fixed: forced AUTO — the HAL ignores third-party WB) and the DCG/DRC highlight range (accepted limitation: it needs the declined CameraUnit SDK); it still needs further TC operation-mode research, a rear 1× native-Log soak, and the non-maker manual-WB owner decision,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A22** needs a dim-scene Log (maker) TC session watched for a lens hand-down,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -789,16 +788,94 @@ results in fixed gains R 0.851 / B 5.263 for requests at 4503 K, 5579 K and 1000
 strong blue cast. Stock's manual WB works (5000 K → R 2.172 / B 1.649 through `colorTemperature`).
 Local evidence: `.context/stock-log-2026-10-26/ab-soak/` (SHA-256 manifest included).
 
-**Remaining:** the product session's missing DCG/DRC highlight range (or an owner decision to
-document it), the white-balance defect above, additional TC operation-mode combinations, and a
-sustained soak of this rear 1× route (A21's soak covers the TC route). Gamut equivalence at
-ColorChecker saturation is now measured; colours beyond it are not. ColorOS 16 is source-compared,
-not verified with this integrated APK. Local evidence: `.context/stock-log-2026-10-26/product/`.
+**Both defects traced to the OEM 3A gate, 2026-10-26 (immutable debug `0453de2b`; chart A/B +
+an isolated Camera2 probe rebuilt from `probe-source`, hashes in the manifest).** The DCG/DRC
+highlight range and the white balance are the SAME root: this HAL reserves full OEM 3A — the
+DOL/DCG exposure merge AND white balance — for the system camera / the authenticated CameraUnit
+configure path (the SDK this app does not use). A third-party client on the two-tag extension route
+gets the OEM processing pipeline, sensor mode 21 and the native Log gamma, but not system-camera 3A.
+Neither defect is reachable through any Camera2 request key, session parameter or stream shape.
+
+- **DCG/DRC (highlight range).** At the matched ISO 800 / 33.322 ms chart exposure stock reports
+  `com.qti.stats_control.drc_gain` 8, `com.oplus.conversion.gain` 7.998 and the short frame at gain
+  1 (its two DOL exposures split 8:1 → ~3 stops of highlight headroom); the app and EVERY probe
+  variant report `drc_gain` 1 with both DOL frames at the same gain, so the Log curve maps a
+  narrower input (LUT ends 2843 vs 3685). Bisect, all `drc_gain` 1 in this bright scene: single
+  PRIVATE 4K GPU stream; single P010 reader; PRIVATE + P010/encoder (the EXACT stock stream recipe);
+  the app-shape request plus every stock-only request key (`ipe.sequence`, `draw.frame.delay`,
+  `salient.object.detection`, `exposure_metering_mode`, `light.sensor.lux`, `video/eis.record.state`,
+  `capture/preview.hdr.support` …); `light.sensor.lux` swept 0 → 2000; AE ON and AE OFF. The ratio
+  the AEC chooses is a scene + tuning decision (`libcam.oplus.3a.v4.so` carries explicit
+  `isSystemCamera` / `isThirdPartyCamera` DCG branches, and `CameraHWConfiguration.config`
+  `[WarmDolState]`/`[StreamOnWarmStart]` gate DOL per operation-mode/camera/lux); in a very dark
+  scene it does engage partially for the third-party client (night probe `drc_gain` 3.6). Stock
+  drives it through the OEM `ConfigureParameter` builder (`com.oplus.configure.custom.detail.info`,
+  warm-start seeding) that only the authenticated SDK reaches. **No product fix is possible without
+  re-adding the declined CameraUnit SDK; documented as an accepted limitation — the maker route
+  carries ~2.4 stops less highlight range than stock in a bright scene, and closer in the dark.**
+
+- **White balance (FIXED, mitigated).** The maker OEM session ignores a third-party client's WB:
+  AWB preset modes (Daylight/Cloudy/Tungsten) all record the AWB-AUTO gains, and AWB OFF + manual
+  gains / `colorTemperature` / the `com.oplus.manualWB.*` and `qcamera3.manualWB.*` keys all leave a
+  FIXED wrong WB (R 0.851 / B 5.263, a strong blue cast). The same holds on a plain regular/standalone
+  session (probe cam 0/2/4, and in-app the SDR route gave INCANDESCENT ≡ FLUORESCENT gains), so the
+  WB override is HAL-wide, not maker-specific; only AWB AUTO is honoured, and it is neutral. Stock's
+  manual WB works only through the CameraUnit `key_white_balance` configure path. **Fix shipped:**
+  `makerLogWbControls` (MakerLog.kt) forces AWB AUTO for any non-AUTO selection on a maker request,
+  so the route records a correct neutral image instead of the blue cast. Device-verified on the
+  maker route (op mode 33547, log mode 0) with immutable debug `152caae82e5b-dcfecfd4`, WB = Tungsten
+  selected: request/result `awbMode` AUTO, gains R 1.813 / B 3.033 against stock Auto's R 1.816 /
+  B 2.942 in the dim A/B below (was [0.851, 1, 1, 5.263]). It does NOT deliver the operator's chosen
+  WB — impossible on this HAL for a third-party app — and the WB chip still shows the selection
+  while AUTO is applied; the manual-WB blue cast on NON-maker video routes is the same HAL quirk and
+  is left for a separate owner decision (possibly hiding manual WB or forcing AUTO app-wide; untested
+  in Photo mode, where WB might behave differently).
+
+**Stock vs product A/B after the fix, DIM room (owner-fixed light), immutable debug
+`152caae82e5b-dcfecfd4`.** Back to back under the same light, rear 1× main lens (`activePhysicalId` 2),
+TC off, 4K 30p, chart ~1 m. Exposure chosen for this light, not reused: HAL AE in P settled at ISO 6387 /
+33.322 ms, so both apps ran manual **ISO 6400 · 1/30 s** (stock UI ISO 3200), actual 6387 / 33,322,214 ns
+in both. Product WB set to **Tungsten** (the fix records it under AWB Auto), stock on AWB Auto; NR and
+edge FAST, video stabilization OFF, OIS on in both. Wire: product `awbMode` AUTO, gains R 1.813 / B 3.033;
+stock AUTO, R 1.816 / B 2.942. Stock `drc_gain` **4** (short gain 16 vs long 64, `conversion.gain` 4.0,
+LUT ends 3540, the same 4× LUT as the night probe); product `drc_gain` 1 (short = long = 64, LUT ends
+2843). Patch means over 30 frames from 3 s at the chart's 24 patches located in THIS framing (the chart
+moved since the bright A/B; stock→product map fitted on this pair, 9 points, residual ≤ 9.4 px):
+
+| | max / mean \|ΔY\| | max / mean \|ΔCb\| | max / mean \|ΔCr\| |
+|---|---|---|---|
+| ISO 6400, dim | 13.4 / 8.6 (signed −8.6) | 2.1 / 0.8 | 3.2 / 1.1 |
+
+Chroma agrees within ~3 codes with the product's WB on Tungsten — before the fix that selection gave
+the R 0.851 / B 5.263 cast. Every patch sits in the Log toe (stock Y 193–232), where the product reads
+darker: whole-frame app − stock −10.7 codes at stock Y 192–223 and −7.6 at 224–255 (bright A/B: −18.6
+/ −6.5), the DOL-ratio LUT difference above. Nothing in frame approaches clip (max Y 278 stock, 280
+product, of a ~711 product clip), so there was no highlight content for an ISO-3200-class pair.
+Stock's own settings were restored afterwards (ISO UI 400, WB 5000 K, tone 4). Local evidence:
+`fix-drc-wb/ab-dim/` (clips, dumps, `patches-dim.json`, `tone-dim.json`).
+
+**Validation takes, fixed build (immutable debug `152caae82e5b-dcfecfd4`; local
+`fix-drc-wb/takes-immutable/`).** Dim room, exposure P, WB Auto, Active stabilization. A 122 s rear-1×
+maker take and a 62 s TC + maker take (camera 0, 0x830b, physical `4` at wire 3.0): HEVC Main10
+2160×3840, `yuv420p10le`, BT.2020 nonconstant / full / `bt2020-10`, AAC 48 kHz stereo, every video PTS
+delta exactly 4004 ticks at 120 kHz (3654 / 1858 deltas), full FFmpeg decode exit 0. The WB fix touches
+request keys only and did not change the container/codec/cadence. (A first pair recorded from an
+ordinary debug build of the same change matched; ordinary builds are not field evidence.)
+
+**Remaining:** the DCG/DRC highlight range is now an accepted limitation (above), not a bug to chase;
+the HAL-wide manual-WB override on non-maker routes needs an owner decision; additional TC
+operation-mode combinations, a sustained soak of this rear 1× route (A21's soak covers the TC
+route), gamut beyond ColorChecker saturation, and ColorOS 16 remain open. Local evidence:
+`.context/stock-log-2026-10-26/product/` and `.context/stock-log-2026-10-26/fix-drc-wb/`.
 
 ### A21. Log (maker) through the teleconverter — ◐ HALF DONE 2026-10-26
 
-PMA110, `PMA110_17.0.0.106(CN01)`, Hasselblad 300 mm converter mounted, chart ~1 m away in a dim room,
-phone held upside down (dev = 180, so the muxer hint reads −180). Immutable debug
+PMA110, `PMA110_17.0.0.106(CN01)`, converter **NOT mounted** (owner-confirmed 2026-10-26: the glass was
+off the phone all day; this entry first said "mounted", which was wrong), chart ~1 m away in a dim room,
+phone held upside down (dev = 180, so the muxer hint reads −180). The converter is passive glass with no
+electronic link — TC mode is only the 180° flip and the converter-strength stabilization — so every route,
+session, zoom and lens-choice result below is valid without it; only light through the glass is not
+measured here. Immutable debug
 `ea71e910d5dc-a9c4bf45` (SHA-256 `96359286…`; the TC route at the final 9.8 ceiling), built from the
 working snapshot whose code was then committed unchanged as `b46f8285` + `8b7628a3`. TELE + Video + Gamma = Log (maker), 4K 29.97:
 
@@ -819,8 +896,10 @@ working snapshot whose code was then committed unchanged as `b46f8285` + `8b7628
   9.8, below the periscope's own field (230 ÷ 23.4 ≈ 9.83); with it, 5 of 5 jumps 3.0 → 9.8 stayed on
   camera 4 with no lens-guard transition.
 - **Orientation:** the TC + maker preview matched TELE + S-Log3 (ordinary route, standalone 4, 0x80b4)
-  in framing and orientation; a frame extracted with the container's rotation applied shows the chart
-  upright, i.e. afocal-corrected exactly like the ordinary TC route.
+  in framing and orientation — ROUTE PARITY (both apply the same afocal 180° and muxer hint). It is NOT a
+  converter-orientation check: with no glass and the phone inverted, the 180° flip and the inverted hold
+  cancel, which is why the extracted frame looked upright. Converter-corrected orientation is C1's
+  (passed 2026-07-29 with real glass).
 - **Files:** `VID_TELECAM_F1_1793012545462_0000000002.mp4` (TC-local 1×, wire 3.0) and
   `VID_TELECAM_F1_1793012520567_0000000001.mp4` (wire 9.8): 2160×3840 HEVC Main10, `yuv420p10le`,
   BT.2020 nonconstant / full range / `bt2020-10`, AAC 48 kHz stereo; 479 frames / 15.98 s and
@@ -859,16 +938,46 @@ OEM session, with the glass confirmed in the optical path (a 4.29× field and th
 on the bare 3× route). Local evidence: `.context/stock-log-2026-10-26/product-tc/` and
 `.context/stock-log-2026-10-26/ab-soak/soak/` (SHA-256 manifests included).
 
-### A22. Log (maker) TC route in low light — ◯ OPEN 2026-10-26
+### A22. Log (maker) TC route in low light — ✅ PASSED 2026-10-26 (one dim room, sampled)
 
 A logical camera may hand a dim frame to its brighter main lens at any zoom; A21 only covered a dim
-room near 1 m. **Set up:** TELE + Video + Log (maker), converter mounted, a dark scene (street at
-night, a dim room lit by one lamp). **Run:** sweep the TC zoom from 13× to 42.6× and hold at each end
-for 30 s, then record 60 s at 13×; read `adb logcat | grep MakerTele` throughout. **Pass:** either
-`activePhysical` never leaves the host member, or every departure shows the red `LENS SWITCHED` tag for
-its whole length and the recorded frames at those moments are visibly not through the converter
-(proving the guard tells the truth). A departure WITHOUT the tag fails; a frequent one is a reason to
-narrow the TC span or withhold TC + Log (maker) in low light.
+room near 1 m. **Set up:** TELE + Video + Log (maker), a dark scene (street at night, a dim room lit by
+one lamp). The converter need not be mounted: it is passive glass, and TC mode is only the 180° flip
+and the converter-strength stabilization, so the HAL's route and lens choice are the same without it.
+**Run:** exposure P (HAL AE, so the HAL's own lux estimate drives its lens choice); hold ~30 s each at
+TC-local 1× (wire 3.0), ~2× (wire 6.0) and the maximum (wire 9.8), recording
+`LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID`, the reported ISO/exposure and whether the `LENS SWITCHED`
+tag shows; then the same at TELE OFF on the plain maker route at unified 3× for comparison. **Pass:**
+either `activePhysical` never leaves the host member, or every departure shows the red `LENS SWITCHED`
+tag for its whole length (proving the guard tells the truth). A departure WITHOUT the tag fails; a
+frequent one is a reason to narrow the TC span or withhold TC + Log (maker) in low light.
+
+**Result, 2026-10-26.** PMA110, `PMA110_17.0.0.106(CN01)`, immutable debug `152caae82e5b-dcfecfd4`
+(SHA-256 `0a72c56c…`, the WB-fix commit), converter not mounted, owner-fixed DIM room (chart ~1 m),
+phone held inverted (dev = 180). Route throughout: camera 0, operation mode 33547 (0x830b), log mode 0.
+Holds set by `DebugCameraControlActivity --ef debug_zoom` (route-scale = TC-local); `dumpsys
+media.camera` result metadata sampled every ~2–4 s (a dump can land on a partial result; those are
+counted separately); `uiautomator` UI-tree checks for the tag before and after each TC hold, plus
+screenshots during the holds (the compact OSD strip, where the tag renders, was visible):
+
+| Hold | runs | full samples | active physical | ISO / exposure (HAL AE) | AEC lux index | LENS SWITCHED |
+|---|---|---|---|---|---|---|
+| TC local 1× (wire 3.0) | 3 | 18 | `4` in all | 12404 / 33.308 ms | 583–598 | never |
+| TC local 2× (wire 6.0) | 2 | 11 | `4` in all | 12404 / 33.308 ms | 577–593 | never |
+| TC max (wire 9.80) | 3 | 10 (+2 partial) | `4` in all | 12404 / 33.308 ms | 582–596 | never |
+| TELE OFF, plain maker, unified 3× | 2 | 5 (+2 partial) | `4` in all | 12404 / 33.308 ms | 576–594 | (no guard off TC) |
+
+HAL AE was pegged at its ceiling (ISO 12404 at 1/30 s; the main lens at unified 1× settled at ISO 6387
+/ 33.322 ms, lux index 538, for reference), so this is as dim as the AE can see — and the logical
+camera never handed the tele framing to the brighter main lens, with or without TC. The per-change
+`MakerTele:` debug row was not usable as negative evidence: the app process hit ColorOS
+`LOG_FLOWCTRL` during the holds and the logcat stream stalled; the final TC reopen did log
+`MakerTele: activePhysical=4 host=4`. **TELE + Gamma Off** still opens standalone camera 4 with
+operation mode CUSTOM 32948 (0x80b4): 4K PRIVATE + 4096×3072 JPEG + RAW16, `com.oplus.camera.mode` 40.
+**Not covered:** per-frame continuity between samples (2–4 s apart), a darker scene than this room
+(a street at night), and a departure — none occurred, so the guard's truth on a low-light departure
+is unexercised here (A21 exercised it on the 10.0 periscope handovers). Local evidence:
+`.context/stock-log-2026-10-26/fix-drc-wb/a22/` (CSVs, UI dumps, screenshots, dumps; SHA-256 manifest).
 
 ## B. Held in hand — 3 min
 
