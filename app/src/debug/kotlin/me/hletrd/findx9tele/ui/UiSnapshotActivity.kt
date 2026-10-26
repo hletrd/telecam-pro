@@ -34,6 +34,7 @@ import me.hletrd.telecampro.camera.CameraCaps
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.LensChoice
@@ -92,6 +93,19 @@ class UiSnapshotActivity : ComponentActivity() {
                             object : CameraActions by PreviewCameraActions {
                                 override fun onTransfer(transfer: ColorTransfer) {
                                     snapshotState = snapshotState.copy(transfer = transfer)
+                                }
+
+                                // The Gamma tile cycles MODES; the same mode → transfer law as
+                                // CameraViewModel.onVideoColorMode, minus the engine.
+                                override fun onVideoColorMode(mode: VideoColorMode) {
+                                    val s = snapshotState
+                                    val profile = if (s.transfer.isLog) s.transfer else s.logProfile
+                                    snapshotState = when (mode) {
+                                        VideoColorMode.OFF -> s.copy(transfer = ColorTransfer.SDR)
+                                        VideoColorMode.HLG -> s.copy(transfer = ColorTransfer.HLG)
+                                        VideoColorMode.LOG -> s.copy(transfer = profile, rawLog = false)
+                                        VideoColorMode.RAW_LOG -> s.copy(transfer = profile, rawLog = true)
+                                    }
                                 }
 
                                 override fun onExposureMode(mode: ExposureMode) {
@@ -282,9 +296,6 @@ private fun snapshotTransferLabel(transfer: ColorTransfer): String = when (trans
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
-    ColorTransfer.OLOG2 -> "O-Log2"
-    ColorTransfer.OLOG -> "O-Log"
-    ColorTransfer.MILOG -> "Mi-Log"
     ColorTransfer.SDR -> "SDR"
 }
 

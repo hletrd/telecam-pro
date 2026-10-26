@@ -108,7 +108,6 @@ import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
-import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.exposureUpperBoundForCaptureMode
@@ -633,17 +632,17 @@ private fun FnDialChip(
         )
         FnSlot.TRANSFER -> {
             val transferMutable = policyEnabled
-            val transfers = availableTransfers(state.videoCodec, state.tenBitEncodeAvailable, state.nativeLogFlavor)
             DialChip(
-                // "Gamma" is the standard camera term for the transfer curve (HLG / O-Log / SDR);
-                // the old "TF" abbreviation read as nonsense (feedback).
+                // "Gamma" is the standard camera term for the transfer curve (HLG / Log / SDR);
+                // the old "TF" abbreviation read as nonsense (feedback). It cycles the Gamma MODES,
+                // exactly like the Fn tile (performQuickFn).
                 label = stringResource(R.string.label_gamma),
-                value = transferLabelShort(state.transfer),
+                value = videoColorModeChipValue(state.videoColorMode, state.transfer, offValue),
                 active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,
                 onClick = {
                     if (transferMutable) {
-                        actions.onTransfer(nextAvailable(state.transfer, transfers))
+                        actions.onVideoColorMode(nextAvailable(state.videoColorMode, state.videoColorModes))
                     }
                 },
                 onLongClick = onOpenFnMenu,

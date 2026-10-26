@@ -92,14 +92,12 @@ internal enum class CaptureFamilyDeleteDurability { NOT_REQUIRED, DURABLE, FAILE
  *
  * The Sony/ARRI log profiles replaced the former O-Log2 option (`LOG`, removed 2026-07-22: not a
  * standard — SettingsStore migrates the persisted "LOG" name to [SLOG3_CINE], and still does).
- * S-Log3 / S-Log3.Cine / LogC3 are UNIVERSAL: every 10-bit-HEVC device offers them. The
- * [isNativeLog] members are PER-DEVICE (owner decision 2026-10-15: "the phone's OWN log, per
- * phone"): each is offered only on the phones whose maker ships it, as resolved by
- * [DeviceProfile.nativeLogFlavor] — [OLOG2] on the Find X9 Ultra, [OLOG] on the Find X8 Ultra /
- * Find X9 / Find X9 Pro / OnePlus 15, [MILOG] on the Xiaomi 15 Ultra / 17 Ultra — so their files
- * take that maker's published LUTs. A persisted or MR-recalled flavor this device does not offer
- * normalizes to [SLOG3] ([normalizedForEncoder]). OLOG2 is a NEW enum name on purpose, so the legacy
- * "LOG" keeps migrating exactly as before. All log members share one log-class behavior: encoder
+ * S-Log3 / S-Log3.Cine / LogC3 are the only log members, offered on every 10-bit-HEVC device. The
+ * per-device phone-maker curves that sat here from 2026-10-15 (OPPO O-Log2 / O-Log, Xiaomi Mi-Log,
+ * GL approximations of each maker's published curve) were REMOVED 2026-10-26 (owner decision: a
+ * log this app makes itself offers only the industry-standard curves everyone grades, and a maker's
+ * own log belongs to the maker's own pipeline, which no device here exposes); SettingsStore migrates
+ * their persisted names to [SLOG3]. All log members share one log-class behavior: encoder
  * gets the curve, preview renders it flat, Gamma Display Assist skips the forward curve on the
  * monitor only, and the container is tagged BT.2020 full-range with an explicit SDR-class transfer
  * (see [me.hletrd.telecampro.video.hevcColorTagsFor]).
@@ -111,7 +109,7 @@ internal enum class CaptureFamilyDeleteDurability { NOT_REQUIRED, DURABLE, FAILE
  * standard stream instead, which is grading convenience only. Neither recovers highlight latitude
  * beyond the sensor clip (S-Log3 code ≈ 0.596), and neither is a scene-referred camera log claim.
  */
-enum class ColorTransfer(val isLog: Boolean = false, val isNativeLog: Boolean = false) {
+enum class ColorTransfer(val isLog: Boolean = false) {
     HLG,
     /** Sony S-Log3 transfer in S-Gamut3 primaries. */
     SLOG3(isLog = true),
@@ -119,22 +117,57 @@ enum class ColorTransfer(val isLog: Boolean = false, val isNativeLog: Boolean = 
     SLOG3_CINE(isLog = true),
     /** ARRI LogC3 (EI 800) transfer in ARRI Wide Gamut 3 primaries. */
     LOGC3(isLog = true),
-    /**
-     * OPPO O-Log2 in BT.2020 primaries — OPPO's official two-segment white-paper curve (see
-     * [me.hletrd.telecampro.gl.LogProfiles.olog2Oetf]). Find X9 Ultra only. A NEW enum name on
-     * purpose: the persisted legacy "LOG" (the app's old O-Log2) still migrates to [SLOG3_CINE].
-     * The native members are declared after LOGC3 because the picker iterates [entries].
-     */
-    OLOG2(isLog = true, isNativeLog = true),
-    /**
-     * OPPO O-Log (V1) in BT.2020 primaries, under OPPO's own DCTL exposure convention (see
-     * [me.hletrd.telecampro.gl.LogProfiles.ologOetf]). Find X8 Ultra / Find X9 / Find X9 Pro /
-     * OnePlus 15.
-     */
-    OLOG(isLog = true, isNativeLog = true),
-    /** Xiaomi Mi-Log in BT.2020 primaries ([me.hletrd.telecampro.gl.LogProfiles.milogOetf]). */
-    MILOG(isLog = true, isNativeLog = true),
     SDR,
+}
+
+/**
+ * The Video tab's Gamma choices, in the owner's order (2026-10-26): Off / HLG / Log / RAW Log. A
+ * MODE, not a curve: Log and RAW Log each take a profile from [VIDEO_LOG_PROFILES], so the request
+ * stays the one persisted [ColorTransfer] plus the RAW log intent, and the mode is DERIVED from them
+ * at render time ([videoColorModeOf]) — the same request/readout split as `effectivePhotoFormats`.
+ *
+ *  - [OFF]: SDR, plain Rec.709 with no curve (8-bit Main).
+ *  - [HLG]: the display-referred SDR→HLG mapping (10-bit).
+ *  - [LOG]: the ISP pipeline with a log profile applied — the programmed native S-Log3 curve on a
+ *    camera that takes one, the GL decode of the tone-mapped stream elsewhere.
+ *  - [RAW_LOG]: EXPERIMENTAL, the log developed in-app from the RAW stream (camera/RawLog.kt).
+ *
+ * The owner's fifth slot, the phone maker's OWN log pipeline, is deliberately absent: it is offered
+ * only where a device's maker pipeline is reachable and integrated, and none is (PMA110's stock
+ * O-Log2 route is research only, CLAUDE.md). It returns as a member when one is, never as a curve
+ * this app imitates.
+ */
+enum class VideoColorMode { OFF, HLG, LOG, RAW_LOG }
+
+/** The profiles both log modes offer: the industry-standard curves only (owner decision 2026-10-26). */
+val VIDEO_LOG_PROFILES: List<ColorTransfer> = ColorTransfer.entries.filter { it.isLog }
+
+/**
+ * The modes this device can record HONESTLY ([availableTransfers]: HLG and log need a 10-bit HEVC
+ * encode), plus RAW Log where [rawLogOffered] (camera/RawLog.kt) says the route can develop RAW at
+ * the selected rate. Off always survives.
+ */
+fun availableVideoColorModes(
+    codec: VideoCodec,
+    tenBitEncodeAvailable: Boolean,
+    rawLogOffered: Boolean,
+): List<VideoColorMode> = when {
+    !availableTransfers(codec, tenBitEncodeAvailable).any { it.isLog } -> listOf(VideoColorMode.OFF)
+    rawLogOffered -> VideoColorMode.entries
+    else -> VideoColorMode.entries - VideoColorMode.RAW_LOG
+}
+
+/**
+ * The mode a request READS as. RAW Log needs the intent, a log transfer it develops into, AND a route
+ * that offers it: where the route does not (a rate above the RAW stream, a camera without a
+ * developable RAW) the session records native log, so the row says Log while the intent is kept for
+ * a route that can honour it — the same keep-the-request rule the session ladder follows.
+ */
+fun videoColorModeOf(transfer: ColorTransfer, rawLogRequested: Boolean, rawLogOffered: Boolean): VideoColorMode = when {
+    transfer == ColorTransfer.SDR -> VideoColorMode.OFF
+    transfer == ColorTransfer.HLG -> VideoColorMode.HLG
+    rawLogRequested && rawLogOffered && rawLogTransfer(transfer) -> VideoColorMode.RAW_LOG
+    else -> VideoColorMode.LOG
 }
 
 /** Focus behaviour. MANUAL drives LENS_FOCUS_DISTANCE; others use the AF engine. */
@@ -225,6 +258,8 @@ data class MemoryPresetPresentation(
     val videoHeight: Int,
     val videoFrameRate: VideoFrameRate,
     val transfer: ColorTransfer,
+    // The bank's RAW log intent: a log bank names "RAW" in its generated name and summary.
+    val rawLog: Boolean = false,
     val bitrateLevel: BitrateLevel,
 )
 
@@ -1589,40 +1624,25 @@ data class PhotoFormats(
  * BT.2020 and carry a 10-bit HEVC profile; on an 8-bit-only encoder they yield a Main/yuv420p stream
  * wearing those tags, so they are withheld rather than offered as a claim the file cannot back.
  * SDR always survives — it is the 8-bit BT.709 case by construction.
- *
- * [nativeLog] is the HOST handset's [DeviceProfile.nativeLogFlavor]: of the [ColorTransfer.isNativeLog]
- * members only that one is offered (none when null). It is deliberately a required parameter — a
- * defaulted null would let a new caller silently drop the phone's own log from one surface only.
  */
 fun availableTransfers(
     codec: VideoCodec,
     tenBitEncodeAvailable: Boolean,
-    nativeLog: ColorTransfer?,
 ): List<ColorTransfer> = if (codec == VideoCodec.HEVC && tenBitEncodeAvailable) {
-    ColorTransfer.entries.filter { !it.isNativeLog || it == nativeLog }
+    ColorTransfer.entries
 } else {
     listOf(ColorTransfer.SDR)
 }
 
 /**
- * One codec/transfer invariant shared by restore, recall, live selection, and REC admission. A
- * phone-maker log this device does not offer (a settings blob or MR bank carried over from another
- * phone, or a flavor the profile table no longer maps) becomes [ColorTransfer.SLOG3] — the operator
- * asked for a LOG, so the universal log default keeps the clip flat rather than dropping to SDR —
- * and falls to SDR only where no log is encodable at all.
+ * One codec/transfer invariant shared by restore, recall, live selection, and REC admission: a
+ * transfer this encoder cannot carry falls to SDR. (A persisted phone-maker log name, removed
+ * 2026-10-26, never reaches here — SettingsStore migrates it to [ColorTransfer.SLOG3] on load.)
  */
 fun ColorTransfer.normalizedForEncoder(
     codec: VideoCodec,
     tenBitEncodeAvailable: Boolean,
-    nativeLog: ColorTransfer?,
-): ColorTransfer {
-    val available = availableTransfers(codec, tenBitEncodeAvailable, nativeLog)
-    return when {
-        this in available -> this
-        isNativeLog && ColorTransfer.SLOG3 in available -> ColorTransfer.SLOG3
-        else -> ColorTransfer.SDR
-    }
-}
+): ColorTransfer = if (this in availableTransfers(codec, tenBitEncodeAvailable)) this else ColorTransfer.SDR
 
 /**
  * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
@@ -2113,9 +2133,12 @@ data class CameraUiState(
     // Optional Gyroflow .gcsv sidecar per video take (Documents/TeleCamPro). No viewfinder chrome:
     // the Video menu row is its only surface, and a failed sidecar is one status line.
     val gyroLog: Boolean = false,
-    // Operator intent for the EXPERIMENTAL RAW log route (Video tab). Whether a session actually
-    // develops from RAW is accepted truth: photoSessionOutputs.rawLog.
+    // Operator intent for the EXPERIMENTAL RAW log route (Video tab Gamma = RAW Log). Whether a
+    // session actually develops from RAW is accepted truth: photoSessionOutputs.rawLog.
     val rawLog: Boolean = false,
+    // The log profile Gamma = Log / RAW Log returns to after Off or HLG (persisted). While a log is
+    // selected it equals [transfer]; it is a memory, never what the encoder reads.
+    val logProfile: ColorTransfer = ColorTransfer.SLOG3,
     // Delivery-framing markers over the viewfinder.
     val frameLines: FrameLineType = FrameLineType.OFF,
     // Battery % and free storage for the OSD info pill (refreshed by a slow ticker; -1 = unknown).
@@ -2165,13 +2188,6 @@ data class CameraUiState(
     val heifAvailable: Boolean = false,
     /** False when the device's HEVC encoder has no Main10 profile; withholds HLG/log gammas. */
     val tenBitEncodeAvailable: Boolean = false,
-    /**
-     * The HOST handset's own log ([DeviceProfile.nativeLogFlavor]; null = this phone's maker log is
-     * not offered). Device-static, seeded once at ViewModel construction, and passed to every
-     * [availableTransfers] / [normalizedForEncoder] caller so picker, Fn cycle, MR recall, restore and
-     * REC admission all answer from the same fact.
-     */
-    val nativeLogFlavor: ColorTransfer? = null,
     /** [DeviceProfile.nativeLogEiSupported] of the host handset; false hides the Log EI offset. */
     val nativeLogEiSupported: Boolean = true,
     /**
@@ -2233,6 +2249,18 @@ data class CameraUiState(
 
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+
+    /** Whether this route offers RAW Log at the selected rate ([rawLogOffered]). */
+    val rawLogOffered: Boolean
+        get() = caps?.let { rawLogOffered(it, videoFrameRate.encoderRate) } == true
+
+    /** The Gamma modes the Video tab and the Fn cycle offer ([availableVideoColorModes]). */
+    val videoColorModes: List<VideoColorMode>
+        get() = availableVideoColorModes(videoCodec, tenBitEncodeAvailable, rawLogOffered)
+
+    /** The Gamma mode the request reads as on this route ([videoColorModeOf]). */
+    val videoColorMode: VideoColorMode
+        get() = videoColorModeOf(transfer, rawLog, rawLogOffered)
 
     /** [photoFormats] is the REQUEST; this is what the accepted session writes ([effectiveFor]). */
     val effectivePhotoFormats: PhotoFormats

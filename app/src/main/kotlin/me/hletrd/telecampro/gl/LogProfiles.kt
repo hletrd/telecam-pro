@@ -1,13 +1,11 @@
 package me.hletrd.telecampro.gl
 
 import kotlin.math.ln
-import kotlin.math.log2
 import kotlin.math.pow
 
 /**
- * Android-free reference for the GL-baked log profiles (S-Log3/S-Gamut3, S-Log3/S-Gamut3.Cine,
- * ARRI LogC3 EI800/AWG3, and the per-device phone-maker logs OPPO O-Log2, OPPO O-Log and Xiaomi
- * Mi-Log, all three in BT.2020) — the [Shaders.FRAGMENT] string interpolates THESE constants, so the
+ * Android-free reference for the GL-baked log profiles (S-Log3/S-Gamut3, S-Log3/S-Gamut3.Cine and
+ * ARRI LogC3 EI800/AWG3) — the [Shaders.FRAGMENT] string interpolates THESE constants, so the
  * shader and the unit-tested reference cannot drift apart (same single-source pattern as
  * [SdrToHlgMapping]).
  *
@@ -21,16 +19,8 @@ import kotlin.math.pow
  * Curve sources (constants copied verbatim, pinned by LogProfilesTest):
  *  - Sony "Technical Summary for S-Gamut3.Cine/S-Log3 and S-Gamut3/S-Log3" (S-Log3 OETF).
  *  - ARRI "ALEXA Log C Curve — Usage in VFX" (LogC3 EI800 parameter row).
- *  - OPPO "O-Log2 White Paper" (2026-04-17, Cris Yan, CHN→ENG translation;
- *    https://www.oppo.com/en/o-log-technical-downloads/): a TWO-segment curve (quadratic toe +
- *    log2 segment) in BT.2020-2 primaries, D65 — the same algebraic form AND constants as Apple
- *    Log. See [OLOG2_RT] for the printed-threshold typo.
- *  - OPPO "O-Log White Paper" V1 (2025-10-22, same download page): ONE natural-log segment over
- *    R ∈ [0, 16], BT.2020-2 primaries, D65; exposure convention from OPPO's own
- *    `O-Log_to_ACES_AP0_V1.dctl` — see [OLOG_DCTL_SCALE].
- *  - Xiaomi "Xiaomi Log Profile White Paper" (December 2024), as transcribed by colour-science
- *    (`colour/models/rgb/transfer_functions/xiaomi_mi_log.py`, whose doctest pins
- *    0.18 → 0.4534596…): Apple-Log form with Xiaomi's own constants, BT.2020 D65.
+ * The per-device phone-maker curves (OPPO O-Log2 / O-Log, Xiaomi Mi-Log; codes 6/7/8) were
+ * removed 2026-10-26 with the options that used them (owner decision: industry-standard curves only).
  *
  * Gamut matrices are M = inv(RGBtoXYZ(target)) × RGBtoXYZ(BT.709), all primaries specified with
  * the D65 white (x=0.3127, y=0.3290) — no chromatic adaptation needed, so every row sums to 1.0
@@ -41,18 +31,14 @@ internal object LogProfiles {
     const val INV_LN10 = 0.4342944819032518
 
     /**
-     * Defensive lower clamp between the gamut matrix and the OETF. All six matrices are strictly
+     * Defensive lower clamp between the gamut matrix and the OETF. All three matrices are strictly
      * positive (BT.709 sits inside each target gamut), so an in-range SDR decode cannot actually go
      * negative — this floor guards float error and any future matrix change while keeping the log
-     * arguments defined: S-Log3's log input is x + 0.01 (≥ 1e-4 at the floor), LogC3's cut keeps
-     * its log branch above x = 0.010591, the two Apple-Log-form curves (O-Log2, Mi-Log) are DEFINED
-     * down to their own R0 (< −0.05) by the quadratic toe, and O-Log v1 clamps to its white-paper
-     * domain itself ([ologOetf]). Deliberately NO upper clamp here: row-sum-1 matrices cannot
+     * arguments defined: S-Log3's log input is x + 0.01 (≥ 1e-4 at the floor), and LogC3's cut keeps
+     * its log branch above x = 0.010591. Deliberately NO upper clamp here: row-sum-1 matrices cannot
      * push [0,1] input above 1, and a silent highlight clamp here would be a gamut distortion — and
-     * under a native-log Log EI offset the input legitimately reaches k (up to 8), which every OETF
-     * here encodes below code 1.0 (S-Log3 ≈ 0.83, LogC3 ≈ 0.79, O-Log2 ≈ 0.950, Mi-Log ≈ 0.951)
-     * EXCEPT O-Log v1, whose white-paper domain ends at R = 16 (scene-linear ≈ 7.37, code ≈ 0.9996):
-     * at +3 EI the top ≈ 0.12 stop of the headroom clips there (see [ologOetf]).
+     * under a native-log Log EI offset the input legitimately reaches k (up to 8), which both OETFs
+     * encode below code 1.0 (S-Log3 ≈ 0.83, LogC3 ≈ 0.79).
      */
     const val GAMUT_LINEAR_FLOOR = -0.0099
 
@@ -80,61 +66,6 @@ internal object LogProfiles {
     const val LOGC3_D = 0.385537
     const val LOGC3_E = 5.367655
     const val LOGC3_F = 0.092809
-
-    // OPPO O-Log2 OETF (official white paper 2026-04-17), Apple-Log form:
-    //   y = γ·log2(x + β) + δ   for x >= Rt
-    //   y = c·(x − R0)²         for R0 <= x < Rt   (quadratic toe)
-    //   y = 0                   for x < R0
-    // 18 % grey → ≈ 0.48827, 1.0 (100 % white) → ≈ 0.69455, 0 → ≈ 0.15048 (c·R0², the toe's value).
-    // The single-segment form this app carried 2026-10-15 (reverse-engineered from OPPO's LUT/DCTL
-    // before the paper was found) had no toe and mapped 0 → ≈ 0.1208; it is SUPERSEDED by the
-    // paper. OPPO's own O-Log2→ACES DCTL decodes with the log segment only (rounded 0.693/0.0855/
-    // 0.0096), which is why the toe was invisible from it — the paper is the authority.
-    const val OLOG2_R0 = -0.05641088
-
-    /**
-     * The paper PRINTS `Rt = 0.006` (in both the encode and decode sections), but that value is a
-     * typo: at 0.006 the toe gives c·(Rt − R0)² ≈ 0.18419 while the log segment gives ≈ 0.18047 — a
-     * 0.0037 DOWNWARD step, i.e. a NON-monotonic curve no camera encodes. At Rt = 0.01 the two
-     * segments meet in value (0.2085553) AND slope (6.28076, the toe's 2c(x − R0) against the log's
-     * γ/((x + β)·ln 2)) — the C¹ join the quadratic toe exists to make — and every other constant
-     * equals Apple Log's, whose Rt is 0.01. The paper's Table 1 "0 %" row (0.18418888) is the toe
-     * evaluated AT 0.006, so it inherits the same typo and is not used as an anchor.
-     */
-    const val OLOG2_RT = 0.01
-    const val OLOG2_C2 = 47.28711236 // the paper's c (quadratic toe gain)
-    const val OLOG2_B = 0.00964052 // β
-    const val OLOG2_A = 0.08550479 // γ
-    const val OLOG2_C = 0.69336945 // δ
-
-    // OPPO O-Log (V1) OETF (official white paper V1): P = γ·ln(R + β) + δ, ONE segment, 0 <= R <= 16.
-    const val OLOG_GAMMA = 0.139
-    const val OLOG_BETA = 0.019
-    const val OLOG_DELTA = 0.614
-    /** Upper end of the white paper's encoding domain (R = 16 ≙ the 10-EV-normalised sensor max). */
-    const val OLOG_R_MAX = 16.0
-
-    /**
-     * O-Log v1's R is NOT scene reflectance: the paper normalises the sensor signal so 18 %
-     * reflectance sits at R ≈ 0.39 (code 0.4902 ≈ 502/1023 under OPPO's auto exposure), and OPPO's
-     * official `O-Log_to_ACES_AP0_V1.dctl` / `.ctl` decode with
-     * `lin = (exp((P − 0.614)/0.139) − 0.019) / 16 · 7.37235`. Encoding scene-linear s as
-     * R = s / [OLOG_DCTL_SCALE] is the EXACT inverse of that DCTL, so OPPO's own LUT/DCTL workflow
-     * lands at correct exposure: s = 0.18 → R ≈ 0.3906 → P ≈ 0.48995 (paper: 0.4901589, i.e. the
-     * DCTL decodes the paper's grey to s ≈ 0.1802 — the 0.1 % residual is OPPO's own rounding).
-     * Without it (R = s) grey would land at P ≈ 0.383, ~1.2 stops dark through OPPO's LUT.
-     */
-    const val OLOG_DCTL_SCALE = 7.37235 / 16.0
-
-    // Xiaomi Mi-Log OETF (Xiaomi Log Profile White Paper, Dec 2024, via colour-science): the same
-    // Apple-Log form as O-Log2 with Xiaomi's constants. 18 % grey → 0.45345968 (colour-science
-    // doctest), 1.0 → ≈ 0.67476, 0 → ≈ 0.14743. Its Rt is NOT a typo: value and slope match there.
-    const val MILOG_R0 = -0.09023729
-    const val MILOG_RT = 0.01974185
-    const val MILOG_C2 = 18.10531998
-    const val MILOG_BETA = 0.01384578
-    const val MILOG_GAMMA = 0.09271529
-    const val MILOG_DELTA = 0.67291850
 
     // Linear-light BT.709 -> S-Gamut3 (D65→D65, rows sum to 1).
     const val SG3_R_FROM_R = 0.5660490800
@@ -225,53 +156,6 @@ internal object LogProfiles {
         LOGC3_E * x + LOGC3_F
     }
 
-    /**
-     * The Apple-Log-form OETF shared by O-Log2 and Mi-Log: log2 segment at and above [rt], quadratic
-     * toe `c2·(x − r0)²` between [r0] and [rt], 0 below [r0]. Defined for every finite input.
-     */
-    private fun toeLog2Oetf(x: Double, r0: Double, rt: Double, c2: Double, beta: Double, gamma: Double, delta: Double): Double =
-        when {
-            x >= rt -> gamma * log2(x + beta) + delta
-            x >= r0 -> c2 * (x - r0) * (x - r0)
-            else -> 0.0
-        }
-
-    /** Exact inverse of [toeLog2Oetf] (the white papers' decoding function); P < 0 → r0. */
-    private fun toeLog2Inverse(p: Double, r0: Double, rt: Double, c2: Double, beta: Double, gamma: Double, delta: Double): Double {
-        val pt = c2 * (rt - r0) * (rt - r0)
-        return when {
-            p >= pt -> 2.0.pow((p - delta) / gamma) - beta
-            p >= 0.0 -> r0 + kotlin.math.sqrt(p / c2)
-            else -> r0
-        }
-    }
-
-    /** OPPO O-Log2 OETF for one component (official two-segment curve, [OLOG2_RT] = 0.01). */
-    fun olog2Oetf(x: Double): Double = toeLog2Oetf(x, OLOG2_R0, OLOG2_RT, OLOG2_C2, OLOG2_B, OLOG2_A, OLOG2_C)
-
-    /** O-Log2 decoding function (white paper §2.2, with the corrected threshold). */
-    fun olog2Inverse(p: Double): Double = toeLog2Inverse(p, OLOG2_R0, OLOG2_RT, OLOG2_C2, OLOG2_B, OLOG2_A, OLOG2_C)
-
-    /**
-     * OPPO O-Log (V1) OETF for one scene-linear component, under OPPO's DCTL exposure convention
-     * ([OLOG_DCTL_SCALE]). R is clamped to the paper's domain [0, [OLOG_R_MAX]]: below 0 the log
-     * argument would approach 0, and above 16 the paper defines nothing (code there ≈ 0.9996). That
-     * upper clamp is the one place a Log EI offset can clip: R = 16 is scene-linear ≈ 7.37, so at
-     * +3 EI (k = 8) the top ≈ 0.12 stop of the bought headroom encodes flat — documented rather than
-     * capping the offset for one profile, since everything below it is kept.
-     */
-    fun ologOetf(x: Double): Double =
-        OLOG_GAMMA * ln((x / OLOG_DCTL_SCALE).coerceIn(0.0, OLOG_R_MAX) + OLOG_BETA) + OLOG_DELTA
-
-    /** OPPO's official V1 DCTL decode (code → scene-linear), the exact inverse of [ologOetf] in-domain. */
-    fun ologInverse(p: Double): Double = (kotlin.math.exp((p - OLOG_DELTA) / OLOG_GAMMA) - OLOG_BETA) * OLOG_DCTL_SCALE
-
-    /** Xiaomi Mi-Log OETF for one component (Apple-Log form, Xiaomi constants). */
-    fun milogOetf(x: Double): Double = toeLog2Oetf(x, MILOG_R0, MILOG_RT, MILOG_C2, MILOG_BETA, MILOG_GAMMA, MILOG_DELTA)
-
-    /** Mi-Log decoding function. */
-    fun milogInverse(p: Double): Double = toeLog2Inverse(p, MILOG_R0, MILOG_RT, MILOG_C2, MILOG_BETA, MILOG_GAMMA, MILOG_DELTA)
-
     fun encodeSlog3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3_R_FROM_R, SG3_R_FROM_G, SG3_R_FROM_B,
@@ -298,37 +182,6 @@ internal object LogProfiles {
         AWG3_G_FROM_R, AWG3_G_FROM_G, AWG3_G_FROM_B,
         AWG3_B_FROM_R, AWG3_B_FROM_G, AWG3_B_FROM_B,
         ::logc3Oetf,
-        sourceHlg,
-        sceneLinear,
-    )
-
-    /**
-     * O-Log2 / BT.2020: the same decode → matrix → floor → OETF chain, with the BT.709→BT.2020
-     * matrix the HLG mapping already single-sources ([SdrToHlgMapping]). The shared floor is inert
-     * here (the toe is defined far below it).
-     */
-    fun encodeOlog2(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb =
-        encodeBt2020(red, green, blue, ::olog2Oetf, sourceHlg, sceneLinear)
-
-    /** O-Log (V1) / BT.2020, same chain; [ologOetf] owns its domain clamp. */
-    fun encodeOlog(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb =
-        encodeBt2020(red, green, blue, ::ologOetf, sourceHlg, sceneLinear)
-
-    /** Mi-Log / BT.2020, same chain. */
-    fun encodeMilog(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb =
-        encodeBt2020(red, green, blue, ::milogOetf, sourceHlg, sceneLinear)
-
-    private fun encodeBt2020(
-        red: Double, green: Double, blue: Double,
-        oetf: (Double) -> Double,
-        sourceHlg: Boolean,
-        sceneLinear: Boolean,
-    ): Rgb = encode(
-        red, green, blue,
-        SdrToHlgMapping.R_FROM_R, SdrToHlgMapping.R_FROM_G, SdrToHlgMapping.R_FROM_B,
-        SdrToHlgMapping.G_FROM_R, SdrToHlgMapping.G_FROM_G, SdrToHlgMapping.G_FROM_B,
-        SdrToHlgMapping.B_FROM_R, SdrToHlgMapping.B_FROM_G, SdrToHlgMapping.B_FROM_B,
-        oetf,
         sourceHlg,
         sceneLinear,
     )

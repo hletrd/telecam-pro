@@ -10,7 +10,7 @@ import me.hletrd.telecampro.camera.VideoCodec
  *
  * - HEVC: Main10 profile tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
  *   - HLG: tagged with the HLG transfer so HDR players render it directly.
- *   - Log profiles (S-Log3 / S-Log3.Cine / LogC3 and the per-device O-Log2 / O-Log / Mi-Log): our
+ *   - Log profiles (S-Log3 / S-Log3.Cine / LogC3): our
  *     GL pipeline bakes the flat curve; no CICP code exists for a log curve, so the stream is tagged
  *     BT.2020 full-range with an explicit SDR-class transfer (grade manually) — one shared
  *     log-class policy for all of them.
@@ -170,14 +170,13 @@ internal fun hevcColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (t
     // No CICP code exists for a log curve. Tag SDR like other phone log formats: players show the
     // flat log image as-is and graders assign the profile's IDT/LUT manually. One log-class policy
     // for every log profile — which curve was baked is a grading decision, not a container one.
-    // For O-Log2 this also matches the stock camera's own stream dataspace
+    // It also matches the stock camera's own O-Log2 stream dataspace
     // (STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL — an SDR-class transfer).
     // (Device ffprobe note, from the O-Log2 era this policy is inherited from verbatim: on this
     // QTI encoder "SDR transfer + BT2020 full range" lands in the container as CICP 14 —
     // bt2020-10, functionally identical to BT.709 per H.273 — NOT the literal SDR code point, and
     // crucially not the ST2084/PQ mistag this tag exists to prevent.)
     ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
-    ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG,
     -> VideoColorTags(
         profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
         standard = MediaFormat.COLOR_STANDARD_BT2020,
@@ -207,7 +206,6 @@ internal fun apvColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (tr
         transfer = MediaFormat.COLOR_TRANSFER_HLG,
     )
     ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
-    ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG,
     ColorTransfer.SDR,
     -> VideoColorTags(
         profile = null,

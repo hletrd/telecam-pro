@@ -114,9 +114,9 @@ internal fun tenBitNativeLogBridgeSupported(
  * The S-Log3 OETF as TONEMAP_CURVE control points: interleaved (Pin, Pout) pairs, Pin strictly
  * increasing from exactly 0 to exactly 1, Pout = [LogProfiles.slog3Oetf] (Pin). The same array is
  * used for R, G and B — the curve is a per-channel transfer; the gamut stays the ISP's 709
- * primaries, and the GL chain owns the S-Gamut3/S-Gamut3.Cine/AWG3/BT.2020 matrix exactly as before.
+ * primaries, and the GL chain owns the S-Gamut3/S-Gamut3.Cine/AWG3 matrix exactly as before.
  *
- * Every native-log transfer (S-Log3, S-Log3.Cine, LogC3, and O-Log2 / O-Log / Mi-Log) programs THIS curve: it is a transport
+ * Every native-log transfer (S-Log3, S-Log3.Cine, LogC3) programs THIS curve: it is a transport
  * encoding the shader decodes back to linear ([LogProfiles.slog3Inverse]) before applying the
  * selected profile, so switching between them needs no session reopen.
  *

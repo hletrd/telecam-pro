@@ -43,7 +43,7 @@ class FnSlotValueTest {
             FnSlot.METERING to "Matrix",
             FnSlot.PEAKING to "Off",
             FnSlot.ZEBRA to "Off",
-            FnSlot.TRANSFER to "SDR",
+            FnSlot.TRANSFER to "Off", // the Gamma chip names the MODE (Off), not the file curve
             FnSlot.AUDIO_SCENE to "Standard",
             FnSlot.GRID to "Thirds",
             FnSlot.LEVEL to "Off",

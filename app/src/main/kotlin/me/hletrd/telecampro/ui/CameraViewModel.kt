@@ -55,6 +55,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorEffect
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.rawLogTransfer
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.DiagnosticChangeLogGate
 import me.hletrd.telecampro.camera.AfSpotSize
@@ -127,6 +128,7 @@ import me.hletrd.telecampro.camera.normalizeMagnification
 import me.hletrd.telecampro.camera.reconcileConverter
 import me.hletrd.telecampro.camera.teleconverterDeclaration
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
@@ -245,11 +247,8 @@ class CameraViewModel private constructor(
     private val tapFocusPublicationGate = TapFocusPublicationGate()
     // A blob with no phone key falls back to the same detected-or-OTHER seed as a fresh launch.
     private val settingsStore = SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }
-    // nativeLogFlavor is device-static (DeviceProfile seam 2, host handset) and must be in the state
-    // BEFORE init's settings restore normalizes the persisted transfer against it.
     private val _state = MutableStateFlow(
         CameraUiState(
-            nativeLogFlavor = engine.nativeLogFlavor,
             nativeLogEiSupported = engine.nativeLogEiSupported,
         ),
     )
@@ -882,6 +881,11 @@ class CameraViewModel private constructor(
      *   those feed `currentExtras` as the operator's request, which caps narrowing never corrects,
      *   so a rolled-back bank's values were persisted as if it had loaded.
      *
+     * - [armedLogProfile] / [priorLogProfile]: the remembered log profile the recall wrote and what it
+     *   was before (2026-10-26 review). It is a memory Gamma = Log / RAW Log returns to, so a
+     *   rolled-back bank's LogC3 left in place was persisted by the rollback's own save and silently
+     *   became the operator's next Log.
+     *
      * [generation] is what `setResolvedOptics` returned — the transaction it BEGAN (MRG5-6), never a
      * later re-read another intent could already have bumped.
      *
@@ -900,6 +904,8 @@ class CameraViewModel private constructor(
         val priorStabMode: VideoStabMode,
         val armedFrameRate: VideoFrameRate,
         val priorFrameRate: VideoFrameRate,
+        val armedLogProfile: ColorTransfer,
+        val priorLogProfile: ColorTransfer,
         val inventoryApplied: PendingInventoryRequest? = null,
     )
     // Every recall/restore transaction not yet settled, oldest first (AGG6-11). Keyed by the
@@ -1268,6 +1274,10 @@ class CameraViewModel private constructor(
                     }
                     if (requestedVideoFrameRate == restore.armedFrameRate) {
                         requestedVideoFrameRate = restore.priorFrameRate
+                    }
+                    // The remembered log profile under the same rule: a newer Profile pick survives.
+                    if (_state.value.logProfile == restore.armedLogProfile) {
+                        _state.update { it.copy(logProfile = restore.priorLogProfile) }
                     }
                 }
                 if (recallRestores.isNotEmpty() && !_state.value.isRecording) {
@@ -1663,7 +1673,6 @@ class CameraViewModel private constructor(
         val safeTransfer = e.transfer.normalizedForEncoder(
             safeCodec,
             inventoryLoaded && _state.value.tenBitEncodeAvailable,
-            _state.value.nativeLogFlavor,
         )
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
@@ -1724,6 +1733,9 @@ class CameraViewModel private constructor(
             presets = restoredPresets,
         )
         val currentState = _state.value
+        // The log profile Gamma = Log / RAW Log returns to: the restored log itself, else the bank's
+        // memory. Written below and undone by a rollback (RecallRollbackRestore).
+        val restoredLogProfile = if (safeTransfer.isLog) safeTransfer else e.logProfile
         val restoredRoute = recalledCameraRoute(currentState.cameraRoutes, currentState.activeCameraRoute)
             ?: return
         val restoredLens = if (restoredRoute == CameraRoute.BACK) restoredOptics.lens else currentState.lens
@@ -1868,6 +1880,8 @@ class CameraViewModel private constructor(
             priorStabMode = priorStabRequest,
             armedFrameRate = safeFrameRate,
             priorFrameRate = priorFrameRateRequest,
+            armedLogProfile = restoredLogProfile,
+            priorLogProfile = currentState.logProfile,
         )
         // AGG5-20: the recalled punch-in is the operator's value now, so the focus-ruler assist no
         // longer owns the field. Left set, a ruler close after the recall switched the bank's loupe
@@ -1938,6 +1952,7 @@ class CameraViewModel private constructor(
                 // alone while the wire still carried HLG (caught on an Android 13 emulator after
                 // the seed-only fix looked correct in the menu).
                 transfer = safeTransfer,
+                logProfile = restoredLogProfile,
                 photoFormats = safeFormats,
                 mode = e.mode,
                 lens = restoredLens,
@@ -2024,6 +2039,7 @@ class CameraViewModel private constructor(
         val formats = pendingPhotoFormatsUntilInventory?.takeIf { inventoryPending } ?: s.photoFormats
         ExtraSettings(
             transfer = pendingTransferUntilInventory?.takeIf { inventoryPending } ?: s.transfer,
+            logProfile = s.logProfile,
             heif = formats.heif,
             jpeg = formats.jpeg,
             dngRaw = formats.dngRaw,
@@ -2376,6 +2392,7 @@ class CameraViewModel private constructor(
                         videoHeight = videoSize?.height ?: 0,
                         videoFrameRate = extras.videoFrameRate,
                         transfer = extras.transfer,
+                        rawLog = extras.rawLog,
                         bitrateLevel = extras.bitrateLevel,
                     )
                 },
@@ -2931,7 +2948,6 @@ class CameraViewModel private constructor(
                 _state.value.transfer.normalizedForEncoder(
                     _state.value.videoCodec,
                     _state.value.tenBitEncodeAvailable,
-                    _state.value.nativeLogFlavor,
                 )
             } else {
                 ColorTransfer.SDR
@@ -2954,7 +2970,6 @@ class CameraViewModel private constructor(
         val safeTransfer = transfer.normalizedForEncoder(
             current.videoCodec,
             current.tenBitEncodeAvailable,
-            current.nativeLogFlavor,
         )
         if (!current.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
         if (current.encoderInventoryLoaded) {
@@ -2966,9 +2981,36 @@ class CameraViewModel private constructor(
         } else {
             engine.setTransfer(safeTransfer)
         }
-        _state.update { it.copy(transfer = safeTransfer) }
+        _state.update {
+            it.copy(transfer = safeTransfer, logProfile = if (safeTransfer.isLog) safeTransfer else it.logProfile)
+        }
         markChanged(FnSlot.TRANSFER)
         scheduleSettingsSave()
+    }
+
+    /**
+     * Gamma = Off / HLG / Log / RAW Log (owner decision 2026-10-26; [VideoColorMode]). A mode is the
+     * transfer plus the RAW log intent, so it lands through the same two doors as before, intent
+     * FIRST so a change costs at most one session reopen: from Off/HLG the intent cannot move a
+     * session that has no log transfer, and from a log the transfer that follows is the one already
+     * selected. Off and HLG leave the intent alone — it means nothing without a log transfer.
+     */
+    override fun onVideoColorMode(mode: VideoColorMode) {
+        if (rejectIfRecording()) return
+        val current = _state.value
+        when (mode) {
+            VideoColorMode.OFF -> onTransfer(ColorTransfer.SDR)
+            VideoColorMode.HLG -> onTransfer(ColorTransfer.HLG)
+            VideoColorMode.LOG -> {
+                if (current.rawLog) setRawLogIntent(false)
+                onTransfer(if (current.transfer.isLog) current.transfer else current.logProfile)
+            }
+            VideoColorMode.RAW_LOG -> {
+                val profile = if (current.transfer.isLog) current.transfer else current.logProfile
+                if (!current.rawLog) setRawLogIntent(true)
+                onTransfer(if (rawLogTransfer(profile)) profile else ColorTransfer.SLOG3)
+            }
+        }
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         cancelCountdown()
@@ -3088,10 +3130,10 @@ class CameraViewModel private constructor(
         saveSettingsIfEnabled()
     }
 
-    override fun onToggleRawLog(enabled: Boolean) {
+    private fun setRawLogIntent(enabled: Boolean) {
         // It replaces the session (a RAW-only stream), so it is refused mid-take like every other
-        // session-shape door; the engine reopens only when the resolved shape actually flips.
-        if (rejectIfRecording()) return
+        // session-shape door (onVideoColorMode's own refusal); the engine reopens only when the
+        // resolved shape actually flips.
         engine.setRawLogEnabled(enabled)
         _state.update { it.copy(rawLog = enabled, activeMemorySlot = null) }
         saveSettingsIfEnabled()
@@ -3392,7 +3434,6 @@ class CameraViewModel private constructor(
         val safeTransfer = requestedTransfer.normalizedForEncoder(
             safeCodec,
             inventory.tenBitEncodeAvailable,
-            _state.value.nativeLogFlavor,
         )
         val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
         val (safeAudioCodec, safeAudioKbps) = me.hletrd.telecampro.video.normalizeAudioEncoding(
@@ -3508,7 +3549,6 @@ class CameraViewModel private constructor(
                 (transfer ?: shown.transfer)?.normalizedForEncoder(
                     c,
                     encoderInventory.tenBitEncodeAvailable,
-                    _state.value.nativeLogFlavor,
                 )
             } ?: nextTransfer
         }
@@ -3766,7 +3806,6 @@ class CameraViewModel private constructor(
         val safeTransfer = current.transfer.normalizedForEncoder(
             codec,
             current.tenBitEncodeAvailable,
-            current.nativeLogFlavor,
         )
         val candidates = encoderInventory.candidatesFor(codec, safeTransfer)
         if (candidates.isEmpty()) return

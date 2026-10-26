@@ -6,6 +6,8 @@ import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoColorMode
+import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.CameraController
 import me.hletrd.telecampro.camera.CameraEngine
@@ -848,48 +850,57 @@ class CameraViewModelRobolectricTest {
             .invoke(v, inventory)
     }
 
-    @Test fun `a Find X9 offers its own O-Log and turns another maker's log into S-Log3`() {
-        org.robolectric.shadows.ShadowBuild.setModel("PLJ110")
+    @Test fun `Gamma Log returns to the remembered profile after Off and HLG`() {
         val (v, _) = createViewModel()
-        assertEquals(ColorTransfer.OLOG, v.state.value.nativeLogFlavor)
         applyMain10Inventory(v)
-        v.onTransfer(ColorTransfer.OLOG)
-        assertEquals(ColorTransfer.OLOG, v.state.value.transfer)
-        v.onTransfer(ColorTransfer.OLOG2)
-        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
-        v.onTransfer(ColorTransfer.MILOG)
-        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
-        v.onTransfer(ColorTransfer.LOGC3)
+        v.onVideoColorMode(VideoColorMode.LOG)
+        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer) // fresh default profile
+        v.onTransfer(ColorTransfer.LOGC3) // the Profile row
+        assertEquals(ColorTransfer.LOGC3, v.state.value.logProfile)
+        v.onVideoColorMode(VideoColorMode.OFF)
+        assertEquals(ColorTransfer.SDR, v.state.value.transfer)
+        v.onVideoColorMode(VideoColorMode.HLG)
+        assertEquals(ColorTransfer.HLG, v.state.value.transfer)
+        assertEquals(ColorTransfer.LOGC3, v.state.value.logProfile)
+        v.onVideoColorMode(VideoColorMode.LOG)
         assertEquals(ColorTransfer.LOGC3, v.state.value.transfer)
+        assertFalse(v.state.value.rawLog)
     }
 
-    @Test fun `an unmapped device offers no phone-maker log at all`() {
-        val (v, _) = createViewModel() // Robolectric's Build.MODEL resolves GENERIC
-        assertNull(v.state.value.nativeLogFlavor)
-        applyMain10Inventory(v)
-        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
-            v.onTransfer(flavor)
-            assertEquals("$flavor", ColorTransfer.SLOG3, v.state.value.transfer)
-        }
-    }
-
-    @Test fun `a restored foreign maker log normalizes to S-Log3 and the phone's own survives`() {
-        org.robolectric.shadows.ShadowBuild.setModel("PMA110")
+    @Test fun `Gamma RAW Log sets the intent on the current profile and Log clears it`() {
         val (v, _) = createViewModel()
-        assertEquals(ColorTransfer.OLOG2, v.state.value.nativeLogFlavor)
-        // Restore and MR recall before the encoder inventory park the persisted transfer in
-        // pendingTransferUntilInventory; its landing is where the device's offer is applied. (Driven
-        // directly: a process-cached inventory from an earlier test may already have landed.)
-        for ((persisted, expected) in listOf(
-            ColorTransfer.MILOG to ColorTransfer.SLOG3,
-            ColorTransfer.OLOG to ColorTransfer.SLOG3,
-            ColorTransfer.OLOG2 to ColorTransfer.OLOG2,
-        )) {
-            setState(v) { it.copy(encoderInventoryLoaded = false) }
-            ViewModelTestAccess.setField(v, "pendingTransferUntilInventory", persisted)
-            applyMain10Inventory(v)
-            assertEquals("$persisted", expected, v.state.value.transfer)
-        }
+        applyMain10Inventory(v)
+        v.onTransfer(ColorTransfer.SLOG3_CINE)
+        v.onVideoColorMode(VideoColorMode.RAW_LOG)
+        assertTrue(v.state.value.rawLog)
+        assertEquals(ColorTransfer.SLOG3_CINE, v.state.value.transfer)
+        // Off keeps the intent (it means nothing without a log); RAW Log from Off lands back on it.
+        v.onVideoColorMode(VideoColorMode.OFF)
+        assertTrue(v.state.value.rawLog)
+        v.onVideoColorMode(VideoColorMode.RAW_LOG)
+        assertEquals(ColorTransfer.SLOG3_CINE, v.state.value.transfer)
+        v.onVideoColorMode(VideoColorMode.LOG)
+        assertFalse(v.state.value.rawLog)
+        assertEquals(ColorTransfer.SLOG3_CINE, v.state.value.transfer)
+    }
+
+    @Test fun `Gamma reads Log while the route cannot develop RAW, and RAW Log where it can`() {
+        val (v, _) = createViewModel()
+        applyMain10Inventory(v)
+        v.onVideoColorMode(VideoColorMode.RAW_LOG)
+        val developable = ViewModelTestAccess.caps().copy(
+            rawLogDevelopable = true,
+            supportsRaw = true,
+            rawSize = android.util.Size(4080, 3064),
+            rawMinFrameDurationNs = 33_333_333L,
+        )
+        setState(v) { it.copy(caps = developable, videoFrameRate = VideoFrameRate.FPS_29_97) }
+        assertEquals(VideoColorMode.RAW_LOG, v.state.value.videoColorMode)
+        assertEquals(VideoColorMode.entries, v.state.value.videoColorModes)
+        setState(v) { it.copy(videoFrameRate = VideoFrameRate.FPS_59_94) }
+        assertEquals(VideoColorMode.LOG, v.state.value.videoColorMode)
+        assertEquals(VideoColorMode.entries - VideoColorMode.RAW_LOG, v.state.value.videoColorModes)
+        assertTrue("the intent is kept for a route that can honour it", v.state.value.rawLog)
     }
 
     // ---- Status auto-clear (Handler-timed, deterministic via the shadow main looper) ----

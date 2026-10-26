@@ -8,7 +8,6 @@ import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.WbMode
-import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.ui.CameraActions
@@ -75,7 +74,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         FnSlot.METERING -> context?.localizedLabel(c.meteringMode) ?: meteringModeLabel(c.meteringMode)
         FnSlot.PEAKING -> onOff(state.focusPeaking)
         FnSlot.ZEBRA -> onOff(state.zebra)
-        FnSlot.TRANSFER -> transferLabelShort(state.transfer)
+        FnSlot.TRANSFER -> videoColorModeChipValue(state.videoColorMode, state.transfer, onOff(false))
         FnSlot.AUDIO_SCENE -> context?.localizedLabel(state.audioScene) ?: audioSceneLabel(state.audioScene)
         FnSlot.GRID -> context?.localizedLabel(state.grid) ?: gridTypeLabel(state.grid)
         FnSlot.LEVEL -> onOff(state.level)
@@ -123,12 +122,8 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         )
         FnSlot.PEAKING -> actions.onTogglePeaking(!state.focusPeaking)
         FnSlot.ZEBRA -> actions.onToggleZebra(!state.zebra)
-        FnSlot.TRANSFER -> actions.onTransfer(
-            nextAvailable(
-                state.transfer,
-                availableTransfers(state.videoCodec, state.tenBitEncodeAvailable, state.nativeLogFlavor),
-            ),
-        )
+        // Gamma cycles MODES (Off → HLG → Log → RAW Log); the log profile is the menu's Profile row.
+        FnSlot.TRANSFER -> actions.onVideoColorMode(nextAvailable(state.videoColorMode, state.videoColorModes))
         FnSlot.AUDIO_SCENE -> actions.onAudioScene(nextAudioScene(state.audioScene))
         FnSlot.GRID -> actions.onGridType(nextGridType(state.grid))
         FnSlot.LEVEL -> actions.onToggleLevel(!state.level)

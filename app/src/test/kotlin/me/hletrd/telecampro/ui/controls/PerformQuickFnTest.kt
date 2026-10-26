@@ -93,6 +93,7 @@ class PerformQuickFnTest {
         override fun onJpegQuality(quality: Int) = hit("onJpegQuality")
         override fun onModeChange(mode: CaptureMode) = hit("onModeChange")
         override fun onTransfer(transfer: ColorTransfer) = hit("onTransfer($transfer)")
+        override fun onVideoColorMode(mode: me.hletrd.telecampro.camera.VideoColorMode) = hit("onVideoColorMode($mode)")
         override fun onSetPhotoFormats(formats: PhotoFormats) = hit("onSetPhotoFormats")
         override fun onToggleHiResStill(enabled: Boolean) = hit("onToggleHiResStill")
         override fun onAspectRatio(ratio: AspectRatio) = hit("onAspectRatio($ratio)")
@@ -126,7 +127,6 @@ class PerformQuickFnTest {
         override fun onToggleGammaAssist(enabled: Boolean) = hit("onToggleGammaAssist")
         override fun onLogEiOffset(stops: Int) = hit("onLogEiOffset($stops)")
         override fun onToggleGyroLog(enabled: Boolean) = hit("onToggleGyroLog($enabled)")
-        override fun onToggleRawLog(enabled: Boolean) = hit("onToggleRawLog($enabled)")
         override fun onFrameLines(type: FrameLineType) = hit("onFrameLines($type)")
         override fun onGridType(type: GridType) = hit("onGridType($type)")
         override fun onToggleLevel(enabled: Boolean) = hit("onToggleLevel($enabled)")
@@ -222,7 +222,11 @@ class PerformQuickFnTest {
             listOf("onFrameLines(${FrameLineType.CINEMA})"),
             dispatched(FnSlot.FRAME_LINES, idle),
         )
-        assertEquals(listOf("onTransfer(${ColorTransfer.HLG})"), dispatched(FnSlot.TRANSFER, idleVideo))
+        // Gamma cycles MODES: the SDR default (Off) steps to HLG.
+        assertEquals(
+            listOf("onVideoColorMode(${me.hletrd.telecampro.camera.VideoColorMode.HLG})"),
+            dispatched(FnSlot.TRANSFER, idleVideo),
+        )
         assertEquals(
             emptyList<String>(),
             dispatched(FnSlot.TRANSFER, idleVideo.copy(tenBitEncodeAvailable = false)),

@@ -23,9 +23,11 @@ import me.hletrd.telecampro.camera.ProcessingLevel
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
+import me.hletrd.telecampro.camera.rawLogTransfer
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -493,13 +495,36 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
-    // The phone-maker logs (offered only on their maker's phones): the format's own name, printed
-    // in Latin on Korean UIs too (like S-Log3 / LogC3).
-    ColorTransfer.OLOG2 -> "O-Log2"
-    ColorTransfer.OLOG -> "O-Log"
-    ColorTransfer.MILOG -> "Mi-Log"
     ColorTransfer.SDR -> "SDR"
 }
+
+/** The Gamma row's chip label for a [VideoColorMode], as a string resource (Off reuses "Off"). */
+internal fun videoColorModeLabel(mode: VideoColorMode): Int = when (mode) {
+    VideoColorMode.OFF -> me.hletrd.telecampro.R.string.value_off
+    VideoColorMode.HLG -> me.hletrd.telecampro.R.string.gamma_mode_hlg
+    VideoColorMode.LOG -> me.hletrd.telecampro.R.string.gamma_mode_log
+    VideoColorMode.RAW_LOG -> me.hletrd.telecampro.R.string.gamma_mode_raw_log
+}
+
+/**
+ * A video setup's look as one name — "S-Log3", or "RAW S-Log3" when the RAW log intent rides a log
+ * transfer — for the MR bank's generated name and summary.
+ */
+internal fun videoLookLabel(transfer: ColorTransfer, rawLog: Boolean): String =
+    if (rawLog && rawLogTransfer(transfer)) "RAW ${transferLabel(transfer)}" else transferLabel(transfer)
+
+/**
+ * The Gamma Fn chip / dial value for a mode: the localized [offLabel] for Off (the chip cycles MODES,
+ * so it names the mode, not "SDR"), the compact profile for the log modes, with RAW Log carrying the
+ * same " RAW" suffix the OSD tag shows for an accepted RAW log session.
+ */
+internal fun videoColorModeChipValue(mode: VideoColorMode, transfer: ColorTransfer, offLabel: String): String =
+    when (mode) {
+        VideoColorMode.OFF -> offLabel
+        VideoColorMode.HLG -> transferLabelShort(ColorTransfer.HLG)
+        VideoColorMode.LOG -> transferLabelShort(transfer)
+        VideoColorMode.RAW_LOG -> transferLabelShort(transfer) + " RAW"
+    }
 
 /** Log EI offset value label: "0", "+1 EV", "+2 EV", "+3 EV" (EV stays Latin, like the EV ruler). */
 internal fun logEiOffsetLabel(stops: Int): String = if (stops <= 0) "0" else "+$stops EV"
@@ -518,8 +543,5 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     // SG3C = the community-standard shorthand for S-Gamut3.Cine (the full name won't fit the OSD).
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
-    ColorTransfer.OLOG2 -> "OLOG2"
-    ColorTransfer.OLOG -> "OLOG"
-    ColorTransfer.MILOG -> "MILOG"
     ColorTransfer.SDR -> "SDR"
 }

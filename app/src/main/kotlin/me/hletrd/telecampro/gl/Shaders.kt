@@ -51,8 +51,7 @@ internal object ShaderBindings {
  *
  * The fragment shader samples the camera's external OES texture and optionally applies:
  *  - an SDR-to-HLG mapping or one of the standard log profiles (S-Log3/S-Gamut3,
- *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3, and the per-device phone-maker logs OPPO
- *    O-Log2 / OPPO O-Log / Xiaomi Mi-Log, all BT.2020) for the video encoder path,
+ *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3) for the video encoder path,
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
  * NOTE: the camera signal is non-linear, in one of three accepted-session encodings. A NATIVE-LOG
@@ -71,11 +70,9 @@ internal object ShaderBindings {
  * ITU-R BT.2408-9 display-referred mapping: linear BT.709→BT.2020,
  * reference-white/inverse-OOTF adjustment, then the BT.2100 HLG OETF. Each log profile follows the
  * same chain shape: BT.1886 decode, linear BT.709→target-gamut 3×3 matrix, defensive lower clamp,
- * then the profile's OETF — constants single-sourced from [LogProfiles]. The phone-maker logs
- * (offered only on their maker's phones, DeviceProfile.nativeLogFlavor) are codes 6 (OPPO O-Log2,
- * the official two-segment white-paper curve), 7 (OPPO O-Log V1 under OPPO's DCTL exposure
- * convention) and 8 (Xiaomi Mi-Log), each BT.709→BT.2020 then its OETF; the retired de-log
- * inverse stays removed and shader code 3 stays vacant. Gamma Display Assist bypasses every log curve on preview only while
+ * then the profile's OETF — constants single-sourced from [LogProfiles]. The retired de-log
+ * inverse stays removed and shader code 3 stays vacant; codes 6/7/8 (the phone-maker curves
+ * O-Log2 / O-Log / Mi-Log, removed 2026-10-26) stay vacant too. Gamma Display Assist bypasses every log curve on preview only while
  * encoder output retains the curve. No path can recover
  * above-white highlights removed by the ISP's SDR tone mapping. Verify on device.
  */
@@ -117,8 +114,8 @@ object Shaders {
         // linear S-Gamut3.Cine, NOT the ISP's sRGB primaries (camera/RawLogBridge.kt).
         uniform int ${ShaderBindings.U_SOURCE_WIDE};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
-                                 // 5 = LogC3/AWG3, 6 = O-Log2, 7 = O-Log (V1), 8 = Mi-Log (all BT.2020),
-                                 // 3 = vacant (retired de-log branch)
+                                 // 5 = LogC3/AWG3; 3 and 6/7/8 = vacant (retired de-log branch,
+                                 // removed phone-maker curves)
         uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
         uniform float ${ShaderBindings.U_PEAK_THRESHOLD}; // edge magnitude above which peaking paints
         uniform vec3 ${ShaderBindings.U_PEAK_COLOR};      // peaking highlight color
@@ -248,7 +245,7 @@ object Shaders {
             return lin;
         }
 
-        // Linear input of the LOG encode branches (codes 2/4/5/6/7/8). Without an EI offset — and on
+        // Linear input of the LOG encode branches (codes 2/4/5). Without an EI offset — and on
         // every non-native stream — this IS the historical sourceLinear(base) path, byte for byte;
         // with one, the unclamped native scene-linear above (`base` keeps its clamp for display).
         vec3 logInputLinear(vec3 color) {
@@ -321,42 +318,6 @@ object Shaders {
             return mix(logY, linY, step(x, vec3(${LogProfiles.LOGC3_CUT})));
         }
 
-        // The Apple-Log-form OETF O-Log2 and Mi-Log share (LogProfiles.toeLog2Oetf):
-        //   y = gamma * log2(x + beta) + delta   for x >= rt,
-        //   y = c2 * (x - r0)^2                  for r0 <= x < rt (quadratic toe, C1 join at rt),
-        //   y = 0                                below r0.
-        // max(x - r0, 0) makes the toe lane 0 below r0; the log lane's max() is the same NaN guard
-        // as slog3's (mix cannot discard a NaN from the unused lane).
-        vec3 toeLog2(vec3 x, float r0, float rt, float c2, float beta, float gamma, float delta) {
-            vec3 logY = gamma * log2(max(x + beta, 1e-6)) + delta;
-            vec3 q = max(x - r0, vec3(0.0));
-            vec3 toeY = c2 * q * q;
-            return mix(logY, toeY, 1.0 - step(vec3(rt), x));
-        }
-
-        // OPPO O-Log2 (official white paper 2026-04-17; Rt = 0.01, NOT the printed 0.006 typo — see
-        // LogProfiles.OLOG2_RT). 18% grey -> ≈ 0.4883, 1.0 -> ≈ 0.6946, 0 -> ≈ 0.1505.
-        vec3 olog2(vec3 x) {
-            return toeLog2(x, ${LogProfiles.OLOG2_R0}, ${LogProfiles.OLOG2_RT}, ${LogProfiles.OLOG2_C2},
-                ${LogProfiles.OLOG2_B}, ${LogProfiles.OLOG2_A}, ${LogProfiles.OLOG2_C});
-        }
-
-        // OPPO O-Log V1 (official white paper): P = 0.139 * ln(R + 0.019) + 0.614 on R in [0, 16],
-        // with R = scene-linear / OLOG_DCTL_SCALE so OPPO's own V1 DCTL decodes it back exactly
-        // (18% grey -> ≈ 0.4900). The [0, 16] clamp is the paper's domain (R = 16 ≈ 7.37 scene-linear,
-        // code ≈ 0.9996): the one profile a +3 EI headroom can clip at the top.
-        vec3 olog(vec3 x) {
-            vec3 r = clamp(x / ${LogProfiles.OLOG_DCTL_SCALE}, 0.0, ${LogProfiles.OLOG_R_MAX});
-            return ${LogProfiles.OLOG_GAMMA} * log(r + ${LogProfiles.OLOG_BETA}) + ${LogProfiles.OLOG_DELTA};
-        }
-
-        // Xiaomi Mi-Log (Xiaomi Log Profile White Paper, Dec 2024): Apple-Log form, Xiaomi constants.
-        // 18% grey -> 0.45346.
-        vec3 milog(vec3 x) {
-            return toeLog2(x, ${LogProfiles.MILOG_R0}, ${LogProfiles.MILOG_RT}, ${LogProfiles.MILOG_C2},
-                ${LogProfiles.MILOG_BETA}, ${LogProfiles.MILOG_GAMMA}, ${LogProfiles.MILOG_DELTA});
-        }
-
         void main() {
             vec3 base = dgain(sampleSource(vTexCoord));
             vec3 color = base;
@@ -392,20 +353,6 @@ object Shaders {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
                 vec3 lin = logInputLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
-            } else if (uTransfer == 6) {
-                // OPPO O-Log2 / BT.2020: same chain shape, reusing the HLG branch's linear
-                // 709-to-2020 matrix and the shared defensive floor (inert for 6/7/8: the toe is
-                // defined far below it, and O-Log clamps to its own domain).
-                vec3 lin = logInputLinear(color);
-                color = olog2(gamutFloor(toRec2020(lin)));
-            } else if (uTransfer == 7) {
-                // OPPO O-Log (V1) / BT.2020.
-                vec3 lin = logInputLinear(color);
-                color = olog(gamutFloor(toRec2020(lin)));
-            } else if (uTransfer == 8) {
-                // Xiaomi Mi-Log / BT.2020.
-                vec3 lin = logInputLinear(color);
-                color = milog(gamutFloor(toRec2020(lin)));
             }
 
             // False color: map exposure (luma) to IRE-style bands (display-referred, see meter).

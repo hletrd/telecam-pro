@@ -50,6 +50,8 @@ data class ExtraSettings(
     // General-purpose defaults (owner, 2026-10-25): SDR plays correctly on every screen and editor
     // (HLG needs an HDR display), and JPEG opens everywhere (HEIF does not on every desktop/web).
     val transfer: ColorTransfer = ColorTransfer.SDR,
+    // The profile Gamma = Log / RAW Log returns to after Off or HLG; always a log member.
+    val logProfile: ColorTransfer = ColorTransfer.SLOG3,
     val heif: Boolean = false,
     val jpeg: Boolean = true,
     val dngRaw: Boolean = false,
@@ -347,14 +349,12 @@ class SettingsStore(
             )
             val ed = ExtraSettings()
             val restoredPhone = enumOr(safeString("${prefix}phoneModel", null), missingPhoneModel())
+            val restoredTransfer = migratedTransferName(safeString("${prefix}transfer", null), ed.transfer)
             val extras = ExtraSettings(
-                // Legacy alias: pre-2026-07-22 builds persisted the removed O-Log2 option as
-                // "LOG". Map it to S-Log3.Cine (the closest shipped log profile) explicitly —
-                // plain enumOr would silently drop a log shooter back to the HLG default.
-                transfer = when (val raw = safeString("${prefix}transfer", null)) {
-                    "LOG" -> ColorTransfer.SLOG3_CINE
-                    else -> enumOr(raw, ed.transfer)
-                },
+                transfer = restoredTransfer,
+                // A blob from before the key existed remembers the log it was recording, if any.
+                logProfile = migratedTransferName(safeString("${prefix}logProfile", null), restoredTransfer)
+                    .takeIf { it.isLog } ?: ed.logProfile,
                 heif = safeBoolean("${prefix}heif", ed.heif),
                 jpeg = safeBoolean("${prefix}jpeg", ed.jpeg),
                 dngRaw = safeBoolean("${prefix}dngRaw", ed.dngRaw),
@@ -486,6 +486,7 @@ class SettingsStore(
         putFloat("${prefix}zoomRatio", c.zoomRatio)
         putInt("${prefix}jpegQuality", c.jpegQuality)
         putString("${prefix}transfer", e.transfer.name)
+        putString("${prefix}logProfile", e.logProfile.name)
         putBoolean("${prefix}heif", e.heif)
         putBoolean("${prefix}jpeg", e.jpeg)
         putBoolean("${prefix}dngRaw", e.dngRaw)
@@ -590,4 +591,17 @@ internal inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List
         ?.distinct()
         .orEmpty()
     return parsed.ifEmpty { default }
+}
+
+/**
+ * A persisted [ColorTransfer] name, with the names of removed options mapped to what their operator
+ * asked for. Pre-2026-07-22 builds persisted the removed O-Log2 option as "LOG" → S-Log3.Cine (the
+ * closest shipped log profile); the per-phone maker logs "OLOG2" / "OLOG" / "MILOG" (removed
+ * 2026-10-26) → S-Log3, the log default. Plain [enumOr] would silently drop a log shooter back to
+ * [default]. Main blob and MR banks both load through here.
+ */
+internal fun migratedTransferName(raw: String?, default: ColorTransfer): ColorTransfer = when (raw) {
+    "LOG" -> ColorTransfer.SLOG3_CINE
+    "OLOG2", "OLOG", "MILOG" -> ColorTransfer.SLOG3
+    else -> enumOr(raw, default)
 }

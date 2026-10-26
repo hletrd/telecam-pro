@@ -462,28 +462,14 @@ own O-Log2 night recordings sit at their black level too (median 190), and stock
 190 where ours reaches the white paper's 154 — stock also exceeds the curve's 1.0 code (869) through
 its two-exposure merge, which this pipeline does not claim.
 
-**Phone-maker log checks — OPEN, added 2026-10-15 (per flavor; only the PMA110 one is testable in
-this lab).** The phone's own log is offered only on its maker's phones (`DeviceProfile.nativeLogFlavor`;
-model table in CLAUDE.md); every curve is host-pinned against its white paper, nothing below is
-device-measured yet. For each check: VIDEO, native-log session, switch S-Log3 → the phone's log
-(confirm NO reopen: no new `Session configured` line), record 5 s of a lit grey card / wall with a
-clipped highlight, read Y10 full-range values from the file and its tags with ffprobe, and record
-the numbers. **Common pass:** container BT.2020 / full range / an SDR-class transfer; the Gamma
-picker on that phone lists S-Log3, S-Log3.Cine, LogC3, its own log and no other maker's; the maker
-caption shows above the source caveat in EN and KO. A white well below the expected code or a grey
-far from it means the curve or the source decode is wrong for the maker's LUT, not a latitude limit.
-
-- **O-Log2 — PMA110 (testable here; also CPH2841, PMA120).** Clipped highlights near code 0.6946
-  (Y10 ≈ 711) and never above; an 18 % card exposed to the meter near 0.488 (≈ 500); deep black
-  near the toe's 0.150 (≈ 154), not the old toe-less 0.121; OPPO's official O-Log2 → Rec.709 LUT
-  gives a plausible normal-contrast image. At Log EI +3 the clip moves up to ≈ 0.950.
-- **O-Log V1 — Find X8 Ultra / Find X9 / Find X9 Pro / OnePlus 15 (no device in the lab).** Grey
-  near 0.490 (≈ 501), clip near 0.723 (Y10 ≈ 740); OPPO's official O-Log_to_ACES_AP0_V1 DCTL or
-  O-Log → Rec.709 LUT lands grey at normal exposure (this is the check for the 7.37235/16 exposure
-  convention). At Log EI +3 the top ≈ 0.12 stop clips flat at ≈ 0.9996 by design.
-- **Mi-Log — Xiaomi 15 Ultra / 17 Ultra (no device in the lab).** Grey near 0.4535 (≈ 464), clip
-  near 0.6748 (≈ 690), black near 0.147; Xiaomi's Mi-Log LUT gives a plausible image. Also confirm
-  the GENERIC quirk profile is adequate there (no PMA110 workaround applies).
+**Phone-maker log checks — WITHDRAWN 2026-10-26.** The per-phone O-Log2 / O-Log / Mi-Log curves
+these checks covered were removed (owner decision: a log this app makes itself offers only the
+industry-standard curves; a maker's own log belongs to the maker's pipeline). The O-Log2 numbers
+above are the record of a removed option. What replaces the picker check: the Video tab's **Gamma**
+row lists Off / HLG / Log, plus RAW Log only on a route that can develop RAW at the selected rate,
+and **Log Profile** lists S-Log3 / S-Log3.Cine / LogC3 under both log modes, in EN and KO — checked
+on PMA110 2026-10-26 (below, A19). A second device is the remaining half: there RAW Log must appear
+only if its camera advertises a developable RAW stream.
 
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 
@@ -618,17 +604,19 @@ the standalone probe (raw Y 94 vs 27 levels), not in the app.
 
 ### A19. RAW log (experimental): S-Log3 developed from RAW, hand-offs clean — ◐ HALF DONE 2026-10-25
 
-The Video-tab toggle **RAW Log (Experimental)** (S-Log3 / S-Log3.Cine, ≤ 30 fps) replaces the
+**Gamma = RAW Log** (Experimental; a toggle until 2026-10-26; S-Log3 / S-Log3.Cine and, since
+2026-10-26, LogC3; ≤ 30 fps) replaces the
 session's camera outputs with one RAW_SENSOR stream that `RawLogBridge` develops on the GPU into
 S-Log3 over S-Gamut3.Cine (ColorMatrix + Bradford path on PMA110, whose ForwardMatrix pair is an
 sRGB placeholder) and hands to the GL input SurfaceTexture.
 
-- PMA110, **VIDEO**, transfer **S-Log3.Cine**, 29.97 fps, 3× route; turn the toggle on. `dumpsys
+- PMA110, **VIDEO**, transfer **S-Log3.Cine**, 29.97 fps, 3× route; pick Gamma = RAW Log. `dumpsys
   media.camera` must list ONE stream, `4096 x 3072, format 0x20`; the caption reads "Developed in-app
   from the sensor RAW · 10-bit…"; the OSD tag reads `SG3C RAW`; the viewfinder is upright and framed
   like the native-log 3× view.
-- Record 8 s. Turn the toggle off (expect `format 0x36` P010 + JPEG + RAW back), on again, switch to
-  LogC3 (expect P010 native log while the toggle stays on), and take a Photo-mode still.
+- Record 8 s. Pick Gamma = Log (expect `format 0x36` P010 + JPEG + RAW back), RAW Log again, switch
+  the profile to LogC3 (expect NO reopen — the RAW session stays; GL re-encodes), and take a
+  Photo-mode still.
 - **Stabilization (gyro EIS, the core):** hand-hold the phone on a detailed subject and record ~10 s
   with Stabilization **Active**, then ~10 s with **Off**; repeat both with the converter mounted and
   **TELE** on. Score each pair with frame-to-frame phase correlation (jitter = motion minus its
@@ -671,6 +659,17 @@ status 0 throughout. Against the stock Pro Video O-Log2 4K30 at 1× over the sam
 same start temperature: system CPU 425 vs 421 %, camera HAL 127 vs 178 %, app 92 vs 46 % (debug,
 JIT-only), codec process 33 vs 13 % (our encoder input is RGBA from GL and the codec converts it), GPU
 busy 33 vs 23 %; skin +3.7 vs +2.9 °C, GPU sensor +5.8 vs +4.2 °C, battery +2.5 vs +1.8 °C.
+
+**Immutable debug `78fdeb43…-8df170b1` (working tree of the Gamma-mode change), 2026-10-26, TELE on,
+4K 29.97:** the Video tab reads Gamma Off / HLG / Log / RAW Log and Log Profile S-Log3 / S-Log3.Cine /
+LogC3 (screenshot); RAW Log configured `rawLog=true` on the regular session; switching the profile
+S-Log3 ↔ LogC3 inside RAW Log logged NO new `Session configured`; Log / HLG / Off each configured
+their own shape (`nativeLog=true p010=true`, `hlg=true`, SDR with JPEG + RAW), and Off → RAW Log and
+RAW Log → Log each cost exactly ONE reopen. A RAW LogC3 take and a RAW S-Log3 take of the same scene
+(209 / 210 frames, HEVC Main 10, bt2020 full, `bt2020-10`): mapping the S-Log3 file's luma percentiles
+through the S-Log3 inverse and the LogC3 OETF predicts the LogC3 file's within 2 codes of 1023 at
+every percentile from p0.5 to p99.5 (median 258 → predicted 242.3, measured 241), so the GL re-encode
+of the developer's S-Log3 into LogC3 is right on device.
 
 ## B. Held in hand — 3 min
 

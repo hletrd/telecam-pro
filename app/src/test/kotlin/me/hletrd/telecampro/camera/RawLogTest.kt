@@ -25,14 +25,6 @@ class RawLogTest {
     )
 
     @Test
-    fun `only the Sony pair is developed from RAW`() {
-        assertTrue(rawLogTransfer(ColorTransfer.SLOG3))
-        assertTrue(rawLogTransfer(ColorTransfer.SLOG3_CINE))
-        ColorTransfer.entries.filterNot { it == ColorTransfer.SLOG3 || it == ColorTransfer.SLOG3_CINE }
-            .forEach { assertFalse("$it", rawLogTransfer(it)) }
-    }
-
-    @Test
     fun `the RAW cadence admits 30 and below and refuses 50 and up`() {
         VideoFrameRate.entries.filterNot { it.highSpeed }.forEach { rate ->
             assertEquals("$rate", rate.fps <= 30, rawStreamSustains(33_333_333L, rate.encoderRate))
@@ -60,7 +52,11 @@ class RawLogTest {
         assertFalse(rawLogSessionWanted(false, ColorTransfer.SLOG3_CINE, enabled = true, supported = true))
         assertFalse(rawLogSessionWanted(true, ColorTransfer.SLOG3_CINE, enabled = false, supported = true))
         assertFalse(rawLogSessionWanted(true, ColorTransfer.SLOG3_CINE, enabled = true, supported = false))
-        assertFalse(rawLogSessionWanted(true, ColorTransfer.LOGC3, enabled = true, supported = true))
+        // LogC3 joined the Sony pair 2026-10-26 (GL re-encodes the developer's S-Log3); SDR and HLG
+        // are never developed from RAW.
+        assertTrue(rawLogSessionWanted(true, ColorTransfer.LOGC3, enabled = true, supported = true))
+        assertFalse(rawLogSessionWanted(true, ColorTransfer.SDR, enabled = true, supported = true))
+        assertFalse(rawLogSessionWanted(true, ColorTransfer.HLG, enabled = true, supported = true))
     }
 
     @Test
@@ -76,11 +72,18 @@ class RawLogTest {
     }
 
     @Test
-    fun `the row appears only where it can act`() {
-        assertTrue(rawLogSettingVisible(ColorTransfer.SLOG3_CINE, pma110Rear, 29.97))
-        assertFalse(rawLogSettingVisible(ColorTransfer.OLOG2, pma110Rear, 29.97))
-        assertFalse(rawLogSettingVisible(ColorTransfer.SLOG3, pma110Rear, 59.94))
-        assertFalse(rawLogSettingVisible(ColorTransfer.SLOG3, pma110Rear.copy(lensFacingFront = true), 30.0))
+    fun `RAW Log is offered only where it can act`() {
+        assertTrue(rawLogOffered(pma110Rear, 29.97))
+        assertFalse("60 fps", rawLogOffered(pma110Rear, 59.94))
+        assertFalse("front", rawLogOffered(pma110Rear.copy(lensFacingFront = true), 30.0))
+        assertFalse("not developable", rawLogOffered(pma110Rear.copy(rawLogDevelopable = false), 30.0))
+        assertFalse("no RAW", rawLogOffered(pma110Rear.copy(supportsRaw = false), 30.0))
+        assertFalse("no RAW size", rawLogOffered(pma110Rear.copy(rawSize = null), 30.0))
+    }
+
+    @Test
+    fun `RAW log develops into exactly the log profiles`() {
+        assertEquals(VIDEO_LOG_PROFILES, ColorTransfer.entries.filter { rawLogTransfer(it) })
     }
 
     @Test

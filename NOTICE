@@ -36,10 +36,6 @@ and no mark is used in this project's own name, icon, or branding.
       S-Gamut
     ARRI, LogC,         Arnold & Richter Cine Technik GmbH & Co. Betriebs KG
       ARRI Wide Gamut
-    O-Log2, O-Log       Guangdong OPPO Mobile Telecommunications Corp., Ltd.
-                        (names of OPPO's log formats)
-    Xiaomi, Mi-Log      Xiaomi Inc.
-                        (Mi-Log: name of Xiaomi's log format)
     Android,            Google LLC
       Google Play
     Qualcomm            Qualcomm Incorporated
@@ -51,15 +47,6 @@ specifications. They are named so that footage can be matched to an existing
 grading workflow. They are not licensed, certified, or supplied by Sony Group
 Corporation or by Arnold & Richter Cine Technik GmbH & Co. Betriebs KG, and
 neither company has reviewed or approved this implementation.
-
-The O-Log2, O-Log and Mi-Log options are offered only on their maker's own
-phones. They implement the transfer functions published in OPPO's "O-Log2 White
-Paper" (2026-04-17) and "O-Log White Paper" V1, and in Xiaomi's "Xiaomi Log
-Profile White Paper" (December 2024), so that footage matches the makers' own
-LUTs; O-Log2 uses the segment threshold 0.01 in place of the paper's printed
-0.006, at which its two segments do not meet. They are not licensed,
-certified, or supplied by Guangdong OPPO Mobile Telecommunications Corp., Ltd.
-or Xiaomi Inc., neither of which has reviewed this implementation.
 
 Teleconverter presets name commercially available optics so that an owner can
 recognise their own hardware. The magnification each preset applies is computed

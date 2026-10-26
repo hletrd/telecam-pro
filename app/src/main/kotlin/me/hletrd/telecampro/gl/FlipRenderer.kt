@@ -685,9 +685,11 @@ internal fun coverScaleInto(
  * `when` breaks the build.
  *
  * Code 3 is permanently vacant: it was the de-log branch for a scene-referred vendor stream that
- * can no longer arrive (that path was declined 2026-08-04). The remaining codes keep their original
- * numbers rather than closing the gap — renumbering would buy nothing and would silently
- * re-map every value these tests pin.
+ * can no longer arrive (that path was declined 2026-08-04). Codes 6/7/8 are permanently vacant too:
+ * they were the phone-maker curves (O-Log2 / O-Log / Mi-Log), removed 2026-10-26. The remaining
+ * codes keep their original numbers rather than closing the gaps — renumbering would buy nothing and
+ * would silently re-map every value these tests pin, and reusing a retired number is how a stale
+ * reading lies.
  */
 internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
     transfer == null -> 0 // preview/null path: camera frames are already SDR
@@ -696,12 +698,6 @@ internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
         ColorTransfer.SLOG3 -> 2
         ColorTransfer.SLOG3_CINE -> 4
         ColorTransfer.LOGC3 -> 5
-        // A NEW code, not the vacant 3: O-Log2's return (2026-10-15) is a different curve from the
-        // retired code-3 de-log branch, and reusing a retired number is how a stale reading lies.
-        ColorTransfer.OLOG2 -> 6
-        // The other phone-maker logs (2026-10-15) take the next NEW codes on the same rule.
-        ColorTransfer.OLOG -> 7
-        ColorTransfer.MILOG -> 8
         // SDR = no OETF, same as the null path.
         ColorTransfer.SDR -> 0
     }

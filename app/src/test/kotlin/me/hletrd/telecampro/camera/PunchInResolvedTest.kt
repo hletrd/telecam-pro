@@ -192,17 +192,11 @@ class TenBitSessionWantedTest {
             videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false),
             videoSessionShape(true, ColorTransfer.LOGC3, true, rawLogWanted = false),
         )
-        // O-Log2 (2026-10-15) is one more GL encode of the same S-Log3 ISP transport: no reopen.
-        assertEquals(
-            videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false),
-            videoSessionShape(true, ColorTransfer.OLOG2, true, rawLogWanted = false),
-        )
-        // All three phone-maker logs (O-Log2 / O-Log / Mi-Log) are one more GL encode of that
-        // transport: the native ISP curve stays S-Log3, so switching among logs never reopens...
-        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
-            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, flavor, true, rawLogWanted = false))
-            // ...and on the GL fallback each shares the 10-bit HLG10 source shape like the other logs.
-            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, flavor, false, rawLogWanted = false))
+        // Every log is one more GL encode of the same S-Log3 ISP transport: the native shape on a
+        // native camera, and the 10-bit HLG10 source shape on the GL fallback.
+        for (log in VIDEO_LOG_PROFILES) {
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, log, true, rawLogWanted = false))
+            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, log, false, rawLogWanted = false))
         }
         assertTrue(videoSessionShape(true, ColorTransfer.SDR, true, rawLogWanted = false) != videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false))
         assertTrue(videoSessionShape(true, ColorTransfer.HLG, true, rawLogWanted = false) != videoSessionShape(true, ColorTransfer.SLOG3, true, rawLogWanted = false))

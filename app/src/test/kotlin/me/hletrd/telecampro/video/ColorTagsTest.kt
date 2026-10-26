@@ -53,14 +53,10 @@ class ColorTagsTest {
     }
 
     @Test
-    fun logClassMembership_isExactlyTheSixLogProfiles() {
-        // isLog drives the assist gate, the flat preview, and the tag policy above — pin it. The
-        // three phone-maker logs are per-device in the PICKER, but share the one container policy.
+    fun logClassMembership_isExactlyTheThreeLogProfiles() {
+        // isLog drives the assist gate, the flat preview, and the tag policy above — pin it.
         assertEquals(
-            listOf(
-                ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
-                ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG,
-            ),
+            listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3),
             ColorTransfer.entries.filter { it.isLog },
         )
     }

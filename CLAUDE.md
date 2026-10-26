@@ -1038,8 +1038,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `CameraController.nativeLogConfigured` → `RendererAssists.setSourceLog`, replayed per GL
   generation): exact S-Log3 inverse → clamp → BT.1886 encode, so `base` — display, Gamma Display
   Assist, dgain, meter/zebra/false-color, peaking — and the unchanged transfer branches below run
-  on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine), LogC3/AWG3 or
-  the phone's own O-Log2 / O-Log / Mi-Log in BT.2020. Stills
+  on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine) or LogC3/AWG3. Stills
   and the in-REC snapshot never carry the curve: in a native-log session they name TONEMAP_MODE
   HIGH_QUALITY (else FAST) explicitly (`stillToneMapMode`); photo requests are untouched. Pseudo-ZSL
   additionally refuses a native-log session. The GL-log path below (HLG10 source, stills off) is
@@ -1055,66 +1054,33 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
   Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
   established all this (de1d1a03) is removed now that the product path exists.
-  **The phone's OWN log, per phone (owner decision 2026-10-15, superseding "O-Log2 for everyone"
-  from earlier the same day).** S-Log3 / S-Log3.Cine / LogC3 are UNIVERSAL (every 10-bit-HEVC
-  device). Each maker's native log is offered ONLY on that maker's phones, resolved from
-  `Build.MODEL` by `DeviceProfile.nativeLogFlavor` — a PRODUCT fact riding seam 2, not a HAL quirk,
-  and every mapped model other than the Find X9 Ultra codes (PMA110/CPH2841/PMA120 — the latter two by
-  owner decision on shared hardware) takes GENERIC quirks plus its flavor only (no PMA110 workaround
-  leaks to unmeasured hardware). `ColorTransfer.isNativeLog`
-  marks OLOG2 / OLOG / MILOG; `availableTransfers(codec, tenBit, nativeLog)` (required parameter)
-  offers only the host's flavor, and `normalizedForEncoder` turns a foreign or unoffered flavor
-  (MR bank / settings from another phone, a GENERIC device) into **SLOG3** — the operator asked for a
-  log — falling to SDR only where no log is encodable. Picker, Fn cycle, MR recall, restore and REC
-  admission all read `CameraUiState.nativeLogFlavor` (seeded once from the HOST profile at VM
-  construction). `deviceProfileForRoute(external)` strips the flavor at the profile seam, but the
-  PICKER is deliberately host-keyed: the transfer is a persisted encoder selection like the codec,
-  and route-keying it would rewrite the choice whenever a USB camera came and went. Persisted names
-  are verbatim (`"OLOG2"`, `"OLOG"`, `"MILOG"`); the legacy `"LOG"` still migrates to `SLOG3_CINE`.
-
-  | Flavor (shader code) | Curve source | `Build.MODEL` (Google Play supported-devices CSV, 2026-10-15) |
-  |---|---|---|
-  | `OLOG2` O-Log2 (6) | OPPO "O-Log2 White Paper" 2026-04-17, oppo.com/en/o-log-technical-downloads | Find X9 Ultra PMA110, CPH2841, PMA120 (satellite) — all PMA110 quirks; Find X10 PMW110, CPH2911, OPG09 and Find X10 Pro Max PMX110, CPH2913 (O-Log2 per oppo.com product pages) — GENERIC quirks |
-  | `OLOG` O-Log V1 (7) | OPPO "O-Log White Paper" V1 2025-10-22 + its `O-Log_to_ACES_AP0_V1.dctl` | Find X8 Ultra PKJ110, PKU110; OnePlus 15 PLK110, CPH2745, CPH2747, CPH2749; Find X9 PLJ110, CPH2797, OPG07; Find X9 Pro PLG110, PLG120, CPH2791 |
-  | `MILOG` Mi-Log (8) | Xiaomi "Xiaomi Log Profile White Paper" Dec 2024, via colour-science `xiaomi_mi_log.py` | Xiaomi 15 Ultra 25010PN30C/G/I, 25019PNF3C; Xiaomi 17 Ultra 2512BPNDAC/G/I, 25128PNA1C |
-
-  Curves (all BT.2020-2 primaries, D65; GL chain = source decode → `toRec2020` → shared floor →
-  OETF; constants single-sourced in `LogProfiles.kt`, host-pinned in `LogProfilesTest`):
-  **O-Log2** is the paper's TWO-segment Apple-Log-form curve — `0.08550479·log2(x + 0.00964052) +
-  0.69336945` for x ≥ Rt, quadratic toe `47.28711236·(x + 0.05641088)²` down to R0 = −0.05641088, 0
-  below; 18 % grey → 0.48827, 1.0 → 0.69455, 0 → 0.15048. **The paper prints Rt = 0.006; that is a
-  typo** — the segments would step DOWN 0.0037 there (0.18419 vs 0.18047, non-monotonic); at
-  Rt = 0.01 they meet in value (0.208555) AND slope (6.2808), and all six constants then equal Apple
-  Log's. The single-segment toe-less O-Log2 that shipped earlier on 2026-10-15 (reverse-engineered
-  from OPPO's DCTL, which decodes with the log segment only) is SUPERSEDED, and the test that
-  forbade the toe constants now REQUIRES them (forbidding only the 0.006 join). **O-Log V1** is one
-  segment `0.139·ln(R + 0.019) + 0.614`, R ∈ [0, 16], under OPPO's EXPOSURE CONVENTION: R is not
-  reflectance (the paper puts 18 % at R ≈ 0.39, code 0.4902) and OPPO's official DCTL decodes
-  `(exp((P − 0.614)/0.139) − 0.019)/16·7.37235`, so we encode R = s / (7.37235/16) — the exact
-  inverse of OPPO's DCTL, grey → 0.48995 (paper 0.49016; the 0.1 % residual is OPPO's rounding).
-  Without it grey would land ~1.2 stops dark through OPPO's LUT. **Mi-Log** is the Apple-Log form
-  with Xiaomi's constants (R0 −0.09023729, Rt 0.01974185, c 18.10531998, β 0.01384578,
-  γ 0.09271529, δ 0.67291850; 0.18 → 0.45345968, its Rt is a true C¹ join). **Log EI headroom:**
-  every curve stays finite and below code 1.0 up to k = 8 (+3 EI; O-Log2 ≈ 0.950, Mi-Log ≈ 0.951)
-  EXCEPT O-Log V1, whose paper domain ends at R = 16 (scene-linear ≈ 7.37, code ≈ 0.9996): at +3 EI
-  its top ≈ 0.12 stop encodes flat there. Chosen: keep +3 available and document, rather than cap
-  the offset for one profile — everything below that is kept. Structurally nothing else changes:
-  the native ISP curve stays S-Log3 for every log (switching among logs is GL-only, no reopen), the
-  GL fallback uses the same HLG10/BT.1886 decode, Gamma Display Assist / meter / zebra / false
-  color behave as for the other logs, and the container takes the shared log policy (BT.2020 full
-  range + explicit SDR-class transfer, which also matches the PMA110 stock O-Log2 dataspace
-  STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL). **Same honesty limit as every log here:** it
-  is the same ISP-linear mapping, so sensor white clips at the curve's 1.0 code (O-Log2 ≈ 0.6946)
-  with no extra headroom without the Log EI offset — the stock cameras' latitude is not claimed.
-  UI: labels "O-Log2" / "O-Log" / "Mi-Log" (Latin in KO too), a maker caption above the existing
-  source caveat (`video_maker_log_caption`, EN+KO), attribution in the Setup legal block and NOTICE
-  (not supplied or endorsed by OPPO/Xiaomi). Device checks per flavor: `docs/FIELD_CHECKS.md` A15
-  (only O-Log2 on PMA110 is testable in this lab).
-  **Deliberately ABSENT makers — do not add without a public, self-consistent curve:** Samsung Log
-  (constants only from third parties, their slope does not match the published plots, the official
-  paper sits behind a developer login); vivo Log (no public formula); Honor (a patent only; Magic9
-  reportedly records LogC3, which is already offered universally); Huawei and Google Pixel (no
-  native log curve published).
+  **Gamma is a MODE: Off / HLG / Log / RAW Log (owner decision 2026-10-26).** The Video tab's
+  Gamma row offers `VideoColorMode` in that order, and a Log Profile row (S-Log3 / S-Log3.Cine /
+  LogC3, `VIDEO_LOG_PROFILES`) under the two log modes. The REQUEST stays the persisted
+  `ColorTransfer` plus the RAW log intent (`rawLog`), plus a persisted `logProfile` memory that Log /
+  RAW Log return to after Off or HLG; the mode is DERIVED at render time (`videoColorModeOf`,
+  `CameraUiState.videoColorMode`), the same request/readout split as `effectivePhotoFormats`. RAW
+  Log is offered only where `rawLogOffered` (a RAW-developable rear camera at a rate the RAW stream
+  sustains); elsewhere a kept intent reads as Log, which is what the session then records.
+  `CameraViewModel.onVideoColorMode` lands a mode through the two old doors, intent FIRST, so any
+  change costs at most one reopen. The Fn tile / dial chip cycle the MODES (chip value "Off" / HLG /
+  the compact profile / "<profile> RAW"); the profile is the menu's row. The owner's fifth slot —
+  "Log (maker mode)", the phone maker's OWN log PIPELINE — is shown only on a device whose maker
+  pipeline is reachable and integrated; none is (PMA110's stock O-Log2 route below is research
+  only), so no device shows it and it is not in the enum. It returns as a member when one is,
+  never as a curve this app imitates.
+  **The phone-maker CURVES are GONE (owner decision 2026-10-26, superseding 2026-10-15's "the
+  phone's own log, per phone").** O-Log2 / O-Log / Mi-Log were GL approximations of each maker's
+  published curve over this app's own S-Log3 transport, offered per `Build.MODEL` through
+  `DeviceProfile.nativeLogFlavor`. Owner: a log this app makes itself offers only the
+  industry-standard curves everyone grades. Removed with them: the `ColorTransfer` members and
+  `isNativeLog`, `nativeLogFlavor` (profile, Engine, UI state) and the whole per-model table — the
+  model seam maps HAL quirks only again — their `LogProfiles` constants and shader functions, the
+  maker caption, and the OPPO / Xiaomi attribution in the Setup legal block and NOTICE.
+  SettingsStore migrates a persisted `"OLOG2"` / `"OLOG"` / `"MILOG"` (main blob and MR banks) to
+  `SLOG3` (`migratedTransferName`), beside the legacy `"LOG"` → `SLOG3_CINE`. Shader codes 6/7/8 stay
+  permanently VACANT like 3. The device measurements of O-Log2 in `docs/FIELD_CHECKS.md` A15 are
+  history of a removed option.
   **The vendor log key alone did not activate native log in the measured third-party sessions
   (2026-07-09; scope corrected 2026-10-25).**
   `com.oplus.log.video.mode` is advertised in the tele's request+session
@@ -1127,15 +1093,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`LogProfiles.kt` single-sources constants into `Shaders.kt`): BT.1886 2.4 decode → linear
   BT.709→gamut 3×3 (S-Gamut3 / S-Gamut3.Cine / ARRI Wide Gamut 3, D65→D65 so rows sum to 1) →
   defensive −0.0099 floor → the S-Log3 (uTransfer=2/4; 18 % grey → 420/1023 ≈ 0.4106) or LogC3
-  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF, or the per-device phone-maker log (uTransfer=6
-  O-Log2 / 7 O-Log / 8 Mi-Log, BT.2020; above). Like
+  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF. Like
   the retired O-Log2 before them these are
   display-referred SDR-source curves, NOT scene-referred camera log — the ISP has already
   tone-mapped the stream and no highlight latitude is recovered. The encoder gets the curve, the
   preview renders it flat, and **Gamma Display Assist** shows the normal display-referred image
   instead (assist = skip the forward curve; the file always gets it; `ColorTransfer.isLog` is the
-  one gate for all six). The original user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
-  2026-07-22 ("not a standard"; superseded 2026-10-15 by the per-device `OLOG2` above); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
+  one gate for all three). The original user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
+  2026-07-22 ("not a standard"; a per-device `OLOG2` came and went 2026-10-15 → 2026-10-26, above); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
   its forward OETF left `Shaders.kt` with it. **The dormant native-log plumbing that survived that
   removal is now GONE TOO (2026-08-04)**, because the vendor-SDK path it was waiting for was
   declined: the O-Log2-shaped de-log shader branch (`uTransfer == 3`) with its `olog2Inv`/`toRec709`
@@ -1148,13 +1113,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `getExternalFilesDir(null)/nativelog` and is `BuildConfig.DEBUG &&`-guarded, so release builds
   always read false. Either delete that gate too or leave it; do not re-delete it from the DOC while
   the code keeps it. **Shader code 3 is now permanently VACANT and the surviving codes keep their
-  numbers** (0/1/2/4/5, plus 6 = O-Log2, 7 = O-Log, 8 = Mi-Log since 2026-10-15) — renumbering would silently re-map every branch and the shader's own
+  numbers** (0/1/2/4/5; 6/7/8, the removed phone-maker curves, are vacant too) — renumbering would silently re-map every branch and the shader's own
   `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
   tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
-  explicitly, always; all six log profiles share one container policy (BT.2020 full-range +
-  explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
-  attribution (EN+KO) sit in the Setup tab.
+  explicitly, always; all three log profiles share one container policy (BT.2020 full-range +
+  explicit SDR-class transfer). A trademark footnote for Sony/ARRI (EN+KO) sits in the Setup tab.
 
 - **Ten-bit native log = a P010 stream bridged into GL; this SHIPPING ISP-curve path differs from stock O-Log2
   (device-measured PMA110 2026-10-25).** Three things the 07-28 investigation recorded as walls are
@@ -1252,8 +1216,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   168 of 455 shared result tags changed numeric IDs across the update. Optional private detail:
   `docs/reviews/2026-10-25-stock-log-routing.md`; local evidence `.context/stock-log-2026-10-26/`.
 - **RAW log (EXPERIMENTAL) = S-Log3 developed in-app from the RAW stream (owner request 2026-10-25;
-  `docs/FIELD_CHECKS.md` A19).** A Video-tab toggle, offered for S-Log3 / S-Log3.Cine only (a log the
-  app develops itself has no reason to imitate a phone maker's curve) on a RAW-developable rear camera
+  `docs/FIELD_CHECKS.md` A19).** Gamma = RAW Log (a toggle until 2026-10-26), with every log profile
+  — S-Log3 / S-Log3.Cine and, since 2026-10-26, LogC3: the developer always writes S-Log3 over
+  S-Gamut3.Cine and GL re-encodes the selected profile from the unclamped decode, so the profile is a
+  GL choice that never reopens the RAW session — on a RAW-developable rear camera
   at a rate the RAW stream sustains — RAW16 is advertised AND measured at 33.3 ms on cams 2/3/4, so
   ≤ 30 fps (`rawStreamSustains`). `RawLogBridge` is tried FIRST on each rung (RAW log → P010 → 8-bit;
   a refusal retries the same rung on native log) and the session's ONLY output is the RAW reader —

@@ -185,37 +185,45 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun oLog2PersistsByItsOwnNameWhileLegacyLogStillMigrates() {
-        // O-Log2 came back 2026-10-15 under a NEW enum name precisely so these two cannot collide:
-        // "OLOG2" restores as O-Log2 (main settings and an MR bank), while the legacy "LOG" — the
-        // retired, toe-carrying O-Log2 — keeps migrating to S-Log3.Cine exactly as before.
-        val prefs = FakePrefs()
-        val store = SettingsStore(prefs)
-        assertTrue(store.save(ManualControls(), ExtraSettings(transfer = ColorTransfer.OLOG2)))
-        assertEquals("OLOG2", prefs.getString("transfer", null))
-        assertEquals(ColorTransfer.OLOG2, store.load()?.extras?.transfer)
-
-        prefs.edit()
-            .putBoolean("preset_MR2_hasSaved", true)
-            .putString("preset_MR2_transfer", "OLOG2")
-            .putBoolean("preset_MR1_hasSaved", true)
-            .putString("preset_MR1_transfer", "LOG")
-            .commit()
-        assertEquals(ColorTransfer.OLOG2, store.loadPreset(MemorySlot.MR2)?.extras?.transfer)
-        assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+    fun removedPhoneMakerLogNamesMigrateToSlog3InMainAndPresets() {
+        // O-Log2 / O-Log / Mi-Log were removed 2026-10-26. A blob or MR bank that still names one
+        // restores as S-Log3 — the operator asked for a log — not the SDR field default, and its
+        // remembered log profile follows. The legacy "LOG" keeps its own S-Log3.Cine migration.
+        for (name in listOf("OLOG2", "OLOG", "MILOG")) {
+            val prefs = FakePrefs()
+            prefs.edit()
+                .putBoolean("hasSaved", true)
+                .putString("transfer", name)
+                .putBoolean("preset_MR2_hasSaved", true)
+                .putString("preset_MR2_transfer", name)
+                .putBoolean("preset_MR1_hasSaved", true)
+                .putString("preset_MR1_transfer", "LOG")
+                .commit()
+            val store = SettingsStore(prefs)
+            assertEquals(name, ColorTransfer.SLOG3, store.load()?.extras?.transfer)
+            assertEquals(name, ColorTransfer.SLOG3, store.load()?.extras?.logProfile)
+            assertEquals(name, ColorTransfer.SLOG3, store.loadPreset(MemorySlot.MR2)?.extras?.transfer)
+            assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+        }
     }
 
     @Test
-    fun everyPhoneMakerLogPersistsByItsOwnName() {
-        // The store keeps the operator's name verbatim on every phone; whether THIS device offers it
-        // is decided at restore by normalizedForEncoder (a foreign flavor becomes S-Log3 there).
-        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
-            val prefs = FakePrefs()
-            val store = SettingsStore(prefs)
-            assertTrue(store.save(ManualControls(), ExtraSettings(transfer = flavor)))
-            assertEquals(flavor.name, prefs.getString("transfer", null))
-            assertEquals(flavor, store.load()?.extras?.transfer)
-        }
+    fun logProfileRoundTripsAndFallsBackToTheRestoredLog() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        assertTrue(store.save(ManualControls(), ExtraSettings(transfer = ColorTransfer.SDR, logProfile = ColorTransfer.LOGC3)))
+        assertEquals("LOGC3", prefs.getString("logProfile", null))
+        assertEquals(ColorTransfer.LOGC3, store.load()?.extras?.logProfile)
+        // A blob from before the key existed remembers the log it was recording...
+        prefs.edit().remove("logProfile").putString("transfer", "SLOG3_CINE").commit()
+        assertEquals(ColorTransfer.SLOG3_CINE, store.load()?.extras?.logProfile)
+        // ...and a non-log value (corrupt, or SDR/HLG with no key) falls to the S-Log3 default.
+        prefs.edit().putString("transfer", "HLG").commit()
+        assertEquals(ColorTransfer.SLOG3, store.load()?.extras?.logProfile)
+        prefs.edit().putString("logProfile", "HLG").commit()
+        assertEquals(ColorTransfer.SLOG3, store.load()?.extras?.logProfile)
+        prefs.edit().putString("logProfile", "MILOG").commit()
+        assertEquals(ColorTransfer.SLOG3, store.load()?.extras?.logProfile)
     }
 
     @Test

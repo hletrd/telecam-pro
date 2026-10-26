@@ -269,97 +269,51 @@ class EncoderSizeLadderTest {
  * whose container read `bt2020 / arib-std-b67` over a `profile=Main, yuv420p` stream.
  */
 class TransferEncoderHonestyTest {
-    private val universal = listOf(
+    private val all = listOf(
         ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.SDR,
     )
-    private val nativeFlavors = listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)
 
     @Test
-    fun `the native-log members are exactly the three phone-maker logs`() {
-        assertEquals(nativeFlavors, ColorTransfer.entries.filter { it.isNativeLog })
-        nativeFlavors.forEach { assertTrue("$it is a log", it.isLog) }
+    fun `the transfers are exactly HLG, the three industry-standard logs, and SDR`() {
+        // The phone-maker curves (O-Log2 / O-Log / Mi-Log) were removed 2026-10-26.
+        assertEquals(all, ColorTransfer.entries)
+        assertEquals(listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3), VIDEO_LOG_PROFILES)
     }
 
     @Test
-    fun `a Main10 encoder offers every universal gamma plus only this phone's own log`() {
-        assertEquals(universal, availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = true, nativeLog = null))
-        for (flavor in nativeFlavors) {
-            val offered = availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = true, nativeLog = flavor)
-            // Picker order: the universal logs, then the phone's own, then SDR (enum order).
-            assertEquals(ColorTransfer.entries.filter { !it.isNativeLog || it == flavor }, offered)
-            assertEquals(listOf(flavor), offered.filter { it.isNativeLog })
-            assertTrue(offered.containsAll(universal))
-        }
+    fun `a Main10 encoder offers every gamma`() {
+        assertEquals(all, availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = true))
     }
 
     @Test
     fun `an 8-bit-only encoder offers SDR alone`() {
-        for (flavor in nativeFlavors + listOf(null)) {
-            assertEquals(
-                listOf(ColorTransfer.SDR),
-                availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = false, nativeLog = flavor),
-            )
-        }
+        assertEquals(listOf(ColorTransfer.SDR), availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = false))
     }
 
     @Test
     fun `SDR is never withheld — it is the 8-bit BT709 case by construction`() {
-        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, true, null))
-        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, false, null))
+        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, true))
+        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, false))
     }
 
     @Test
     fun `a persisted HLG or log selection falls back to SDR on an 8-bit encoder`() {
         ColorTransfer.entries.filter { it != ColorTransfer.SDR }.forEach {
-            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.HEVC, false, ColorTransfer.OLOG2))
-            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.HEVC, false, null))
-        }
-    }
-
-    @Test
-    fun `PMA110-class hardware keeps whatever the operator chose among what it offers`() {
-        availableTransfers(VideoCodec.HEVC, true, ColorTransfer.OLOG2).forEach {
-            assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true, ColorTransfer.OLOG2))
-        }
-    }
-
-    @Test
-    fun `a phone-maker log this device does not offer normalizes to S-Log3`() {
-        // An MR bank or settings blob carried from another phone, or a GENERIC device.
-        for (host in nativeFlavors + listOf(null)) {
-            for (foreign in nativeFlavors.filter { it != host }) {
-                assertEquals(
-                    "$foreign on host $host",
-                    ColorTransfer.SLOG3,
-                    foreign.normalizedForEncoder(VideoCodec.HEVC, true, host),
-                )
-            }
-        }
-        // The universal curves are never touched by the flavor.
-        for (host in nativeFlavors + listOf(null)) {
-            universal.forEach { assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true, host)) }
+            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.HEVC, false))
         }
     }
 
     @Test
     fun `AVC atomically normalizes every non-SDR intent`() {
         ColorTransfer.entries.filter { it != ColorTransfer.SDR }.forEach {
-            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.AVC, true, it.takeIf { t -> t.isNativeLog }))
+            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.AVC, true))
         }
-        assertEquals(
-            listOf(ColorTransfer.SDR),
-            availableTransfers(VideoCodec.AVC, tenBitEncodeAvailable = true, nativeLog = ColorTransfer.OLOG2),
-        )
+        assertEquals(listOf(ColorTransfer.SDR), availableTransfers(VideoCodec.AVC, tenBitEncodeAvailable = true))
     }
 
     @Test
-    fun `HEVC Main10 retains non-SDR intent`() {
-        universal.forEach {
-            assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true, null))
-        }
-        nativeFlavors.forEach {
-            assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true, it))
-        }
+    fun `HEVC Main10 retains every intent`() {
+        all.forEach { assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true)) }
     }
 
     // AGG2-8: a pre-inventory DNG toggle on the degraded placeholder must not turn the saved HEIF

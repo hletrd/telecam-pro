@@ -17,7 +17,6 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.compose.ui.graphics.Color
 import me.hletrd.telecampro.R
-import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -43,8 +42,9 @@ class SelectorRoleSemanticsComposeTest {
     private enum class Option { FIRST, SECOND }
 
     @Test
-    fun `exclusive segmented and transfer options expose radio roles`() {
+    fun `exclusive segmented and Gamma options expose radio roles`() {
         val gamma = context.getString(R.string.label_gamma)
+        val modes = me.hletrd.telecampro.camera.VideoColorMode.entries
         compose.setContent {
             TeleCamProTheme {
                 Column {
@@ -55,10 +55,13 @@ class SelectorRoleSemanticsComposeTest {
                         labelFor = { it.name.lowercase().replaceFirstChar(Char::uppercase) },
                         onSelect = {},
                     )
-                    TransferSelector(
-                        transfer = ColorTransfer.SDR,
-                        onTransfer = {},
-                        nativeLogFlavor = ColorTransfer.OLOG2,
+                    // The Video tab's Gamma row: the four modes through the same selector.
+                    SegmentedSelector(
+                        label = gamma,
+                        options = modes,
+                        selected = me.hletrd.telecampro.camera.VideoColorMode.OFF,
+                        labelFor = { context.getString(videoColorModeLabel(it)) },
+                        onSelect = {},
                     )
                 }
             }
@@ -67,16 +70,10 @@ class SelectorRoleSemanticsComposeTest {
 
         compose.onNode(hasContentDescription("Mode First"))
             .assert(SemanticsMatcher.expectValue(role, Role.RadioButton))
-        compose.onNode(hasContentDescription("$gamma ${transferLabel(ColorTransfer.SDR)}"))
+        compose.onNode(hasContentDescription("$gamma ${context.getString(R.string.gamma_mode_raw_log)}"))
             .assert(SemanticsMatcher.expectValue(role, Role.RadioButton))
         compose.onAllNodes(SemanticsMatcher.expectValue(role, Role.RadioButton))
-            // Every universal transfer plus only this phone's own log (O-Log2 here).
-            .assertCountEquals(
-                Option.entries.size + ColorTransfer.entries.count { !it.isNativeLog || it == ColorTransfer.OLOG2 },
-            )
-        compose.onNode(hasContentDescription("$gamma ${transferLabel(ColorTransfer.OLOG2)}"))
-            .assert(SemanticsMatcher.expectValue(role, Role.RadioButton))
-        compose.onAllNodes(hasContentDescription("$gamma ${transferLabel(ColorTransfer.MILOG)}")).assertCountEquals(0)
+            .assertCountEquals(Option.entries.size + modes.size)
     }
 
     @Test

@@ -93,6 +93,8 @@ def run_documentation_gate_from_committed_export(
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
+            # check_docs parses DeviceProfile's fields against the architecture table.
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/DeviceProfile.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt",

@@ -1412,19 +1412,19 @@ class UiSemanticsTest(unittest.TestCase):
 
     def test_snapshot_gamma_contract_requires_one_exact_non_actionable_probe(self) -> None:
         good = UiTree(
-            '<hierarchy><node text="" content-desc="Snapshot Gamma O-Log" '
+            '<hierarchy><node text="" content-desc="Snapshot Gamma LogC3" '
             'class="android.view.View" checkable="false" checked="false" selected="false" '
             'enabled="true" clickable="false" focusable="false" bounds="[0,0][1,1]" /></hierarchy>'
         )
-        self.assertEqual(cases.snapshot_gamma_state_errors(good, "O-Log"), [])
+        self.assertEqual(cases.snapshot_gamma_state_errors(good, "LogC3"), [])
         self.assertTrue(cases.snapshot_gamma_state_errors(good, "HLG"))
 
         duplicate = UiTree(
             '<hierarchy><node text="" content-desc="Snapshot Gamma HLG" bounds="[0,0][1,1]" />'
-            '<node text="" content-desc="Snapshot Gamma O-Log" bounds="[1,0][2,1]" /></hierarchy>'
+            '<node text="" content-desc="Snapshot Gamma LogC3" bounds="[1,0][2,1]" /></hierarchy>'
         )
         self.assertTrue(any("expected one" in error for error in cases.snapshot_gamma_state_errors(
-            duplicate, "O-Log",
+            duplicate, "LogC3",
         )))
 
     def test_loupe_copy_contract_allows_lens_rail_but_rejects_false_feed_claims(self) -> None:

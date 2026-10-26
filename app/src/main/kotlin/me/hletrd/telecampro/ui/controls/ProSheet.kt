@@ -91,7 +91,8 @@ import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CaptureMode
-import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VIDEO_LOG_PROFILES
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.HardwareKeyAction
@@ -740,7 +741,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
         val generatedName = presentation?.let {
             when (it.mode) {
                 CaptureMode.PHOTO -> stringResource(R.string.mr_default_photo_name, focal)
-                CaptureMode.VIDEO -> stringResource(R.string.mr_default_video_name, transferLabel(it.transfer))
+                CaptureMode.VIDEO -> stringResource(R.string.mr_default_video_name, videoLookLabel(it.transfer, it.rawLog))
             }
         }.orEmpty()
         val generatedSummary = presentation?.let {
@@ -749,7 +750,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
                     "$focal · ${exposureModeLetter(it.exposureMode)} · ${photoFormatLabel(it.photoFormats)}"
                 CaptureMode.VIDEO ->
                     "$focal · ${videoResolutionLabelFor(it.videoWidth, it.videoHeight)} " +
-                        "${videoFrameRateLabel(it.videoFrameRate)}p · ${transferLabel(it.transfer)} · " +
+                        "${videoFrameRateLabel(it.videoFrameRate)}p · ${videoLookLabel(it.transfer, it.rawLog)} · " +
                         labelContext.localizedLabel(it.bitrateLevel)
             }
         }.orEmpty()
@@ -1593,57 +1594,60 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
-    // One terse source caveat (cycle-6 A26/D-08): the named log curves are real math, but they bake
-    // onto the already-tone-mapped SDR stream — no scene-referred latitude is recovered (CLAUDE.md
-    // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows. Gated on
-    // a non-SDR selection because the caveat is about a CURVE: printed under Transfer = SDR it
-    // asserted a curve was applied where none is.
-    // "SDR stream" stopped being true when video gained a 10-bit session; the honesty point was
-    // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to —
-    // which in turn stopped being true for log on a native-curve camera (2026-10-14), so the
-    // caption is chosen by [transferSourceCaption] from the route's capability.
-    // A phone-maker log (O-Log2 / O-Log / Mi-Log) additionally says WHOSE format it is — the
-    // reason it is offered only on this phone — above the same source caveat every curve carries.
+    // Gamma = Off / HLG / Log / RAW Log (owner decision 2026-10-26; camera/CameraState.kt
+    // VideoColorMode), then the Profile row for the two log modes. The label stays "Gamma": it
+    // matches the Fn tile, dial chip, My Menu entry and "Gamma Disp. Assist" (UI review #2 — the row
+    // that owns a setting must carry the name the tile cycling it shows). RAW Log is offered only
+    // where it can act (rawLogOffered: a RAW-developable camera at a rate the RAW stream sustains);
+    // elsewhere a kept RAW intent reads as Log, which is what the session then records.
+    // One terse source caveat (cycle-6 A26/D-08) closes the group: the curves are real math, but
+    // what they are applied to is chosen by [transferSourceCaption] from the route's capability —
+    // the ISP's tone-mapped stream, its native curve, or (accepted truth) the RAW developer. Gated
+    // on a non-SDR selection because the caveat is about a CURVE.
+    val colorMode = state.videoColorMode
+    val colorModeLabels = state.videoColorModes.associateWith { stringResource(videoColorModeLabel(it)) }
+    val rawModeCaption = if (colorMode == VideoColorMode.RAW_LOG) {
+        // A second line only when the ACCEPTED session still is not RAW log (a refused RAW-only
+        // session falls back to native log on the same rung).
+        val inactive = state.cameraReady && !state.photoSessionOutputs.rawLog
+        stringResource(R.string.caption_raw_log) +
+            if (inactive) "\n" + stringResource(R.string.caption_raw_log_inactive) else ""
+    } else {
+        null
+    }
+    Captioned(rawModeCaption) {
+        SegmentedSelector(
+            label = stringResource(R.string.label_gamma),
+            options = state.videoColorModes,
+            selected = colorMode,
+            labelFor = { colorModeLabels.getValue(it) },
+            onSelect = actions::onVideoColorMode,
+            // Gamma is part of the encoded image format and the session shape (RAW Log replaces
+            // the session), so it is locked while recording like codec and rate.
+            enabled = codec == VideoCodec.HEVC && recordingMutable,
+            hint = stringResource(R.string.hint_gamma),
+        )
+    }
     val sourceCaption = transferSourceCaption(
         state.transfer,
         me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
         tenBitNativeLogSession = state.cameraReady && state.photoSessionOutputs.tenBitNativeLog,
         rawLogSession = state.cameraReady && state.photoSessionOutputs.rawLog,
     )?.let { stringResource(it) }
-    val makerCaption = transferMakerCaption(state.transfer)?.let { stringResource(it) }
-    Captioned(listOfNotNull(makerCaption, sourceCaption).joinToString("\n").ifEmpty { null }) {
-        // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
-        // of below the unrelated audio controls.
-        TransferSelector(
-            transfer = state.transfer,
-            onTransfer = actions::onTransfer,
-            codec = codec,
-            enabled = codec == VideoCodec.HEVC && recordingMutable,
-            tenBitEncodeAvailable = state.tenBitEncodeAvailable,
-            nativeLogFlavor = state.nativeLogFlavor,
-        )
-    }
-    // EXPERIMENTAL RAW log (camera/RawLog.kt): directly under the Sony log it develops into, and only
-    // where it can act (rawLogSettingVisible: S-Log3/S-Log3.Cine on a RAW-developable camera at a
-    // rate the RAW stream sustains). Its caption carries the honesty limits; a second line appears
-    // only when the operator asked for it and the ACCEPTED session still is not RAW log (a refused
-    // RAW-only session falls back to native log on the same rung). Locked while recording: it
-    // replaces the session.
-    val rawLogCaps = state.caps
-    if (rawLogCaps != null &&
-        me.hletrd.telecampro.camera.rawLogSettingVisible(state.transfer, rawLogCaps, state.videoFrameRate.encoderRate)
-    ) {
-        val inactive = state.rawLog && state.cameraReady && !state.photoSessionOutputs.rawLog
-        val rawCaption = stringResource(R.string.caption_raw_log) +
-            if (inactive) "\n" + stringResource(R.string.caption_raw_log_inactive) else ""
-        Captioned(rawCaption) {
-            ToggleRow(
-                label = stringResource(R.string.label_raw_log),
-                checked = state.rawLog,
-                onCheckedChange = actions::onToggleRawLog,
+    if (colorMode == VideoColorMode.LOG || colorMode == VideoColorMode.RAW_LOG) {
+        Captioned(sourceCaption) {
+            SegmentedSelector(
+                label = stringResource(R.string.label_log_profile),
+                options = VIDEO_LOG_PROFILES,
+                selected = state.transfer,
+                labelFor = ::transferLabel,
+                onSelect = actions::onTransfer,
                 enabled = recordingMutable,
+                hint = stringResource(R.string.hint_log_profile),
             )
         }
+    } else if (sourceCaption != null) {
+        Text(sourceCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     }
     // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it
     // can act (logEiOffsetSettingVisible). Locked while recording like Gamma — it moves the wire

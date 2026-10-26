@@ -54,12 +54,11 @@ class SettingSemanticsTest {
         assertEquals("Sharpness Off", segmentedOptionName("Sharpness", "Off"))
         assertEquals("NR Off", segmentedOptionName("NR", "Off"))
 
-        // TransferSelector is SegmentedSelector hand-rolled for one enum and uses the same builder
-        // with the literal row label it draws.
+        // The Log Profile row names its options with the same builder and the profile labels.
         ColorTransfer.entries.forEach { transfer ->
             assertEquals(
-                "Transfer ${transferLabel(transfer)}",
-                segmentedOptionName("Transfer", transferLabel(transfer)),
+                "Log Profile ${transferLabel(transfer)}",
+                segmentedOptionName("Log Profile", transferLabel(transfer)),
             )
         }
     }

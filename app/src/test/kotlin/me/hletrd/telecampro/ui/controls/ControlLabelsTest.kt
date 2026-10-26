@@ -5,6 +5,7 @@ import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.ColorEffect
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
@@ -338,9 +339,6 @@ class ControlLabelsTest {
             ColorTransfer.SLOG3 to "S-Log3",
             ColorTransfer.SLOG3_CINE to "S-Log3.Cine",
             ColorTransfer.LOGC3 to "LogC3",
-            ColorTransfer.OLOG2 to "O-Log2",
-            ColorTransfer.OLOG to "O-Log",
-            ColorTransfer.MILOG to "Mi-Log",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabel,
@@ -354,11 +352,35 @@ class ControlLabelsTest {
             // SG3C = the community shorthand for S-Gamut3.Cine.
             ColorTransfer.SLOG3_CINE to "SG3C",
             ColorTransfer.LOGC3 to "LOGC3",
-            ColorTransfer.OLOG2 to "OLOG2",
-            ColorTransfer.OLOG to "OLOG",
-            ColorTransfer.MILOG to "MILOG",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabelShort,
     )
+
+    @Test
+    fun `Gamma mode labels are string resources, Off shared with every Off`() = assertEquals(
+        listOf(
+            me.hletrd.telecampro.R.string.value_off,
+            me.hletrd.telecampro.R.string.gamma_mode_hlg,
+            me.hletrd.telecampro.R.string.gamma_mode_log,
+            me.hletrd.telecampro.R.string.gamma_mode_raw_log,
+        ),
+        VideoColorMode.entries.map(::videoColorModeLabel),
+    )
+
+    @Test
+    fun `the Gamma chip names the mode, and RAW Log carries the OSD's RAW suffix`() {
+        assertEquals("Off", videoColorModeChipValue(VideoColorMode.OFF, ColorTransfer.SDR, "Off"))
+        assertEquals("HLG", videoColorModeChipValue(VideoColorMode.HLG, ColorTransfer.HLG, "Off"))
+        assertEquals("LOGC3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.LOGC3, "Off"))
+        assertEquals("SG3C RAW", videoColorModeChipValue(VideoColorMode.RAW_LOG, ColorTransfer.SLOG3_CINE, "Off"))
+    }
+
+    @Test
+    fun `an MR bank's look names RAW only for a RAW log intent on a log`() {
+        assertEquals("RAW S-Log3", videoLookLabel(ColorTransfer.SLOG3, rawLog = true))
+        assertEquals("S-Log3", videoLookLabel(ColorTransfer.SLOG3, rawLog = false))
+        assertEquals("HLG", videoLookLabel(ColorTransfer.HLG, rawLog = true))
+        assertEquals("SDR", videoLookLabel(ColorTransfer.SDR, rawLog = true))
+    }
 }

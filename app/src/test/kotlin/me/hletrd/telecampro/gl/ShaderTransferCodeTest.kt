@@ -20,17 +20,12 @@ class ShaderTransferCodeTest {
         assertEquals(2, shaderTransferCode(ColorTransfer.SLOG3))
         assertEquals(4, shaderTransferCode(ColorTransfer.SLOG3_CINE))
         assertEquals(5, shaderTransferCode(ColorTransfer.LOGC3))
-        // O-Log2 (back 2026-10-15) takes a NEW code: 3 belonged to the retired de-log branch.
-        assertEquals(6, shaderTransferCode(ColorTransfer.OLOG2))
-        // The other phone-maker logs (2026-10-15) take the next NEW codes.
-        assertEquals(7, shaderTransferCode(ColorTransfer.OLOG))
-        assertEquals(8, shaderTransferCode(ColorTransfer.MILOG))
         // SDR = no OETF, deliberately the same branch as the null path.
         assertEquals(0, shaderTransferCode(ColorTransfer.SDR))
     }
 
     @Test
-    fun `code 3 stays vacant so the surviving branches keep their numbers`() {
+    fun `codes 3 and 6 to 8 stay vacant so the surviving branches keep their numbers`() {
         // 3 was the de-log branch for a scene-referred vendor stream; that path was declined and the
         // branch removed 2026-08-04. The gap is deliberate — renumbering would silently re-map every
         // code above it, and the shader's own `uTransfer == N` comparisons would have to move in
@@ -38,13 +33,14 @@ class ShaderTransferCodeTest {
         // quietly drifting into a slot the fragment shader no longer implements.
         val used = (ColorTransfer.entries.map { shaderTransferCode(it) } + shaderTransferCode(null)).toSet()
         org.junit.Assert.assertFalse("code 3 must stay unused", used.contains(3))
+        // 6/7/8 were the phone-maker curves (O-Log2 / O-Log / Mi-Log), removed 2026-10-26.
+        for (code in 6..8) org.junit.Assert.assertFalse("code $code must stay unused", used.contains(code))
     }
 
     @Test
     fun `forward curves never collide with each other or the vacant code`() {
         val curveCodes = listOf(
             ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
-            ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG,
         ).map { shaderTransferCode(it) }
         assertEquals(curveCodes.size, curveCodes.toSet().size)
         curveCodes.forEach { code ->

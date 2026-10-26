@@ -113,7 +113,10 @@ interface CameraActions {
 
     // Modes
     fun onModeChange(mode: CaptureMode)
+    /** A transfer itself: SDR, HLG, or the log PROFILE of Gamma = Log / RAW Log (the Profile row). */
     fun onTransfer(transfer: ColorTransfer)
+    /** Gamma = Off / HLG / Log / RAW Log ([me.hletrd.telecampro.camera.VideoColorMode]). */
+    fun onVideoColorMode(mode: me.hletrd.telecampro.camera.VideoColorMode)
     fun onSetPhotoFormats(formats: PhotoFormats)
     /** Hi-res (full-sensor) still INTENT; accepted truth is photoSessionOutputs.hiRes. */
     fun onToggleHiResStill(enabled: Boolean)
@@ -159,8 +162,6 @@ interface CameraActions {
     fun onLogEiOffset(stops: Int)
     /** Optional Gyroflow .gcsv sidecar per video take (Video tab). */
     fun onToggleGyroLog(enabled: Boolean)
-    /** EXPERIMENTAL RAW log route: S-Log3 developed in-app from the RAW stream (Video tab; RawLog.kt). */
-    fun onToggleRawLog(enabled: Boolean)
     fun onFrameLines(type: FrameLineType)
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)

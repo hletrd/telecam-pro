@@ -2666,8 +2666,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     "Gamma quick action dismissed the Fn modal"
                 )
                 assert find_identity(ctx, GAMMA, sticky), "Gamma quick action disappeared after update"
-                # One cycle tap from the snapshot's HLG start lands on S-Log3 (the O-Log2 option
-                # was replaced by the standard log profiles, 2026-07-22 — see ControlCycles).
+                # One cycle tap from the snapshot's HLG start lands on Gamma = Log, whose fresh
+                # profile is S-Log3 (the tile cycles MODES since 2026-10-26 — see FnQuickActions).
                 gamma_errors = snapshot_gamma_state_errors(sticky, "S-Log3")
                 assert not gamma_errors, "; ".join(gamma_errors)
                 after = ctx.adb.exec_out("screencap")

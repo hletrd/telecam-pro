@@ -83,8 +83,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import me.hletrd.telecampro.camera.ColorTransfer
-import me.hletrd.telecampro.camera.VideoCodec
-import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -370,7 +368,7 @@ private fun <T> SegmentedSelectorCore(
                         // weight instead; no chip container or touch target moves.
                         //
                         // Single line always: a squeezed chip must scroll into space, never wrap
-                        // its label mid-word (the TransferSelector "Log/C3" break class).
+                        // its label mid-word (the old hand-rolled Gamma row's "Log/C3" break class).
                         label = {
                             Text(
                                 labelFor(option),
@@ -1009,92 +1007,7 @@ internal fun videoResolutionLabel(size: Size): String = videoResolutionLabelFor(
 // ---------------------------------------------------------------------------
 
 /**
- * HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR selector. Non-SDR HEVC requests an HLG10 Camera2 source
- * and writes Main10 output. The source remains ISP-tone-mapped/display-referred and release EGL
- * remains 8-bit, so this is neither recovered HDR nor an end-to-end 10-bit claim.
- */
-@Composable
-internal fun TransferSelector(
-    transfer: ColorTransfer,
-    onTransfer: (ColorTransfer) -> Unit,
-    modifier: Modifier = Modifier,
-    codec: VideoCodec = VideoCodec.HEVC,
-    enabled: Boolean = true,
-    /**
-     * False on a device whose HEVC encoder has no Main10 profile. Every option except SDR is tagged
-     * BT.2020 with a 10-bit profile, and such an encoder silently returns 8-bit Main — a file whose
-     * container claims HDR while the picture is not (device-probed 2026-08-02). Withhold rather
-     * than mislabel; same shape as the lens rail refusing to draw presets the optics cannot reach.
-     */
-    tenBitEncodeAvailable: Boolean = true,
-    /** The host phone's own log ([me.hletrd.telecampro.camera.DeviceProfile.nativeLogFlavor]). */
-    nativeLogFlavor: ColorTransfer? = null,
-) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // "Gamma", matching the Fn tile, dial chip, My Menu entry, and "Gamma Disp. Assist" — the row
-        // that OWNS the setting was the odd one out, so a user cycling the Gamma tile found no Gamma
-        // row in the menu (UI review #2; the same findability failure as Scene → Directionality).
-        SettingsRowLabel(stringResource(R.string.label_gamma), enabled = enabled)
-        // Scrollable like SegmentedSelector. Five entries USED to exceed the sheet width outright:
-        // a fixed Row squeezed the last visible chip until its label broke mid-word ("Log/C3")
-        // while SDR fell off entirely. Binding the chips to labelMedium (12 sp, from 14 sp) took
-        // ~14% off each one, so that overflow is now headroom rather than a live constraint — but
-        // the scroll and maxLines=1 stay: they are what keeps a future entry, a longer label, or a
-        // larger system font scale from ever wrapping a chip label again.
-        val optionScroll = rememberScrollState()
-        // Same selected-into-view rule as SegmentedSelector (UI review #1): SDR — the DEFAULT — is
-        // the last enum entry, so every fresh open of this row hid the current value off-edge.
-        val selectedIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
-        LaunchedEffect(transfer) { selectedIntoView.bringIntoView() }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // Same exclusive-choice group and same per-chip naming as SegmentedSelector: this is
-                // that row hand-rolled for one enum, and it inherited the identical gap.
-                .selectableGroup()
-                .trailingEdgeFadeScrollHint(optionScroll)
-                .horizontalScroll(optionScroll),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            availableTransfers(codec, tenBitEncodeAvailable, nativeLogFlavor).forEach { option ->
-                val isSelected = transfer == option
-                val optionName = segmentedOptionName(stringResource(R.string.label_gamma), transferLabel(option))
-                MinTouchTarget48 {
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onTransfer(option) },
-                        enabled = enabled,
-                        modifier = Modifier
-                            .semantics {
-                                contentDescription = optionName
-                                role = Role.RadioButton
-                            }
-                            .then(
-                                if (isSelected) {
-                                    Modifier.bringIntoViewRequester(selectedIntoView)
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        label = {
-                            Text(
-                                transferLabel(option),
-                                style = chipLabelStyle(),
-                                maxLines = 1,
-                                softWrap = false,
-                            )
-                        },
-                        colors = pixelChipColors(),
-                        border = pixelChipBorder(isSelected, enabled),
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * The one-line source caveat under the Transfer selector, or null for SDR (no curve to caveat).
+ * The one-line source caveat under the Gamma rows, or null for SDR (no curve to caveat).
  *
  * A log transfer on a camera that takes the native ISP curve ([nativeLogCurveSupported], the same
  * capability answer the Engine routes on) is NOT applied to an already tone-mapped stream — the ISP
@@ -1119,15 +1032,6 @@ internal fun transferSourceCaption(
     transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
     else -> R.string.video_tone_mapped_source
 }
-
-/**
- * The "this is the phone maker's own log" caption for the [ColorTransfer.isNativeLog] members, or
- * null for the universal curves. One generic line (no maker name in the string): the label already
- * names the format, and the caption's job is to say why it appears on this phone and what it is for.
- */
-@StringRes
-internal fun transferMakerCaption(transfer: ColorTransfer): Int? =
-    if (transfer.isNativeLog) R.string.video_maker_log_caption else null
 
 /**
  * Whether the Video tab offers the Log EI offset row: only where it can act — a log transfer on a

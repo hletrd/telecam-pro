@@ -5,12 +5,13 @@ package me.hletrd.telecampro.camera
  * routes can stream full-size RAW into the developer at the selected cadence, and when a video
  * session asks for it. Pure and host-tested; the controller re-checks the same answer at open.
  *
- * Owner decision 2026-10-25: a log this app develops itself from RAW has no reason to imitate a
- * phone maker's curve, so it targets the industry-standard Sony pair only — S-Log3 over S-Gamut3 or
- * S-Gamut3.Cine. Every other log transfer keeps the native ISP path.
+ * Owner decisions 2026-10-25 / 2026-10-26: a log this app develops itself from RAW offers only the
+ * industry-standard curves — S-Log3 over S-Gamut3 or S-Gamut3.Cine, and ARRI LogC3 over AWG3 — the
+ * same [VIDEO_LOG_PROFILES] the ISP-pipeline Log mode offers. The developer always writes S-Log3 over
+ * S-Gamut3.Cine; GL decodes that unclamped and re-encodes the selected profile, so the profile is a
+ * GL choice and switching among them never reopens the RAW session.
  */
-fun rawLogTransfer(transfer: ColorTransfer): Boolean =
-    transfer == ColorTransfer.SLOG3 || transfer == ColorTransfer.SLOG3_CINE
+fun rawLogTransfer(transfer: ColorTransfer): Boolean = transfer.isLog
 
 /**
  * Whether the RAW stream's advertised minimum frame duration sustains [fps]. Zero means "not
@@ -39,7 +40,7 @@ fun rawLogSupported(
         (!rawRequiresStandalone || (standalone && !caps.isLogicalMultiCamera)) &&
         rawStreamSustains(caps.rawMinFrameDurationNs, fps)
 
-/** VIDEO + the operator's experimental toggle + a Sony log transfer + a capable route. */
+/** VIDEO + the operator's Gamma = RAW Log + a log transfer + a capable route. */
 fun rawLogSessionWanted(
     videoMode: Boolean,
     transfer: ColorTransfer,
@@ -48,12 +49,12 @@ fun rawLogSessionWanted(
 ): Boolean = videoMode && enabled && supported && rawLogTransfer(transfer)
 
 /**
- * Whether the Video tab offers the RAW log row: a Sony log selected on a camera that can develop
- * RAW at the selected rate. Route standalone-ness is the engine's call (the accepted session then
- * says whether RAW log actually configured); the row only needs to exist where it can act.
+ * Whether the Video tab offers Gamma = RAW Log: a camera that can develop RAW at the selected rate.
+ * Route standalone-ness is the engine's call (the accepted session then says whether RAW log actually
+ * configured); the mode only needs to exist where it can act.
  */
-fun rawLogSettingVisible(transfer: ColorTransfer, caps: CameraCaps, fps: Double): Boolean =
-    rawLogTransfer(transfer) && caps.rawLogDevelopable && caps.supportsRaw && caps.rawSize != null &&
+fun rawLogOffered(caps: CameraCaps, fps: Double): Boolean =
+    caps.rawLogDevelopable && caps.supportsRaw && caps.rawSize != null &&
         !caps.lensFacingFront && rawStreamSustains(caps.rawMinFrameDurationNs, fps)
 
 private const val RAW_CADENCE_TOLERANCE = 0.005

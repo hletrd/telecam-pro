@@ -569,6 +569,33 @@ class OpticsRecallTransactionRobolectricTest {
         assertFalse(extras.jpeg)
     }
 
+    // 2026-10-26 review: the remembered log profile is VM-only state the recall writes, so the
+    // rollback must put it back like the stab / rate requests, or the rejected bank's LogC3 becomes
+    // the operator's next Gamma = Log and is persisted by the rollback's own save.
+    @Test
+    fun `rollback restores the log profile the recall replaced`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(mode = CaptureMode.VIDEO, transfer = ColorTransfer.SDR, logProfile = ColorTransfer.LOGC3),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        assertEquals(ColorTransfer.SLOG3, vm.state.value.logProfile)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        assertEquals("the recall wrote the bank's memory", ColorTransfer.LOGC3, vm.state.value.logProfile)
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(ColorTransfer.SLOG3, vm.state.value.logProfile)
+        val extras = ViewModelTestAccess.invoke(vm, "currentExtras") as ExtraSettings
+        assertEquals(ColorTransfer.SLOG3, extras.logProfile)
+    }
+
     // MRG6-3: two stacked pre-inventory recalls, then the inventory, then a rollback reaching both.
     // Only the newer recall's armed bank was consumed, so the older record had nothing to undo and
     // the walk stopped on the OLDER bank's codec/curve/formats instead of the pre-recall request.

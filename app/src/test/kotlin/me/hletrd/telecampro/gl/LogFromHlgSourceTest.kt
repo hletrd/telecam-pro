@@ -64,32 +64,6 @@ class LogFromHlgSourceTest {
         assertEquals("HLG source: 18% grey off the S-Log3 anchor", expected, hlg.green, eps)
     }
 
-    /**
-     * The phone-maker logs (O-Log2 / O-Log / Mi-Log, 2026-10-15) ride the same source decode: 18%
-     * grey must reach each curve's grey anchor from the 8-bit display-referred stream, the HLG10
-     * GL-fallback stream, AND the native-ISP S-Log3 transport (decoded at sample time, then
-     * re-encoded BT.1886 — the shader's sampleSource), so whichever source the session accepted,
-     * the maker's LUT sees the same grey.
-     */
-    @Test
-    fun phoneMakerLogGreyLandsOnItsAnchorFromEverySource() {
-        val sdrSignal = sdrSignalForDisplayLight(0.18)
-        val hlgSignal = hlgSignalForDisplayLight(0.18)
-        val nativeSignal = LogProfiles.slog3Inverse(LogProfiles.slog3Oetf(0.18))
-            .coerceIn(0.0, 1.0)
-            .pow(1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA)
-        for ((oetf, encode) in listOf(
-            LogProfiles::olog2Oetf to LogProfiles::encodeOlog2,
-            LogProfiles::ologOetf to LogProfiles::encodeOlog,
-            LogProfiles::milogOetf to LogProfiles::encodeMilog,
-        )) {
-            val expected = oetf(0.18)
-            assertEquals(expected, encode(sdrSignal, sdrSignal, sdrSignal, false, false).green, eps)
-            assertEquals(expected, encode(hlgSignal, hlgSignal, hlgSignal, true, false).green, eps)
-            assertEquals(expected, encode(nativeSignal, nativeSignal, nativeSignal, false, false).green, 1e-6)
-        }
-    }
-
     @Test
     fun diffuseWhiteAgreesBetweenSources() {
         val sdr = LogProfiles.encodeSlog3(1.0, 1.0, 1.0)
