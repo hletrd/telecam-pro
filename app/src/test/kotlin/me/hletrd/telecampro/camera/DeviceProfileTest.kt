@@ -28,6 +28,8 @@ class DeviceProfileTest {
             // TRANSFORM_MATRIX still must ride the session's stabilization mode.
             assertTrue(model, p.awbPresetModesIgnored)
             assertTrue(model, p.matrixWbStillKeepsSessionStabilization)
+            // ...and the FACE_PRIORITY scene must stand down while WB is app-owned.
+            assertTrue(model, p.facePrioritySceneOverridesManualWb)
         }
     }
 
@@ -51,6 +53,7 @@ class DeviceProfileTest {
             assertFalse("$model", p.videoMinFrameDurationsUnderstated)
             assertFalse("$model", p.awbPresetModesIgnored)
             assertFalse("$model", p.matrixWbStillKeepsSessionStabilization)
+            assertFalse("$model", p.facePrioritySceneOverridesManualWb)
         }
     }
 

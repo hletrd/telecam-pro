@@ -145,7 +145,11 @@ internal fun controlAvailability(
         afSpotSizeEnabled = caps.maxAfRegions > 0 && normalized.focusMode != FocusMode.MANUAL,
         facePriorityAfAvailable = facePriorityAfAvailable(caps.face),
         facePriorityAfEnabled = facePriorityAfAvailable(caps.face) &&
-            facePriorityFocusMode(normalized.focusMode),
+            facePriorityFocusMode(normalized.focusMode) &&
+            // A measured HAL lets FACE_PRIORITY override an app-owned white balance on stills, so
+            // there the scene half stands down while WB is app-owned — the row says so by
+            // reading disabled, as it does in MANUAL focus (DeviceProfile, WhiteBalance.kt).
+            (caps.facePrioritySceneKeepsManualWb || !wbAppOwned(normalized, wbCap)),
         afLockEnabled = manualFocusAvailable && normalized.focusMode != FocusMode.MANUAL,
         aeLockEnabled = normalized.exposureMode == ExposureMode.PROGRAM &&
             !normalized.programAppSide && caps.aeModes.has(normalized.flash.autoAeMetadata),

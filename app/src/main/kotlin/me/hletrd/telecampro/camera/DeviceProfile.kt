@@ -139,6 +139,18 @@ internal data class DeviceProfile(
      * TRANSFORM_MATRIX keys) is assumed elsewhere.
      */
     val matrixWbStillKeepsSessionStabilization: Boolean = false,
+    /**
+     * The FACE_PRIORITY scene mode (CONTROL_MODE = USE_SCENE_MODE, Face Priority AF) overrides an
+     * app-owned white balance on STILLS. Camera2 says FACE_PRIORITY keeps awbMode active, and the
+     * preview does honour AWB OFF + TRANSFORM_MATRIX under it, but PMA110 MEASURED 2026-10-27 (app,
+     * logical photo route, 3200 K, chart): with the scene half on, the still result echoes the
+     * requested gains yet reports the HAL's own AUTO transform and the pixels carry the fixed
+     * R 0.851 / B 5.263 cast (mean R 3 / G 32 / B 51 of 255); the same shot with the scene half off
+     * renders the requested white point (R 30 / G 35 / B 16, matching the preview). Where true,
+     * Face Priority keeps face DETECTION (frames drawn) but drops its scene half while the white
+     * balance is app-owned, and the settings row reads disabled then — like MANUAL focus.
+     */
+    val facePrioritySceneOverridesManualWb: Boolean = false,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -156,6 +168,7 @@ internal data class DeviceProfile(
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             matrixWbStillKeepsSessionStabilization = true,
+            facePrioritySceneOverridesManualWb = true,
         )
 
         val GENERIC = DeviceProfile(

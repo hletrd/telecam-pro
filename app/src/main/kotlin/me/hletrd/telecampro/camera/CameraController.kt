@@ -198,6 +198,7 @@ class CameraController internal constructor(
     private var wbPendingPhysicalId: String? = null
     private var wbWireKey: WbRouteKey? = null
     private var wbWireIsMatrix = false
+    private var wbWireAwbOff = false
     private var wbPriming = false
     private var wbPrimeStartedMs = 0L
     private var lastWbObserveMs = 0L
@@ -1523,7 +1524,9 @@ class CameraController internal constructor(
         // Read face statistics only on a request that asked for them. The answer depends on the
         // packet and the route alone (an AF override only drops the SCENE half, never detection),
         // so it is stable for every fast-path resubmit of this builder.
-        val faceReadout = facePriorityKeysFor(controls, caps.faceCapability(), afOverrideActive = false) != null
+        val faceReadout = facePriorityKeysFor(
+            controls, caps.faceCapability(), afOverrideActive = false, sceneModeAllowed = true,
+        ) != null
         var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
             val builder = camera.createCaptureRequest(if (makerLogAttempt) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
@@ -1564,7 +1567,7 @@ class CameraController internal constructor(
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
                 // drift class that produced the c928eac/f61594a regression pair). The tap region
                 // is set by applyMetering above; the trigger below drives the one-shot scan.
-                applyAfOverrides(this, controls, afInputsNow())
+                applyAfOverrides(this, controls, afInputsNow(), wbAwbOff = wbWireAwbOff)
             }
             // A fresh repeating request means the HAL may ramp its zoom again (session reopen ramps
             // from 1.0). Reset the change gate so the FIRST result after every rebuild forwards —
@@ -1834,6 +1837,7 @@ class CameraController internal constructor(
         if (priming && !wbPriming) wbPrimeStartedMs = android.os.SystemClock.uptimeMillis()
         wbPriming = priming
         wbWireIsMatrix = wire is WbWire.Matrix
+        wbWireAwbOff = wire.awbOff
         wbWireKey = WbRouteKey(wbCameraId(), wbShape, wbExpectedPhysicalId())
         wbPendingPhysicalId = null
         return wire
@@ -2407,7 +2411,8 @@ class CameraController internal constructor(
             // (ARCH4-5). This also covers the queued-trailing-task ordering (a tap can land
             // between queueing and firing): re-applying beats the old wholesale refusal, which
             // starved the preview to ~5 fps under app-side AE with a held tap-AF.
-            applyAfOverrides(b, controls, afInputsNow())
+            // The cached builder's WB is the last full rebuild's (a WB change always rebuilds).
+            applyAfOverrides(b, controls, afInputsNow(), wbAwbOff = wbWireAwbOff)
             s.setRepeatingRequest(b.build(), cb, handler)
             publishPreviewDigitalGain()
             publishNativeLogEi(ei)
@@ -2469,6 +2474,9 @@ class CameraController internal constructor(
         builder: CaptureRequest.Builder,
         requestControls: ManualControls,
         afInputs: StillAfInputs,
+        // This request's WB is app-owned (AWB OFF): on a measured HAL the Face Priority scene half
+        // then stands down (DeviceProfile.facePrioritySceneOverridesManualWb).
+        wbAwbOff: Boolean,
     ) {
         val override = afOverrideForRequest(
             requestControls = requestControls,
@@ -2492,7 +2500,12 @@ class CameraController internal constructor(
         // repeating submit come from one decision and cannot drift (the ARCH4-5 rule). A held tap
         // or AF Lock keeps precedence: the scene half falls back to AUTO/DISABLED while detection
         // keeps the frames drawn. Null writes nothing — the default-OFF request is byte-identical.
-        facePriorityKeysFor(requestControls, caps.faceCapability(), afOverrideActive = override != null)
+        facePriorityKeysFor(
+            requestControls,
+            caps.faceCapability(),
+            afOverrideActive = override != null,
+            sceneModeAllowed = !(wbAwbOff && deviceProfile.facePrioritySceneOverridesManualWb),
+        )
             ?.let { keys ->
                 builder.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, keys.faceDetectMode)
                 if (keys.sceneModeFacePriority) {
@@ -2903,7 +2916,7 @@ class CameraController internal constructor(
                     // during the pre-allocation flipped the live touch-AF hold (a CONTINUOUS press
                     // then fired in AF_MODE_AUTO), and a lock re-engaged at a new distance moved
                     // LockAt to the newer lens position.
-                    applyAfOverrides(this, requestControls, frozen.af)
+                    applyAfOverrides(this, requestControls, frozen.af, wbAwbOff = stillWb.awbOff)
                     // We rotate pixels ourselves (HEIF) / tag DNG + hi-res-JPEG orientation; keep
                     // the HAL out of rotation entirely.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)

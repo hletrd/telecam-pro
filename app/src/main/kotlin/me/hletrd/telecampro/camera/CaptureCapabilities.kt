@@ -295,6 +295,12 @@ data class CameraCaps(
      * [DeviceProfile] measured them disregarded ([DeviceProfile.awbPresetModesIgnored]).
      */
     val awbPresetModesHonoured: Boolean = true,
+    /**
+     * Whether Face Priority's scene half may ride a request whose white balance is app-owned: false
+     * only where a [DeviceProfile] measured FACE_PRIORITY overriding it on stills
+     * ([DeviceProfile.facePrioritySceneOverridesManualWb]).
+     */
+    val facePrioritySceneKeepsManualWb: Boolean = true,
 ) {
     /** The calibration of [physicalId]'s sensor when known, else this camera's own. */
     internal fun colorCalibrationFor(physicalId: String?): ColorCalibration? =
@@ -369,6 +375,8 @@ data class CameraCaps(
             // [DeviceProfile.awbPresetModesIgnored] inverted. Default true keeps every existing
             // caller/test on spec behaviour (presets ride CONTROL_AWB_MODE).
             awbPresetModesHonoured: Boolean = true,
+            // [DeviceProfile.facePrioritySceneOverridesManualWb] inverted; default = spec.
+            facePrioritySceneKeepsManualWb: Boolean = true,
         ): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
@@ -607,6 +615,7 @@ data class CameraCaps(
                     }.toMap()
                 },
                 awbPresetModesHonoured = awbPresetModesHonoured,
+                facePrioritySceneKeepsManualWb = facePrioritySceneKeepsManualWb,
             )
         }
     }
@@ -704,6 +713,7 @@ internal data class CameraControlCapabilities(
     val colorTemperatureMax: Int? = null,
     val wbCalibrated: Boolean = false,
     val awbPresetModesHonoured: Boolean = true,
+    val facePrioritySceneKeepsManualWb: Boolean = true,
 ) {
     /** The WB view of these facts — built once per projection, the ONE input of every WB decision. */
     val wb: WbCapability = WbCapability(
@@ -762,6 +772,7 @@ private fun CameraCaps.buildControlCapabilities(): CameraControlCapabilities = C
     colorTemperatureMax = colorTemperatureMax,
     wbCalibrated = colorCalibration != null || physicalColorCalibrations.isNotEmpty(),
     awbPresetModesHonoured = awbPresetModesHonoured,
+    facePrioritySceneKeepsManualWb = facePrioritySceneKeepsManualWb,
 )
 
 /**

@@ -103,6 +103,35 @@ class FacePriorityTest {
     }
 
     @Test
+    fun `settings row reads disabled while an app-owned white balance drops the scene half`() {
+        // PMA110 as measured 2026-10-27: presets ignored (so they are app-owned too), and the
+        // FACE_PRIORITY scene overrides an app-owned WB on stills — the row says so by reading
+        // disabled, exactly as the request seam drops the scene half (facePriorityKeysFor).
+        val measured = CameraControlCapabilities(
+            awbModes = intArrayOf(
+                CameraMetadata.CONTROL_AWB_MODE_OFF,
+                CameraMetadata.CONTROL_AWB_MODE_AUTO,
+                CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+            ),
+            supportsManualPostProcessing = true,
+            wbCalibrated = true,
+            awbPresetModesHonoured = false,
+            facePrioritySceneKeepsManualWb = false,
+            face = pma110,
+        )
+        fun enabled(caps: CameraControlCapabilities, wb: WbMode) =
+            controlAvailability(caps, ManualControls(wbMode = wb, facePriorityAf = true)).facePriorityAfEnabled
+        assertTrue(enabled(measured, WbMode.AUTO))
+        assertFalse(enabled(measured, WbMode.MANUAL))
+        assertFalse(enabled(measured, WbMode.DAYLIGHT))
+        assertTrue(controlAvailability(measured, ManualControls(wbMode = WbMode.MANUAL)).facePriorityAfAvailable)
+        // Spec HAL: the scene keeps manual WB, and an honoured preset is not app-owned at all.
+        val spec = measured.copy(awbPresetModesHonoured = true, facePrioritySceneKeepsManualWb = true)
+        assertTrue(enabled(spec, WbMode.MANUAL))
+        assertTrue(enabled(measured.copy(awbPresetModesHonoured = true), WbMode.DAYLIGHT))
+    }
+
+    @Test
     fun `normalization never erases the persisted preference on an unsupported route`() {
         val wanted = ManualControls(facePriorityAf = true)
         assertTrue(wanted.normalizedFor(CameraControlCapabilities()).facePriorityAf)
@@ -129,6 +158,7 @@ class FacePriorityTest {
                             base.copy(facePriorityAf = enabled, focusMode = focus),
                             pma110,
                             afOverrideActive = override,
+                            sceneModeAllowed = true,
                         )
                     }
                     // The exposure axis never changes the keys: FACE_PRIORITY keeps aeMode active
@@ -153,13 +183,14 @@ class FacePriorityTest {
     @Test
     fun `the default packet writes no face key at all`() {
         // Default OFF must leave the request byte-identical to the pre-feature build.
-        assertNull(facePriorityKeysFor(ManualControls(), pma110, afOverrideActive = false))
+        assertNull(facePriorityKeysFor(ManualControls(), pma110, afOverrideActive = false, sceneModeAllowed = true))
         assertNull(
             "an unsupported route writes nothing even when wanted",
             facePriorityKeysFor(
                 ManualControls(facePriorityAf = true),
                 pma110.copy(sceneModes = IntArray(0)),
                 afOverrideActive = false,
+                sceneModeAllowed = true,
             ),
         )
     }
@@ -192,9 +223,23 @@ class FacePriorityTest {
             lastFocusDistance = 0.4f,
         )
         val c = ManualControls(facePriorityAf = true)
-        assertFalse(facePriorityKeysFor(c, pma110, lock != null)!!.sceneModeFacePriority)
-        assertFalse(facePriorityKeysFor(c, pma110, tap != null)!!.sceneModeFacePriority)
-        assertTrue(facePriorityKeysFor(c, pma110, none != null)!!.sceneModeFacePriority)
+        assertFalse(facePriorityKeysFor(c, pma110, lock != null, sceneModeAllowed = true)!!.sceneModeFacePriority)
+        assertFalse(facePriorityKeysFor(c, pma110, tap != null, sceneModeAllowed = true)!!.sceneModeFacePriority)
+        assertTrue(facePriorityKeysFor(c, pma110, none != null, sceneModeAllowed = true)!!.sceneModeFacePriority)
+    }
+
+    @Test
+    fun `an app-owned white balance on a measured HAL keeps detection but drops the scene half`() {
+        // PMA110 2026-10-27: the FACE_PRIORITY scene overrides AWB OFF + TRANSFORM_MATRIX on stills
+        // (DeviceProfile.facePrioritySceneOverridesManualWb). Detection still runs, frames still draw.
+        val keys = facePriorityKeysFor(
+            ManualControls(facePriorityAf = true),
+            pma110,
+            afOverrideActive = false,
+            sceneModeAllowed = false,
+        )!!
+        assertFalse(keys.sceneModeFacePriority)
+        assertTrue(keys.faceDetectMode != 0)
     }
 
     @Test

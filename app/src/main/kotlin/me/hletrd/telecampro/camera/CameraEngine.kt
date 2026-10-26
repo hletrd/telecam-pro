@@ -1471,6 +1471,7 @@ class CameraEngine internal constructor(
                     gateVideoRatesOnMinFrameDuration =
                         !activeDeviceProfile().videoMinFrameDurationsUnderstated,
                     awbPresetModesHonoured = !activeDeviceProfile().awbPresetModesIgnored,
+                    facePrioritySceneKeepsManualWb = !activeDeviceProfile().facePrioritySceneOverridesManualWb,
                     // A process-lifetime cache must never memoize the logical-fallback read
                     // (review 2026-08-01): a transient service outage during the first physical
                     // read otherwise stamps the LOGICAL camera's focal into every later still on

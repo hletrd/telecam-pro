@@ -89,10 +89,15 @@ internal fun facePriorityKeysFor(
     controls: ManualControls,
     cap: FaceCapability,
     afOverrideActive: Boolean,
+    // False where the scene half must stand down for THIS request: a measured HAL whose
+    // FACE_PRIORITY scene overrides an app-owned white balance on stills
+    // ([DeviceProfile.facePrioritySceneOverridesManualWb]). Detection keeps running either way. No
+    // default, the same rule as the AF override: every request site must decide it.
+    sceneModeAllowed: Boolean,
 ): FacePriorityKeys? {
     if (!facePriorityAfEffective(controls.facePriorityAf, cap, controls.focusMode)) return null
     val detect = preferredFaceDetectMode(cap.faceDetectModes) ?: return null
-    return FacePriorityKeys(faceDetectMode = detect, sceneModeFacePriority = !afOverrideActive)
+    return FacePriorityKeys(faceDetectMode = detect, sceneModeFacePriority = !afOverrideActive && sceneModeAllowed)
 }
 
 /** A rect normalized to [0,1] in some named space (sensor/active array, or the preview view). */
