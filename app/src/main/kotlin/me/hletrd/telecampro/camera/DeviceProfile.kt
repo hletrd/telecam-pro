@@ -125,6 +125,20 @@ internal data class DeviceProfile(
      * honours them — its four presets landed on four distinct gains/transform pairs.
      */
     val awbPresetModesIgnored: Boolean = false,
+    /**
+     * A STILL whose white balance rides TRANSFORM_MATRIX must carry the session's video
+     * stabilization mode. PMA110 MEASURED 2026-10-27 (isolated probe, logical camera 0; then the
+     * app's photo routes): with ON or PREVIEW_STABILIZATION on the session/repeating request and the
+     * still at the template's OFF — the app's still shape — the still reports AWB AUTO / INACTIVE
+     * and renders a WB that is not the requested one (gains 2.6 / 1.2, i.e. orange, came out blue;
+     * the app's 3200 K came out deep cyan, R ≈ 2 of 255), while the preview beside it is right. The
+     * same still carrying the session's mode renders exactly the requested gains. Its cost: in the
+     * app it is then framed like the stabilized preview, about 10 % narrower than an AUTO still
+     * (FIELD_CHECKS A23 — whether every still should follow is an owner decision). AUTO stills are
+     * unaffected and keep their measured OFF shape. Spec behaviour (a still honours its own
+     * TRANSFORM_MATRIX keys) is assumed elsewhere.
+     */
+    val matrixWbStillKeepsSessionStabilization: Boolean = false,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -141,6 +155,7 @@ internal data class DeviceProfile(
             makerLogPipeline = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
+            matrixWbStillKeepsSessionStabilization = true,
         )
 
         val GENERIC = DeviceProfile(

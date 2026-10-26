@@ -2873,6 +2873,13 @@ class CameraController internal constructor(
                         // still taken while the route still primes carries the AUTO the preview shows.
                         wb = stillWb,
                     )
+                    // A matrix-WB still on a measured HAL must ride the session's stabilization
+                    // mode, or it renders some other white balance than the one it carries
+                    // (DeviceProfile.matrixWbStillKeepsSessionStabilization). AUTO stills keep the
+                    // template's OFF, their measured shape.
+                    if (stillWb is WbWire.Matrix && deviceProfile.matrixWbStillKeepsSessionStabilization) {
+                        applyVideoStab()
+                    }
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
                     // Null — no key written — in every other session, so the photo path is unchanged.
