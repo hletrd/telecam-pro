@@ -135,6 +135,7 @@ object Shaders {
         const vec3 LUMA = vec3(0.2627, 0.6780, 0.0593); // Rec.2020 luma weights
         // Linear S-Gamut3.Cine -> BT.709 (LogProfiles.REC709_FROM_SG3C; GLSL mat3 is column-major).
         const mat3 REC709_FROM_SG3C = ${mat3Literal(LogProfiles.REC709_FROM_SG3C)};
+        const mat3 REC709_FROM_BT2020 = ${mat3Literal(LogProfiles.REC709_FROM_BT2020)};
         const float SDR_EOTF_GAMMA = ${SdrToHlgMapping.SDR_EOTF_GAMMA};
         const float BT2408_HLG_SCALE = ${SdrToHlgMapping.NORMALIZED_DISPLAY_LIGHT_SCALE};
         const float HLG_SYSTEM_GAMMA = ${SdrToHlgMapping.HLG_SYSTEM_GAMMA};
@@ -181,9 +182,7 @@ object Shaders {
         }
 
         vec3 makerSourceLinear(vec3 code) {
-            vec3 hi = exp2((code - ${MakerLogSource.DELTA}) / ${MakerLogSource.GAMMA}) - ${MakerLogSource.BETA};
-            vec3 lo = sqrt(max(code, vec3(0.0)) / ${MakerLogSource.TOE}) + ${MakerLogSource.R0};
-            return mix(hi, lo, step(code, vec3(${MakerLogSource.CUT_CODE})));
+            return exp2((code - ${MakerLogSource.DELTA}) / ${MakerLogSource.GAMMA}) - ${MakerLogSource.BETA};
         }
 
         vec3 makerDisplaySample(vec3 c) {
@@ -250,7 +249,9 @@ object Shaders {
             // that changed but still was not flat. This is the exact inverse of the forward HLG
             // branch's `pow(displayLight * BT2408_HLG_SCALE, 1/HLG_SYSTEM_GAMMA)`, reusing both
             // constants so forward and inverse cannot drift apart.
-            return pow(sceneLight, vec3(HLG_SYSTEM_GAMMA)) / BT2408_HLG_SCALE;
+            // The HLG camera buffer is BT.2020. Decode to the working BT.709 coordinates before
+            // a Log target matrix; treating these components as 709 applies gamut conversion twice.
+            return REC709_FROM_BT2020 * (pow(sceneLight, vec3(HLG_SYSTEM_GAMMA)) / BT2408_HLG_SCALE);
         }
 
         // A RAW-developed source for the LOG encode branches: the S-Gamut3.Cine decode expressed in
@@ -339,8 +340,9 @@ object Shaders {
         }
 
         void main() {
-            // Encoder/native flat preview: preserve camera codes and avoid monitor-decode work.
-            if (uTransfer == 9 && uSourceMaker == 1 && uPeaking == 0 && uZebra == 0 && uFalseColor == 0) {
+            // Matching native O-Log2 or HLG: preserve camera codes and avoid an unnecessary re-encode.
+            if (((uTransfer == 9 && uSourceMaker == 1) || (uTransfer == 1 && uSourceHlg == 1))
+                && uPeaking == 0 && uZebra == 0 && uFalseColor == 0) {
                 gl_FragColor = vec4(texture2D(uTexture, vTexCoord).rgb, 1.0);
                 return;
             }

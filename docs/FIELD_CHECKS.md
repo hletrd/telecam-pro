@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -21,7 +21,7 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** resolved the DCG/DRC highlight range (accepted limitation: it needs the declined CameraUnit SDK; its white-balance finding is superseded by A23); it still needs further TC operation-mode research and a rear 1× native-Log soak,
+**A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
 **A23** needs white balance checked on the HLG10, RAW log and front routes, under a known illuminant, on a spec device in-app, and an owner decision on manual-WB still framing,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
@@ -789,13 +789,14 @@ results in fixed gains R 0.851 / B 5.263 for requests at 4503 K, 5579 K and 1000
 strong blue cast. Stock's manual WB works (5000 K → R 2.172 / B 1.649 through `colorTemperature`).
 Local evidence: `.context/stock-log-2026-10-26/ab-soak/` (SHA-256 manifest included).
 
-**Both defects traced to the OEM 3A gate, 2026-10-26 (immutable debug `0453de2b`; chart A/B +
+**OEM 3A gate hypothesis, 2026-10-26; categorical conclusion REOPENED 2026-10-27 (immutable debug `0453de2b`; chart A/B +
 an isolated Camera2 probe rebuilt from `probe-source`, hashes in the manifest).** The DCG/DRC
 highlight range and the white balance are the SAME root: this HAL reserves full OEM 3A — the
 DOL/DCG exposure merge AND white balance — for the system camera / the authenticated CameraUnit
 configure path (the SDK this app does not use). A third-party client on the two-tag extension route
 gets the OEM processing pipeline, sensor mode 21 and the native Log gamma, but not system-camera 3A.
-Neither defect is reachable through any Camera2 request key, session parameter or stream shape.
+This was an inference from the tested requests, not proof of all possible routes. WB was subsequently
+fixed through standard Camera2 requests (A23); the gain-split question is reopened by the owner.
 
 - **DCG/DRC (highlight range).** At the matched ISO 800 / 33.322 ms chart exposure stock reports
   `com.qti.stats_control.drc_gain` 8, `com.oplus.conversion.gain` 7.998 and the short frame at gain
@@ -811,9 +812,10 @@ Neither defect is reachable through any Camera2 request key, session parameter o
   `[WarmDolState]`/`[StreamOnWarmStart]` gate DOL per operation-mode/camera/lux); in a very dark
   scene it does engage partially for the third-party client (night probe `drc_gain` 3.6). Stock
   drives it through the OEM `ConfigureParameter` builder (`com.oplus.configure.custom.detail.info`,
-  warm-start seeding) that only the authenticated SDK reaches. **No product fix is possible without
-  re-adding the declined CameraUnit SDK; documented as an accepted limitation — the maker route
-  carries ~2.4 stops less highlight range than stock in a bright scene, and closer in the dark.**
+  warm-start seeding). **The claim that only the authenticated SDK can solve this was not proven.**
+  The measured maker route carries ~2.4 stops less highlight range in that bright comparison;
+  reproducing the gain split remains open. A24 adds new negative controls without broadening them
+  into an impossibility claim.
 
 - **White balance — SUPERSEDED 2026-10-27 by A23.** The analysis below was right about FAST gains,
   presets and `colorTemperature`, and wrong about the conclusion: AWB OFF + TRANSFORM_MATRIX with
@@ -867,7 +869,7 @@ delta exactly 4004 ticks at 120 kHz (3654 / 1858 deltas), full FFmpeg decode exi
 request keys only and did not change the container/codec/cadence. (A first pair recorded from an
 ordinary debug build of the same change matched; ordinary builds are not field evidence.)
 
-**Remaining:** the DCG/DRC highlight range is now an accepted limitation (above), not a bug to chase;
+**Remaining:** the DCG/DRC highlight range is reopened for investigation (2026-10-27);
 the manual-WB override is resolved by A23 (TRANSFORM_MATRIX, all routes); additional TC
 operation-mode combinations, a sustained soak of this rear 1× route (A21's soak covers the TC
 route), gamut beyond ColorChecker saturation, and ColorOS 16 remain open. Local evidence:
@@ -1067,6 +1069,48 @@ rides the session's stabilization, so with stabilization on it is framed like th
 10 % narrower than an AUTO still (grey-patch pitch 350 → 387 px) — whether every still should follow
 the preview's framing is an OWNER DECISION; (5) no attached device takes the CCT path (CCT advertised
 without a ColorMatrix calibration).
+
+### A24. Camera source transfers against official anchors on real GPUs — ✅ PASSED 2026-10-27
+
+**Source correctness, not a new ColorChecker accuracy claim.** OPPO's official
+[O-Log2 ACES workflow V2](https://www.oppo.com/en/o-log-technical-downloads/) (CTL/DCTL dated
+2026-05-22) specifies one base-2 inverse with coefficients 0.0855 / 0.0096 / 0.693. The app had
+Apple Log's constants and quadratic toe. OPPO code 0.13 is positive scene light; the old inverse
+made it negative and the monitor clipped it. Updated CPU anchors cover black, shadows, grey,
+diffuse white and 12× headroom. Native O-Log2 recording bypasses this monitor inverse.
+
+The same review found HLG camera samples already in BT.2020 being treated as BT.709. A coloured
+SDR→HLG→Log equivalence test FAILED before correction; all three Log profiles agree afterwards.
+HLG→HLG now preserves source codes. HLG→Log changes decoded BT.2020 into unclipped BT.709 working
+coordinates before the destination gamut conversion.
+
+`MakerLogShaderTest` renders the production fragment shader on real GPU/EGL, replacing only the
+OES sampler with a 2D texture carrying exact known RGB input. Twelve neutral/coloured patches
+exercise OPPO monitor output against independent official-CTL targets, O-Log2 code passthrough,
+HLG code passthrough and unchanged SDR (48 renders, 144 channel checks, tolerance 2/255).
+**Galaxy Z Flip6:** immutable debug `e191e6917bbb-45745530` (O-Log2 corrected, HLG still old)
+FAILED the HLG coloured patch `[40,48,64]`, R=44 instead of 40; corrected immutable debug
+`e191e6917bbb-34b6e502` PASSED. **PMA110:** the same corrected APK PASSED. This tests the actual
+shader mathematics, not camera sampler/data-space negotiation. JVM tests: 2992, no failures.
+
+**Fresh stock control and DRC probes:** scene was effectively dark; POCO disconnected. Stock
+Pro Video 4K30 O-Log2 at UI ISO 400 / 1/30 s returned actual ISO 800 / 33,322,214 ns, gain ratio
+4, long gain 8 / short gain 2. `VID20261027060726.mp4` is the new stock control. At the same
+actual exposure the baseline, explicit DCG flags, explicit short gain/DRC requests, repeating
+extension=0, and native-session HLG10 output all retained ratio 1 / short gain 8 / gamma endpoint
+2843. Removing the repeating SDK marker removed the Log LUT and changed HDR mode to 0.
+The matched corrected-product take (`VID_TELECAM_F1_1793049988150_0000000001.mp4`, APK SHA-256
+`b1cdf2c0…`, same `e191e6917bbb-34b6e502` immutable artifact) also returned actual ISO 800 /
+33,322,214 ns, ratio 1 / short gain 8. Its 279-frame / 9.330375 s Main10 BT.2020/full/bt2020-10
+file and the 208-frame stock control both fully decode cleanly. Neither dark frame contains a
+highlight target; this is a matched-exposure gain-ratio check, not a fresh dynamic-range chart.
+
+The original bright stock/product clips still demonstrate the separate highlight gap: official
+O-Log2 inversion of LUT endpoints 3685 vs 2843 gives 5.3407 vs 1.0007 linear, or 2.416 stops.
+Both reported integration times were essentially equal (~33.322 ms); the meaningful distinction
+is the high/low gain split, not merely the presence of two HDR buffers. These probes do not prove
+that all Camera2 paths are impossible. A new illuminated chart/clipping comparison remains in A20.
+Evidence: `.context/log-gamma-review-2026-10-27/` (APK identity, official files, test logs, probes).
 
 ## B. Held in hand — 3 min
 

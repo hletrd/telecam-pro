@@ -1001,6 +1001,15 @@ only where `wbModeAvailable` says a mechanism applies it. Two PMA110 still quirk
 (table above): a matrix still rides the session's stabilization, and Face Priority's scene half
 stands down while WB is app-owned.
 
+**Source transfer correctness (2026-10-27, FIELD_CHECKS A24):** `MakerLogSource` implements the
+single-log2 inverse in OPPO's [official ACES workflow V2](https://www.oppo.com/en/o-log-technical-downloads/),
+not Apple Log's similar curve or quadratic toe. It is used only for native-source monitoring;
+native O-Log2 recording keeps the source codes. An accepted HLG source is BT.2020, so HLG-to-HLG
+also preserves source codes. To encode that source as S-Log3/S-Log3.Cine/LogC3, `sourceLinear`
+converts decoded linear BT.2020 to the BT.709 working coordinates (`REC709_FROM_BT2020`) before
+the target gamut matrix, retaining negative out-of-709 components. Treating HLG components as
+709 applied a second gamut conversion: neutral tests passed while coloured tests failed.
+
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
 them. Gamma = **Log (maker)** integrates the stock O-Log2 pipeline on the PMA110 profile through
 logical camera 0: session type `0x830b`, paired `is.sdk.camera.package=1` (byte array) and

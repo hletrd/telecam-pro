@@ -91,6 +91,27 @@ class LogFromHlgSourceTest {
         assertTrue("log must be monotonic", codes.zipWithNext().all { (a, b) -> b > a })
     }
 
+    @Test
+    fun colouredHlgSourcesReachTheSameLogCoordinatesAsEquivalentSdrSources() {
+        val patches = listOf(
+            Rgb(0.8, 0.2, 0.1), Rgb(0.1, 0.8, 0.2), Rgb(0.2, 0.1, 0.8),
+            Rgb(0.7, 0.5, 0.2), Rgb(0.3, 0.6, 0.8),
+        )
+        val encoders = listOf<(Double, Double, Double, Boolean) -> Rgb>(
+            { r, g, b, h -> LogProfiles.encodeSlog3(r, g, b, sourceHlg = h) },
+            { r, g, b, h -> LogProfiles.encodeSlog3Cine(r, g, b, sourceHlg = h) },
+            { r, g, b, h -> LogProfiles.encodeLogc3(r, g, b, sourceHlg = h) },
+        )
+        for (patch in patches) for (encode in encoders) {
+            val hlg = SdrToHlgMapping.encode(patch.red, patch.green, patch.blue)
+            val expected = encode(patch.red, patch.green, patch.blue, false)
+            val actual = encode(hlg.red, hlg.green, hlg.blue, true)
+            assertEquals("red $patch", expected.red, actual.red, 1e-8)
+            assertEquals("green $patch", expected.green, actual.green, 1e-8)
+            assertEquals("blue $patch", expected.blue, actual.blue, 1e-8)
+        }
+    }
+
     /** Using the WRONG decode on an HLG source must be detectable, or this suite proves nothing. */
     @Test
     fun theWrongDecodeMissesTheGreyAnchor() {

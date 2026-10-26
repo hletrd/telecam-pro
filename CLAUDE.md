@@ -1122,14 +1122,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   this route remaps lens-local/unified zoom in the same optics transaction. Native mode drops stills,
   bypasses the P010/RAW bridges and the programmed S-Log3 curve/EI offset; its own inverse is used
   only for monitor assists. The app's remembered standard Log Profile remains independent.
+  **Source transfer correction (2026-10-27, A24):** the O-Log2 monitor inverse follows OPPO's
+  official ACES CTL/DCTL V2: `exp2((code - 0.693) / 0.0855) - 0.0096`, no quadratic toe. The former
+  Apple Log coefficients/toe crushed low positive OPPO shadows. Native recording still passes
+  source codes through. HLG camera input already has BT.2020 primaries: matching HLG output now
+  preserves its codes, and conversion to an app Log profile first changes linear BT.2020 into
+  the BT.709 working coordinates without clipping. The former second 709-to-2020 matrix changed
+  colours while neutral-only tests passed. Hardware shader tests cover both sources and SDR.
   **WB on the maker route is the operator's (since 2026-10-27; see the White balance bullet).**
   The 2026-10-26 forced-AUTO stopgap (`makerLogWbControls`) rested on a FAST-mode measurement: the
   OEM session ignores presets, FAST gains and CCT temperature, but honours TRANSFORM_MATRIX with gains
   AND a transform exactly, like every other route — so it was deleted. The maker route's missing
-  DCG/DRC highlight range (stock `drc_gain` 8 vs the app's 1, ~2.4 stops in a bright scene) remains an
-  ACCEPTED limitation, not a bug: the DOL/DCG merge is a system-camera AEC decision behind the
-  authenticated configure path, unreachable through any Camera2 request/session key or stream shape
-  (bisected), and cannot be fixed without re-adding the declined SDK (`docs/FIELD_CHECKS.md` A20).
+  DCG/DRC highlight gap (stock `drc_gain` 8 vs the app's 1, ~2.4 stops in the measured bright scene)
+  remains unresolved and was REOPENED by the owner on 2026-10-27. Prior negative trials establish
+  that their tested keys and stream shapes did not reproduce the gain split; they do NOT prove
+  every Camera2 route impossible or that the authenticated SDK is the only solution. The earlier
+  identical impossibility claim for WB was disproved. Keep source acceptance, Log encoding and
+  actual highlight range separate (`docs/FIELD_CHECKS.md` A20/A24).
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
   work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
   mode offers 1080p/4K at 30/60 fps and no O-Log2), and the full maker signature exists only on
@@ -1315,12 +1324,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Refusal rebuilds without any SDK tag. A camera-device failure disables the native attempt for the
   recovery sequence; explicit mode selection can retry. Product evidence is in FIELD_CHECKS A20:
   4K Main10 + AAC, 345 frames / 11.5115 s, maximum PTS interval 33.367 ms, full decode clean.
-  **What the extension route does NOT grant (device-measured 2026-10-26, A20):** the system camera's
-  DOL/DCG exposure merge that gives stock its highlight headroom (`drc_gain` 8 vs the app's 1, ~2.4
-  stops) — reserved for the authenticated CameraUnit configure path; AEC chooses DOL ratio 1 in bright
-  scenes for a third-party client. It is unreachable through any Camera2 request/session key or
-  stream shape — an accepted limitation; do not chase it with request keys. (White balance, once
-  listed here too, IS reachable: TRANSFORM_MATRIX, 2026-10-27, A23.)
+  **Observed highlight limitation (A20, reopened 2026-10-27):** stock's reported long/short gains
+  differ while the tested app route uses equal gains, despite both reporting HDR mode 1/data 2.
+  In the bright comparison the LUT endpoint implies 2.416 stops less encoded range. A fresh dark
+  control at actual ISO 800 / 33.322 ms still reports stock gain ratio 4 versus probe 1. Explicit
+  DCG flags, short-gain requests, split session/repeating extension markers and an HLG10 stream
+  profile have not reproduced the split. Removing the repeating SDK marker disables the OEM Log
+  path altogether. This is a measured limitation of the tested routes, not an exhaustive proof
+  of impossibility or SDK-only access. WB is independently fixed by TRANSFORM_MATRIX (A23).
   The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
   has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor
