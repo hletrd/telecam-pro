@@ -131,12 +131,16 @@ class ConstantRateFrameClockTest {
     }
 
     @Test
-    fun `the encoder fills at most a third of a second of slots`() {
-        assertEquals(10, encoderMaxFillSlots(30_000, 1_001))
-        assertEquals(20, encoderMaxFillSlots(60_000, 1_001))
-        assertEquals(8, encoderMaxFillSlots(24_000, 1_001))
-        assertEquals(10, encoderMaxFillSlots(30, 1))
+    fun `the encoder fills at most one second of slots, enough for a mid-take still`() {
+        assertEquals(30, encoderMaxFillSlots(30_000, 1_001))
+        assertEquals(60, encoderMaxFillSlots(60_000, 1_001))
+        assertEquals(24, encoderMaxFillSlots(24_000, 1_001))
+        assertEquals(30, encoderMaxFillSlots(30, 1))
         assertEquals(1, encoderMaxFillSlots(1, 1))
+        // A ~600 ms still stall at 29.97 is 18 slots: filled, not left as a hole.
+        val clock = ConstantRateFrameClock(30_000, 1_001, encoderMaxFillSlots(30_000, 1_001))
+        assertEquals(1, clock.place(1_000_000_000L))
+        assertEquals(18, clock.place(1_000_000_000L + 18 * 33_366_667L))
     }
 
     @Test

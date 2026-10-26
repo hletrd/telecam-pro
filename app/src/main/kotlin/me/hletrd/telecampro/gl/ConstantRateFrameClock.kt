@@ -96,12 +96,13 @@ internal class ConstantRateFrameClock(
 }
 
 /**
- * The fill bound the encoder output uses: a third of a second of slots, rounded up (10 at 29.97, 20 at
- * 59.94, 8 at 23.976). Fills run as one burst of draws + swaps on the GL thread that also draws the
- * viewfinder, so a whole second (up to 60 swaps) was too long a hold; a third still covers a mid-REC
- * repeating-request swap, the longest ordinary stall measured (~235 + 67 ms, 2026-10-26).
+ * The fill bound the encoder output uses: one second of slots, rounded up (30 at 29.97, 60 at 59.94, 24
+ * at 23.976). A still taken during a native-log take stalls the camera ~600 ms (18 slots at 29.97,
+ * device-measured 2026-10-26); the first bound, a third of a second, left that as a hole, which an
+ * editor that conforms to the tagged rate turns into a 0.6 s A/V slip for the rest of the take. Fills
+ * run as one burst on the GL thread that also draws the viewfinder, but only right after the camera
+ * itself stalled, so the burst extends a freeze the viewfinder already shows; its cost is measured per
+ * take in the EncoderClock row (maxFillBurstMs).
  */
-internal fun encoderMaxFillSlots(rateNumerator: Int, rateDenominator: Int): Int {
-    val thirdSecondDenominator = rateDenominator.toLong() * 3
-    return ((rateNumerator + thirdSecondDenominator - 1) / thirdSecondDenominator).toInt().coerceAtLeast(1)
-}
+internal fun encoderMaxFillSlots(rateNumerator: Int, rateDenominator: Int): Int =
+    ((rateNumerator + rateDenominator.toLong() - 1) / rateDenominator).toInt().coerceAtLeast(1)

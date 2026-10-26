@@ -863,10 +863,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   per encoder output) now puts each real frame on the slot of the exact `rateNumerator/rateDenominator`
   grid nearest its capture time (≤ half a slot away; slot 0 is the first frame, whose sensor timestamp
   stays the video PTS 0 the A/V anchor and the gyro log use): a frame landing on a filled slot is
-  dropped, a camera gap is filled by repeating the current frame. A fill is one burst of draws + swaps
-  on the GL thread that also draws the viewfinder, so it is capped at a third of a second of slots
-  (`encoderMaxFillSlots`: 10 at 29.97, 20 at 59.94 — a whole second was the first cap and the review
-  flagged it); a longer gap stays a hole. Integer rates take the same grid. The MP4 video track also
+  dropped, a camera gap is filled by repeating the current frame, up to one second of slots
+  (`encoderMaxFillSlots`). A still taken mid-take stalls the camera ~600 ms, and a third-of-a-second cap
+  (tried after the review flagged the burst) left that as a 0.6 s hole that a constant-rate editor turns
+  into an A/V slip. A fill is one burst of draws + swaps on the GL thread that also draws the viewfinder,
+  so it extends the freeze the camera stall already caused: 79 ms for the still at 29.97, 285 ms at 59.94
+  (4K60 encoder backpressure), measured per take in the `EncoderClock` row; a longer gap stays a hole. Integer rates take the same grid. The MP4 video track also
   needs a **120 kHz timescale** (`VIDEO_TRACK_TIME_SCALE`, MediaFormat `time-scale` → MPEG4Writer
   kKeyTimeScale, Android 13+): at the 90 kHz default 59.94 is 1501.5 ticks, and MPEG4Writer reuses a
   duration within 100 µs of the previous one, so a 59.94 take came out 1501 × 47 + 1511 — stamped

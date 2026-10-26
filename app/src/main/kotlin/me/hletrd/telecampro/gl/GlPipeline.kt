@@ -847,10 +847,9 @@ class GlPipeline(
                                 rateNumerator.toLong(),
                                 rateDenominator.toLong(),
                                 // A fill is a burst of draws + swaps on THIS thread, which also draws
-                                // the viewfinder, so it is bounded: a third of a second of slots
-                                // (10 at 29.97, 20 at 59.94) covers the longest ordinary stall
-                                // measured, a mid-REC repeating-request swap (~235 + 67 ms); a longer
-                                // gap means the camera itself stopped and stays a hole.
+                                // the viewfinder, so it is bounded: one second of slots covers the
+                                // longest ordinary stall measured, a still taken mid-take (~600 ms);
+                                // a longer gap means the camera itself stopped and stays a hole.
                                 maxFillSlots = encoderMaxFillSlots(rateNumerator, rateDenominator),
                             )
                         } else {
