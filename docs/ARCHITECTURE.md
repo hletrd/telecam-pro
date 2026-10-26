@@ -52,13 +52,13 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraTeardownTerminal.kt` | Android-free exactly-once Camera2 teardown classification. Strict handler completion authorizes replacement; timeout/failure first closes process native admission, retains the uncertain owner, and makes late completion inert. |
 | `CameraCallbackDispatchGate.kt` | Android-free close/admission gate ordering Camera2 executor posts before teardown, or rejecting them for the controller's inline late-callback cleanup after close begins. |
 | `ConfigureAttempt.kt` | Session-configure failure handling, pure and host-tested: `ConfigureAttemptGate` lets each configure attempt be handled once (a HAL configure failure both throws out of `createCaptureSession` and posts `onConfigureFailed`; both used to start a retry chain), `configureFailureIsDeviceFatal` (a synchronous CAMERA_ERROR / DISCONNECTED / DISABLED means the device is gone, so the ladder stops and reports once instead of failing every rung on a dead device), and `RawLogConfigureFatalException`, which tells the Engine to leave RAW log out of that route's recovery reopens. Device-found 2026-10-26: RAW-only on camera 4 under the TC operation mode failed configure with -38; RAW log attempts now always take the regular session type. |
-| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. Its pre-open route-inventory attempt covers BACK/FRONT/EXTERNAL; a failed/unknown characteristics read publishes partial truth and schedules bounded independent retry rather than blocking a safe current/default open. Once complete, BACK remains preferred, front-only starts FRONT, and an external fallback opens plainly under GENERIC behavior. Front selection (`pickFront`/`pickFrontBest`) prefers a plain (non-logical) id and the largest active array on tie — never hardcoded. |
+| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. `pickPhysicalMember` names a logical camera's physical MEMBER by focal — an identity the maker TC lens guard compares against, never a routing target. Its pre-open route-inventory attempt covers BACK/FRONT/EXTERNAL; a failed/unknown characteristics read publishes partial truth and schedules bounded independent retry rather than blocking a safe current/default open. Once complete, BACK remains preferred, front-only starts FRONT, and an external fallback opens plainly under GENERIC behavior. Front selection (`pickFront`/`pickFrontBest`) prefers a plain (non-logical) id and the largest active array on tie — never hardcoded. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CameraStatus.kt` | Typed user-status identity, arguments, urgency/live-region policy, lifecycle, and duration. Camera bring-up/reconfiguration/recovery/retry conditions are untimed `PROGRESS`; exact Ready, terminal, pause, or replacement events retire them. |
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only (the per-phone maker-log product fact `nativeLogFlavor` was removed with those curves, 2026-10-26). `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
-| `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. |
+| `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
 | `RawLog.kt` | EXPERIMENTAL RAW log gates, pure and host-tested: `rawLogTransfer` (every log profile — S-Log3 / S-Log3.Cine / LogC3; GL re-encodes the developer's S-Log3), `rawStreamSustains` (the RAW stream's advertised minimum frame duration against the selected rate), `rawLogSupported` (developable rear camera + the PMA110 RAW route law), `rawLogSessionWanted`, and `rawLogOffered` for Gamma = RAW Log (`VideoColorMode`, CameraState.kt). |
@@ -752,7 +752,8 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `logicalStillRequiresYuv` | `true` | `false` | `resolveMustUseYuvStill` → `sessionAttemptPlan` (YUV still on the logical rear route; FRONT's YUV lane stays an optimisation) |
 | `videoMinFrameDurationsUnderstated` | `true` | `false` | `CameraCaps.read(gateVideoRatesOnMinFrameDuration)` fills `videoMinFrameDurationsNs`, which `VideoFrameRate.availableFor` uses to drop rates the selected size's advertised SurfaceTexture minimum frame duration cannot sustain; PMA110's TELE advertises 30 fps at 3840×2160 yet records ~60 |
 | `nativeLogCurveMeasured` | `true` (the programmed S-Log3 curve measured landing scene levels where the convention puts them, 2026-10-14) | `false` (unmeasured; in one dim room the Galaxy Z Flip6 decoded a chart's white to the same ~5½-stops-under level as PMA110, 2026-10-26) | NOT a route gate — native log still runs wherever the curve is advertised (owner decision 2026-10-26). `CameraEngine.nativeLogCurveMeasured` → `CameraUiState.nativeLogCurveVerified`; false shows the one-line Caution warning under Gamma = Log on the native path (`nativeLogUnverifiedWarningVisible`) |
-| `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no TC/pin/Open Gate, up to 30 fps; actual result confirmation gates Ready and recording source truth |
+| `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no pin/Open Gate, up to 30 fps; TC only where `makerLogTeleMaxWireZoom` is set; actual result confirmation gates Ready and recording source truth |
+| `makerLogTeleMaxWireZoom` | `9.8` (measured 2026-10-26 on the maker TC route: wire 9.89 stayed on the host tele, every entry to 10.0 handed over to the 10× periscope for 1.6–1.9 s) | `null` (TC + Log (maker) not offered) | `makerLogOffered`'s TC term; `CameraEngine.makerTeleRouteFor` → `MakerTeleRoute.wireZoomCeiling` and the route caps' TC-local window `[1, 9.8 ÷ 3]` (≈42.6× TOTAL on the 300 mm kit) |
 | `nativeLogEiSupported` | `false` (measured: ISP output not exposure-linear under the programmed curve, 2026-10-15) | `true` (spec: linear TONEMAP_CURVE input; unmeasured) | `CameraController.repeatingNativeLogEiStops` forces wire offset 0 when false; `CameraEngine.nativeLogEiSupported` → `CameraUiState.nativeLogEiSupported` hides the Video-tab "Log EI Offset" row and the OSD " +N" |
 | `tenBitNativeLogBridge` | `true` (measured 2026-10-25: P010 + S-Log3 curve + JPEG + RAW on cam 2 and on cam 4 under 0x80b4; ten bits reach GL and the file) | `false` (unmeasured; a HAL may advertise P010 + STANDARD and still reject or mis-tag it) | `CameraEngine.tenBitNativeLogStreamFor` resolves the GL input size for `CameraController.open(tenBitNativeLogStream)` when the capability half also holds (`CameraCaps.p010StandardAdvertised`, the size in `CameraCaps.p010OutputSizes`, not FRONT); the controller builds a `P010InputBridge` on the first try of each rung and retries that rung 8-bit if it is refused. True also starts every GL generation on an RGBA1010102 EGL config |
 | `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId`; every UI route decision reads `CameraEngine.rawForcesStandalone` via `CameraViewModel.standaloneRouteFor`, while `CameraUiState.rawForcesStandalone` is display copy only, PMA110 default until the first inventory) |
@@ -977,7 +978,8 @@ them. Gamma = **Log (maker)** integrates the stock O-Log2 pipeline on the PMA110
 logical camera 0: session type `0x830b`, paired `is.sdk.camera.package=1` (byte array) and
 `is.from.extension=1` (int), NUL-terminated `pro_video_log_mode`, `log.video.mode=0` and
 `camera.is.from.main.menu=1`, on both session parameters and TEMPLATE_RECORD repeating requests.
-It is offered on the rear automatic route at up to 30 fps, without TC or Open Gate. No SDK library
+It is offered on the rear automatic route at up to 30 fps, without Open Gate, and since 2026-10-26
+with the teleconverter too (below). No SDK library
 or package impersonation is involved. The SDK tag must be omitted entirely on ordinary fallback.
 
 `MakerLog.kt` owns eligibility, effective fallback and the source proof: operation mode 0x830b,
@@ -1000,7 +1002,38 @@ native-curve EI offset never alters the maker source. Source/GL precision drives
 Matched-exposure stock/probe gamma arrays were identical. Product testing confirms sensor mode 21,
 HDR mode 1/two exposures and error-free 4K Main10 + AAC recording (FIELD_CHECKS A20). Pixel identity
 and exact gamut equivalence remain unproven: stock's VideoColorBT709 result differs. Standalone and
-TC operation modes did not reproduce the full same processing signature; native TC is withheld.
+TC operation modes did not reproduce the full same processing signature, so they stay unused.
+
+**TC + Log (maker)** (owner request 2026-10-26) keeps that signature by keeping its camera: with the
+converter on, Video + Log (maker) opens logical camera 0 with the unchanged maker protocol instead of
+standalone 4 + `0x80b4`, and holds it on the host tele by zoom. One resolver
+(`CameraEngine.teleRouteCameraId`, from `makerLogTeleRouteWanted`) serves every TELE door — startup and
+reopen (`selectCurrentLens`), Photo/Video, lens/TC and MR/settings recall — so Photo TC, any other
+transfer, > 30 fps, Open Gate or a camera pin still open the ordinary TC route byte-identically. The
+converter's GL/readout world is untouched: afocal 180°, TC-local zoom, focal/magnification readouts,
+OSD and EXIF. Only the session and the zoom WIRE differ, both inside the controller: `MakerTeleRoute`
+multiplies every `CONTROL_ZOOM_RATIO` written by the tele chip's unified position (3.0 on PMA110,
+`makerTeleWireZoomScale`) and divides every one read back, so engine, GL zoom compensation and UI
+stay TC-local; `original.zoomRatio` carries the wire value and the Hasselblad `camera.mode` hint is
+not sent (it shares the key `pro_video_log_mode` fills). The engine installs ROUTE caps whose
+`zoomRatioRange` is the reachable TC-local window `[1, 9.8 ÷ 3]` (`makerTeleRouteCaps` /
+`makerTeleLocalZoomWindow`; the caps cache keeps the camera's true range), so the ruler, TC rail
+marks (13× / 30× / 42.6×), every clamp and caps reconciliation read one span. The ceiling is the
+measured `DeviceProfile.makerLogTeleMaxWireZoom`: at wire 10.0 the logical camera handed the frame
+to the 10× periscope for 1.6–1.9 s on every entry, while 9.89 and below stayed on the tele; 9.8 is
+below the periscope's own field. The VM runs the remap-door hygiene (pending controls, glide target,
+tap focus) when Gamma/FPS/Open Gate move the TC route, though the TC-local value itself is kept.
+
+A maker refusal on that route never falls back in place: `CameraController.configureSession` reports
+`onMakerLogTeleRefused` instead of building an ordinary session on the logical camera, and the engine
+latches `makerLogRefused`, drops the cached id and reopens the ordinary TC route (a fatal failure does
+the same through bounded recovery); selecting Log (maker) again retries. The lens guard reads
+`LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID` at most every 250 ms, compares it with the logical camera's
+physical member nearest the converter lens (`CameraSelector2.pickPhysicalMember`), publishes a
+change-gated verdict through `CameraEngine.onTeleconverterLensSwitched` (false on every replacement
+controller), and the OSD shows a red `LENS SWITCHED` tag beside the focal while an accepted maker TC
+session provably records through another lens. FIELD_CHECKS A21 holds the device evidence; A22 the
+open low-light check.
 ColorOS 16 shares the named configure-stage protocol but this integration is device-tested on 17.
 See CLAUDE.md's stock Log entry for the service/presence trap and evidence limits.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.

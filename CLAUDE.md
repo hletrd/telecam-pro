@@ -268,7 +268,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
   physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
-  3×. Zoom ticks use the controller fast path (cached repeating builder, zoom keys only) — routing
+  3× — except Video + Log (maker), whose TELE stays on the logical camera held on the host tele by
+  zoom (see the Gamma bullet's TC paragraph). Zoom ticks use the controller fast path (cached repeating builder, zoom keys only) — routing
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
@@ -309,7 +310,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (2026-07-14).** With any video stabilization on (Standard AND Active), camera 0's stream carries
   an uncorrected EIS warp band (~6% of width) on one edge — in the PREVIEW and in the RECORDED
   FILE (device-verified frame extraction; displays as a rainbow-smear band at the bottom in
-  portrait playback). `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
+  portrait playback). Gamma = Log (maker) is the one sanctioned exception, with or without TC: its
+  pipeline exists only on the logical camera, inside the OEM 0x830b session; the A21 TC takes
+  (Active selected, result vstab=1) show no edge band in extracted frames, and no other stabilization
+  state on that route has been checked. `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
   **The zoom SCALE follows the ROUTE, not the mode (corrected 2026-08-04 after three
   user-visible symptoms).** `zoomRatio` is main-relative on the logical seamless camera and
   LENS-LOCAL on any standalone one. Six places decided which by asking `mode == VIDEO` — true of
@@ -750,7 +754,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      magnetic stops between floor and ceiling follow the declared maker (`teleZoomSnapsFor`):
      OPPO's 20× / 40× on the Find X9 Pro / X10 / X10 Pro Max, the generic `TELE_ZOOM_SNAPS`
      30× / 60× everywhere else (PMA110 included). The floor mark stays the OPTICAL field — the
-     app never adopts a maker's cropped start such as the X10's printed 11×.
+     app never adopts a maker's cropped start such as the X10's printed 11×. The maker TC route
+     (Video + Log (maker), 2026-10-26) reaches less: its route caps stop the TC-local zoom at the
+     measured 9.8 ÷ 3 (≈42.6× TOTAL on the 300 mm kit) — the span that stays on the host tele —
+     so the rail reads 13× / 30× / 42.6× and every clamp/ruler follows through the same caps seam.
   5. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
      focal ÷ the host tele focal it was designed for) so the arithmetic is auditable against the
      maker's printed figure — and host focals differ: the Hasselblad kits target a 70 mm periscope,
@@ -1067,13 +1074,46 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the compact profile / "<profile> RAW"); the profile is the menu's row. The owner's fifth slot —
   "Log (maker)", the phone maker's OWN log PIPELINE — is shown only on a device whose maker
   pipeline is reachable and integrated. PMA110 now offers `MAKER_LOG` on the rear automatic route,
-  without TC, at up to 30 fps and without Open Gate. It opens the logical camera with the native
+  with or without TC (TC since 2026-10-26, below), at up to 30 fps and without Open Gate. It opens
+  the logical camera with the native
   protocol below; this is a fifth mode, not another member of `VIDEO_LOG_PROFILES`. Its stable shader
   ID is 9; the retired IDs 3/6/7/8 remain vacant. Source confirmation precedes Ready. An unsupported
   or refused maker intent stays persisted but reads/records the ordinary S-Log3 fallback. Switching
   this route remaps lens-local/unified zoom in the same optics transaction. Native mode drops stills,
   bypasses the P010/RAW bridges and the programmed S-Log3 curve/EI offset; its own inverse is used
   only for monitor assists. The app's remembered standard Log Profile remains independent.
+  **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
+  work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
+  mode offers 1080p/4K at 30/60 fps and no O-Log2), and the full maker signature exists only on
+  logical 0 (standalone 4 + 0x830b = HDR 0; standalone 4 + 0x80b4 + `pro_video_log_mode` = an SDR-like
+  gamma). So with TC on, Video + Log (maker) opens the LOGICAL camera with the unchanged maker protocol
+  (`makerLogTeleRouteWanted` / `teleRouteCameraId`, used by EVERY TELE door — startup/reopen, mode,
+  lens/TC, recall) and holds it on the host tele by zoom; the afocal 180°, TC-local zoom, focal and
+  magnification readouts, OSD and EXIF are the ordinary TC route's, untouched. The zoom stays
+  TC-LOCAL in engine, GL and UI; only the controller maps it (`MakerTeleRoute`: wire = local × the tele
+  chip's unified position, 3.0 on PMA110, `makerTeleWireZoomScale`; results divided back so the GL
+  compensation compares like with like). The route's caps carry the TC-local window `[1, 9.8 ÷ 3]`
+  (`makerTeleLocalZoomWindow`; the caps cache keeps the camera's true range), so ruler, rail marks,
+  every clamp and caps reconciliation read the reachable span. **The ceiling is 9.8, not 10, by
+  measurement:** on this route (2026-10-26, dim room, chart ~1 m) the active physical camera stayed on
+  the tele at wire 8.91 / 9.61 / 9.89, but every entry to 10.0 (5 of 5) handed the frame to the 10×
+  periscope for 1.6–1.9 s before the HAL fell back — the owner's stock 3×/6×/10× check that day saw
+  the fallback, not the handover, and a distant subject in good light may keep the periscope. 9.8
+  sits below the periscope's own field (230 ÷ 23.4 ≈ 9.83), where the logical camera physically
+  cannot serve from it; 5 of 5 jumps to 9.8 then stayed on 4 (`DeviceProfile.makerLogTeleMaxWireZoom`;
+  null elsewhere withholds the TC combination). **Lens guard:** the controller reads
+  `LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID` (≤ 4 Hz, change-gated debug `MakerTele:` row) against the
+  host MEMBER resolved by enumerated focal (`CameraSelector2.pickPhysicalMember`, never a literal
+  "4"); a proven mismatch shows the red `LENS SWITCHED` OSD tag beside the focal
+  (`teleconverterLensSwitchedTagVisible`, device-seen during the 10.0 handovers). Unknown on either
+  side is never a mismatch. The Hasselblad `camera.mode` hint is not sent there (same key as
+  `pro_video_log_mode`, and stock PRO VIDEO never carries it); `original.zoomRatio` carries the wire
+  zoom, as on the non-TC maker route. **A maker refusal on the TC route never falls back IN PLACE**
+  (an ordinary session on the logical camera would sit on the HAL's lens choice, and the TC ladder's
+  0x80b4 is unmeasured there): the controller reports `onMakerLogTeleRefused`, the engine latches
+  `makerLogRefused`, drops the cached id and reopens the ordinary TC route (standalone 4 + 0x80b4) —
+  the route any other transfer, > 30 fps, Open Gate or a camera pin takes, byte-identical. Device
+  evidence: `docs/FIELD_CHECKS.md` A21; low light (a hand-down to the brighter main lens) is A22.
   **The phone-maker CURVES are GONE (owner decision 2026-10-26, superseding 2026-10-15's "the
   phone's own log, per phone").** O-Log2 / O-Log / Mi-Log were GL approximations of each maker's
   published curve over this app's own S-Log3 transport, offered per `Build.MODEL` through
@@ -1210,7 +1250,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   **Limits:** standalone main 2 / tele 4 under `0x830b` produce Log LUTs and flat pixels but report
   HDR mode 0, so full stock merge is not established there. The tested tele 4 + TC `0x80b4` +
   `pro_video_log_mode` combination reports HDR 1/two exposures but an SDR-like gamma (starts
-  0,64,128); additional TC combinations remain open.
+  0,64,128); additional TC combinations remain open. The product's TC + maker route uses neither:
+  logical 0, zoomed onto the host tele (the Gamma bullet's TC paragraph).
   Stock reports `VideoColorBT709=1`; the extension route returns 0 even if 1 is requested. The
   earlier ImageWriter bridge variants failed on generic controls too. Integration solved this by
   removing that bridge: the OEM session overrides the existing PRIVATE SurfaceTexture stream to
@@ -1364,7 +1405,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   on TELE off) — no AUTH_CODE needed. Lint WrongConstant is suppressed on configureSession with
   justification. Operator handheld A/B with the converter mounted (2026-07-28, `docs/FIELD_CHECKS.md`
   C3, closed) found no observable difference, so a distinct 300 mm OIS profile is not demonstrated;
-  result metadata reads identically either way.
+  result metadata reads identically either way. Video + Log (maker) with TC does NOT use it: it runs
+  the maker protocol (0x830b) on the logical camera instead (Gamma bullet), and C3 is why losing
+  0x80b4 there costs nothing demonstrated. Every other TC case still configures 0x80b4 on
+  standalone 4 (device-rechecked 2026-10-26 with TC + S-Log3 and TC + Off).
 - **200MP remosaic is NOT exposed to third-party Camera2 (probed 2026-07-22).** `dumpsys
   media.camera` (116k lines, full characteristics for all 7 HAL devices): every camera's
   `pixelArraySize`/`activeArraySize` IS the binned ~12.5 MP readout (4080×3064 / 4096×3072), the

@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-nine remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -21,7 +21,9 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** needs exact stock/product gamut comparison, TC research and a sustained native-Log soak,
+**A20** needs exact stock/product gamut comparison, further TC operation-mode research and a sustained native-Log soak,
+**A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light) with a thermal soak,
+**A22** needs a dim-scene Log (maker) TC session watched for a lens hand-down,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -749,6 +751,61 @@ matched highlight/clipping comparison of the product encode, long thermal soak, 
 TC operation-mode combinations. Earlier stock/probe matched-exposure gamma arrays were exactly
 equal, which establishes reported curves, not pixel identity. ColorOS 16 is source-compared,
 not verified with this integrated APK. Local evidence: `.context/stock-log-2026-10-26/product/`.
+
+### A21. Log (maker) through the teleconverter — ◐ HALF DONE 2026-10-26
+
+PMA110, `PMA110_17.0.0.106(CN01)`, Hasselblad 300 mm converter mounted, chart ~1 m away in a dim room,
+phone held upside down (dev = 180, so the muxer hint reads −180). Immutable debug
+`ea71e910d5dc-a9c4bf45` (SHA-256 `96359286…`; the TC route at the final 9.8 ceiling), built from the
+working snapshot whose code was then committed unchanged as `b46f8285` + `8b7628a3`. TELE + Video + Gamma = Log (maker), 4K 29.97:
+
+- **Route:** `dumpsys media.camera` showed camera 0 (logical), operation mode CUSTOM 33547 = 0x830b,
+  one 3840×2160 stream `0x7fa30c09` (TP10), dataspace `0x8c60000`, no stills; results
+  `com.oplus.operation.mode` 33547, `com.oplus.log.video.mode` 0, `com.oplus.gamma.info` starting
+  754 755 799 902, `HDRFeatureMode` 1 with data 2, `logicalMultiCamera.activePhysicalId` "4". The app
+  published Ready only after `makerLogSourceConfirmed`. The debug row read `MakerTele:
+  activePhysical=4 host=4` — the host member resolved by focal, not a literal.
+- **Zoom:** TC-local 1× wrote wire 3.0, the top of the reachable span wire 9.8 (`android.control.zoomRatio`
+  and `original.zoomRatio` both 9.80); the rail read 13× / 30× / 42.6×. The Video-tab Gamma row offered
+  Log (maker) under TELE with the caption "O-Log2 · 10-bit · stills off".
+- **The 10.0 ceiling was refuted on this route** (probe build `ea71e910d5dc-bef96469`, ceiling 10.0):
+  wire 8.91, 9.61 and 9.89 stayed on camera 4, but every entry to 10.0 (5 of 5) reported
+  `activePhysicalId` 5 — the 10× periscope — for 1.6–1.9 s before the HAL fell back to 4. The red
+  `LENS SWITCHED` OSD tag showed during each handover. The owner's stock check the same day (PRO VIDEO /
+  O-Log2 at 3×, 6×, 10×, moderate light) saw the fallback, not the handover. The shipped ceiling is
+  9.8, below the periscope's own field (230 ÷ 23.4 ≈ 9.83); with it, 5 of 5 jumps 3.0 → 9.8 stayed on
+  camera 4 with no lens-guard transition.
+- **Orientation:** the TC + maker preview matched TELE + S-Log3 (ordinary route, standalone 4, 0x80b4)
+  in framing and orientation; a frame extracted with the container's rotation applied shows the chart
+  upright, i.e. afocal-corrected exactly like the ordinary TC route.
+- **Files:** `VID_TELECAM_F1_1793012545462_0000000002.mp4` (TC-local 1×, wire 3.0) and
+  `VID_TELECAM_F1_1793012520567_0000000001.mp4` (wire 9.8): 2160×3840 HEVC Main10, `yuv420p10le`,
+  BT.2020 nonconstant / full range / `bt2020-10`, AAC 48 kHz stereo; 479 frames / 15.98 s and
+  477 frames / 15.92 s; every PTS delta exactly 4004 ticks at 120 kHz (30000/1001); full FFmpeg decode
+  exits zero; no lens-guard transition during either take. Frames at 5 s: Y10 177–559 (median 480,
+  382 distinct levels) and 181–624 (median 452, 444 levels), 75 % of samples using the low two bits —
+  flat O-Log2 like A20. No edge warp band (Active stabilization selected; result `vstab` 1).
+- **Unchanged routes:** TELE + S-Log3 configured camera 4, 0x80b4 (32948), P010 + JPEG + RAW; TELE +
+  Off camera 4, 0x80b4, JPEG + RAW; Photo with TC camera 4, 0x80b4 — and Video again camera 0, 0x830b.
+- **Not exercised on device:** the refusal hand-back (`onMakerLogTeleRefused` → ordinary TC route) is
+  host-tested only; no refusal occurred.
+
+**Remaining:** a real take through the converter outdoors — a distant subject in good light is exactly
+where the HAL could keep the 10× periscope near the ceiling, so watch for `LENS SWITCHED` across the
+whole span — plus a thermal soak of the TC route and a handheld stabilization judgement through the
+converter on the logical camera's OEM session. Local evidence:
+`.context/stock-log-2026-10-26/product-tc/` (SHA-256 manifest included).
+
+### A22. Log (maker) TC route in low light — ◯ OPEN 2026-10-26
+
+A logical camera may hand a dim frame to its brighter main lens at any zoom; A21 only covered a dim
+room near 1 m. **Set up:** TELE + Video + Log (maker), converter mounted, a dark scene (street at
+night, a dim room lit by one lamp). **Run:** sweep the TC zoom from 13× to 42.6× and hold at each end
+for 30 s, then record 60 s at 13×; read `adb logcat | grep MakerTele` throughout. **Pass:** either
+`activePhysical` never leaves the host member, or every departure shows the red `LENS SWITCHED` tag for
+its whole length and the recorded frames at those moments are visibly not through the converter
+(proving the guard tells the truth). A departure WITHOUT the tag fails; a frequent one is a reason to
+narrow the TC span or withhold TC + Log (maker) in low light.
 
 ## B. Held in hand — 3 min
 
