@@ -82,9 +82,9 @@ What the app offers on each, as measured (the reason a check is or is not runnab
 - **Galaxy S20 5G:** paired 2026-10-28; nothing measured yet.
 - **POCO X3 GT:** Rec. 709 only (no Main10 HEVC encoder, no RGBA1010102 config); RAW16 advertises
   50 ms on every camera, so RAW Log (≥ 24 fps) is never offered; stabilization up to Standard. Shell
-  `input` needs MIUI's "USB debugging (Security settings)" over USB and wireless alike — on since
-  2026-10-28; before that, REC and the shutter went through the debug ingress (`debug_record`,
-  `debug_shutter`).
+  `input` needs MIUI's "USB debugging (Security settings)" over USB and wireless alike, and it is
+  off, so REC and the shutter go through the debug ingress (`debug_record`, `debug_shutter`). Probe
+  with a real key: `input keyevent 0` returns cleanly even when injection is refused.
 - **TB331FC:** Rec. 709 only (no Main10); largest video 2688×1512 at 29.97 / 30, which the encoder
   refuses in portrait (A27); RAW16 33.3 ms; no video stabilization.
 - **TB336ZU** (Lenovo groups it with TB336FU / TB336ZA as Idea Tab / Tab K11 Gen 2; ZU is the 5G
