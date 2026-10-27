@@ -69,6 +69,8 @@ internal data class ExtendedVideoRasterOpenOwnership(
     val pipelineGeneration: Long,
     val requestedSize: Size?,
     val requestedSizeDirectWrites: Long,
+    val openGate: Boolean,
+    val deliveredSize: Size,
 )
 
 internal fun extendedVideoRasterCallbackOwnsCurrent(
@@ -78,11 +80,15 @@ internal fun extendedVideoRasterCallbackOwnsCurrent(
     currentPipelineGeneration: Long,
     currentRequestedSize: Size?,
     currentRequestedSizeDirectWrites: Long,
+    currentOpenGate: Boolean,
+    currentDeliveredSize: Size,
 ): Boolean = controllerMatches &&
     attempted.opticsGeneration == currentOpticsGeneration &&
     attempted.pipelineGeneration == currentPipelineGeneration &&
     attempted.requestedSize == currentRequestedSize &&
-    attempted.requestedSizeDirectWrites == currentRequestedSizeDirectWrites
+    attempted.requestedSizeDirectWrites == currentRequestedSizeDirectWrites &&
+    attempted.openGate == currentOpenGate &&
+    attempted.deliveredSize == currentDeliveredSize
 
 /** Classified only after [ConfigureAttemptGate] has made this attempt's callback/throw exactly once. */
 internal sealed interface ExtendedVideoRasterConfigureRejection {

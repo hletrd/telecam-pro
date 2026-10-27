@@ -2783,6 +2783,8 @@ class CameraEngine internal constructor(
                 pipelineGeneration = videoPipelinePublicationGeneration.get(),
                 requestedSize = requestedVideoSize,
                 requestedSizeDirectWrites = requestedVideoSizeDirectWrites,
+                openGate = openGate,
+                deliveredSize = videoSize,
             ).also { extendedVideoRasterOpenOwnership[ctrl] = it }
         }
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
@@ -4019,8 +4021,12 @@ class CameraEngine internal constructor(
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
         val makerBefore = makerLogWanted()
-        openGate = enabled
-        synchronized(this) { remapMakerRouteBoundary(makerBefore, makerLogWanted()) }
+        synchronized(this) {
+            // Share the extended-refusal ownership monitor: an older fallback packet either finishes
+            // before this aspect intent or sees the new Open Gate/delivered-size truth and stays inert.
+            openGate = enabled
+            remapMakerRouteBoundary(makerBefore, makerLogWanted())
+        }
         val sel = selection ?: return
         val targetSize = chooseVideoSize(sel)
         if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
@@ -4124,6 +4130,7 @@ class CameraEngine internal constructor(
                     rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
                 }
                 if (attempted != null && currentRouteKey == failure.routeKey &&
+                    failure.size == attempted.deliveredSize &&
                     extendedVideoRasterCallbackOwnsCurrent(
                         attempted = attempted,
                         controllerMatches = true,
@@ -4131,6 +4138,8 @@ class CameraEngine internal constructor(
                         currentPipelineGeneration = videoPipelinePublicationGeneration.get(),
                         currentRequestedSize = requestedVideoSize,
                         currentRequestedSizeDirectWrites = requestedVideoSizeDirectWrites,
+                        currentOpenGate = openGate,
+                        currentDeliveredSize = videoSize,
                     )
                 ) {
                     extendedVideoRasterRefusals.refuse(
@@ -4253,8 +4262,9 @@ class CameraEngine internal constructor(
      * A soft extended-raster configure rejection changes the DELIVERED size only. The explicit
      * [requestedVideoSize] remains untouched, the exact route/size/Gamma graph is latched out of
      * automatic choice, and the same-generation reopen selects the largest offered smaller raster.
-     * Controller, GL, optics, pipeline and direct-size ownership are all rechecked under the Engine
-     * monitor, so an old callback cannot roll back any newer operator intent.
+     * Controller, GL, optics, pipeline, Open Gate and direct-size ownership are checked against the
+     * attempted delivered stream. The same monitor covers every externally visible effect, so a newer
+     * intent either invalidates the callback up front or publishes strictly after its whole packet.
      */
     private fun handleExtendedVideoRasterRefused(
         refused: CameraController,
@@ -4264,11 +4274,12 @@ class CameraEngine internal constructor(
         callbackOpticsGeneration: Long,
         attempted: ExtendedVideoRasterOpenOwnership,
     ) {
-        val fallback = synchronized(this) {
+        synchronized(this) {
             val currentRouteKey = selection?.let {
                 rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
             }
             if (callbackOpticsGeneration != attempted.opticsGeneration ||
+                size != attempted.deliveredSize ||
                 currentRouteKey != routeKey ||
                 !extendedVideoRasterCallbackOwnsCurrent(
                     attempted = attempted,
@@ -4277,21 +4288,25 @@ class CameraEngine internal constructor(
                     currentPipelineGeneration = videoPipelinePublicationGeneration.get(),
                     currentRequestedSize = requestedVideoSize,
                     currentRequestedSizeDirectWrites = requestedVideoSizeDirectWrites,
+                    currentOpenGate = openGate,
+                    currentDeliveredSize = videoSize,
                 )
             ) return
             extendedVideoRasterRefusals.refuse(ExtendedVideoRasterRefusal(routeKey, size, transfer))
             val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
                 ?: return
-            fallbackSize(size, offered)?.also {
-                videoSize = it
-                previewStreamSize = it
-            } ?: return
+            val fallback = fallbackSize(size, offered) ?: return
+            videoSize = fallback
+            previewStreamSize = fallback
+            // These callbacks only enqueue UI/GL work. Keeping their publication inside the ownership
+            // monitor is what prevents a direct-size/pipeline/Open-Gate packet from landing between
+            // the state mutation above and its externally visible effects (Task 4 review round 1).
+            onVideoSizeChosen?.invoke(fallback, callbackOpticsGeneration)
+            emitPreviewAspect(callbackOpticsGeneration)
+            ownedGl.setCameraPreviewSize(fallback.width, fallback.height)
+            // No setTransfer/setVideoPipeline call: Gamma is deliberately identical on the reopen.
+            reopenForSession(refused)
         }
-        onVideoSizeChosen?.invoke(fallback, callbackOpticsGeneration)
-        emitPreviewAspect(callbackOpticsGeneration)
-        ownedGl.setCameraPreviewSize(fallback.width, fallback.height)
-        // No setTransfer/setVideoPipeline call: Gamma is deliberately identical on the reopen.
-        reopenForSession(refused)
     }
 
     /**

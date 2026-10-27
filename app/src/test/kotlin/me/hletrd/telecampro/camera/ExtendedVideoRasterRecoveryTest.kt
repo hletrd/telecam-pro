@@ -5,6 +5,7 @@ import android.util.Size
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import me.hletrd.telecampro.ui.ViewModelTestAccess
+import me.hletrd.telecampro.video.EncoderSelection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -13,7 +14,12 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 
 /** 8K refusal recovery changes only the delivered raster, never Gamma or the persisted request. */
 @RunWith(RobolectricTestRunner::class)
@@ -143,6 +149,71 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
+    fun `fallback effects cannot publish after a newer direct size interleaves`() {
+        val fixture = extendedFixture()
+
+        val published = interleaveFallbackEffects(fixture) {
+            fixture.engine.setVideoResolution(fullHd)
+        }
+
+        assertEquals(fullHd, published.last())
+        assertEquals(fullHd, field(fixture.engine, "videoSize"))
+        assertEquals(fullHd, fixture.engine.currentRequestedVideoSize())
+    }
+
+    @Test
+    fun `fallback effects cannot publish after a newer pipeline reprojection interleaves`() {
+        val fiveK = Size(5120, 2880)
+        val fixture = extendedFixture(intermediateSize = fiveK)
+        val legacyOnlyHevc = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "hevc",
+            mime = "video/hevc",
+            hardwareAccelerated = true,
+            main10 = true,
+            sizeRateSupport = null,
+        )
+
+        val published = interleaveFallbackEffects(fixture) {
+            fixture.engine.setVideoPipeline(listOf(legacyOnlyHevc), ColorTransfer.MAKER_LOG)
+        }
+
+        assertEquals(uhd, published.last())
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        assertEquals(ColorTransfer.MAKER_LOG, field(fixture.engine, "transfer"))
+        assertEquals(eightK, fixture.engine.currentRequestedVideoSize())
+    }
+
+    @Test
+    fun `fallback effects cannot publish after Open Gate interleaves`() {
+        val fixture = extendedFixture()
+        val openGateSize = Size(4096, 3072)
+
+        val published = interleaveFallbackEffects(fixture) {
+            fixture.engine.setOpenGate(true)
+        }
+
+        assertEquals(openGateSize, published.last())
+        assertEquals(openGateSize, field(fixture.engine, "videoSize"))
+        assertEquals(openGateSize, field(fixture.engine, "previewStreamSize"))
+    }
+
+    @Test
+    fun `an old 16 by 9 callback is inert after Open Gate has already changed intent`() {
+        val fixture = extendedFixture()
+        val openGateSize = Size(4096, 3072)
+        fixture.engine.setOpenGate(true)
+        var published = false
+        fixture.engine.onVideoSizeChosen = { _, _ -> published = true }
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertFalse(published)
+        assertEquals(openGateSize, field(fixture.engine, "videoSize"))
+        assertEquals(openGateSize, field(fixture.engine, "previewStreamSize"))
+    }
+
+    @Test
     fun `fatal recovery cannot choose the refused 8K graph again`() {
         val fixture = extendedFixture()
         val cause = IllegalStateException("device fatal")
@@ -162,14 +233,17 @@ class ExtendedVideoRasterRecoveryTest {
         assertEquals(uhd, chooseVideoSize(fixture.engine))
     }
 
-    private fun extendedFixture(): Fixture {
+    private fun extendedFixture(intermediateSize: Size? = null): Fixture {
         val engine = CameraEngine(app)
         val projected = ViewModelTestAccess.caps().copy(
-            availableVideoSizes = listOf(eightK, uhd, fullHd),
+            availableVideoSizes = listOfNotNull(eightK, intermediateSize, uhd, fullHd),
             openGateVideoSizes = listOf(Size(4096, 3072)),
         )
         setField(engine, "selection", route)
         setField(engine, "caps", projected)
+        @Suppress("UNCHECKED_CAST")
+        val capsCache = field(engine, "capsCache") as MutableMap<String, CameraCaps>
+        capsCache["0:null"] = projected
         setField(engine, "videoMode", true)
         setField(engine, "transfer", ColorTransfer.MAKER_LOG)
         setField(engine, "requestedVideoTransfer", ColorTransfer.MAKER_LOG)
@@ -182,6 +256,41 @@ class ExtendedVideoRasterRecoveryTest {
         val controller = wireController(engine)
         setField(engine, "controller", controller)
         return Fixture(engine, controller)
+    }
+
+    /** Pauses the old callback inside its first external effect while a newer intent runs. */
+    private fun interleaveFallbackEffects(
+        fixture: Fixture,
+        newerIntent: () -> Unit,
+    ): List<Size> {
+        val published = Collections.synchronizedList(mutableListOf<Size>())
+        val callbackCount = AtomicInteger(0)
+        val firstEffectStarted = CountDownLatch(1)
+        val newerEffectPublished = CountDownLatch(1)
+        val releaseFirstEffect = CountDownLatch(1)
+        fixture.engine.onVideoSizeChosen = { size, _ ->
+            if (callbackCount.incrementAndGet() == 1) {
+                firstEffectStarted.countDown()
+                assertTrue(releaseFirstEffect.await(5, TimeUnit.SECONDS))
+            } else {
+                newerEffectPublished.countDown()
+            }
+            published += size
+        }
+        val oldCallback = thread {
+            fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+        }
+        assertTrue(firstEffectStarted.await(5, TimeUnit.SECONDS))
+        val newer = thread { newerIntent() }
+        // The racy implementation publishes the newer effect while the old one is parked. The fixed
+        // implementation serializes it behind releaseFirstEffect instead; both orders reach the joins.
+        newerEffectPublished.await(2, TimeUnit.SECONDS)
+        releaseFirstEffect.countDown()
+        oldCallback.join(5_000)
+        newer.join(5_000)
+        assertFalse(oldCallback.isAlive)
+        assertFalse(newer.isAlive)
+        return published
     }
 
     private fun chooseVideoSize(engine: CameraEngine): Size =
