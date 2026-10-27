@@ -159,7 +159,7 @@ class MainRelativeZoomMultiplierRobolectricTest {
         )
         assertEquals(400f / 23f, vivo.mainRelativeZoomMultiplier, 1e-4f)
         assertEquals(vivo.teleDisplayBase, vivo.mainRelativeZoomMultiplier, 0f)
-        assertEquals("17.4×", formatDisplayZoom(1f, vivo.mainRelativeZoomMultiplier))
+        assertEquals("17×", formatDisplayZoom(1f, vivo.mainRelativeZoomMultiplier))
     }
 
     // AGG6-25: during the reopen a door started, `caps` are still the OUTGOING camera while the zoom

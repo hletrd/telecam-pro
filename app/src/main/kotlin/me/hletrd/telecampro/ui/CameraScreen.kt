@@ -78,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -3131,6 +3132,13 @@ internal fun RailChip(
                     12.sp,
                     if (presentation.selected) FontWeight.SemiBold else FontWeight.Medium,
                 ),
+                // One line, always: the chip is a fixed 48 dp box, and the TC + maker Log rail's
+                // "42.6×" broke its "×" onto a second line inside it (owner report 2026-10-28).
+                // Marks from 10× now round to whole numbers (formatZoomMark), so labels stay within
+                // four glyphs; the step-down is only a floor for a wider one, never the norm.
+                maxLines = 1,
+                softWrap = false,
+                autoSize = TextAutoSize.StepBased(minFontSize = 9.sp, maxFontSize = 12.sp, stepSize = 0.5.sp),
             )
         }
     }

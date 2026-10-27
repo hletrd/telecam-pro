@@ -213,16 +213,22 @@ internal fun afSpotSizeLabel(size: AfSpotSize): String = when (size) {
 
 /**
  * Compact zoom typography for the TELE rail's magnification marks. The rail's own idiom is
- * `0.6× / 1× / 3× / 10×` — a decimal only where it carries information — so a derived mark rounds to
- * one decimal and then drops a zero one: 13.043 → "13×", 6.087 → "6.1×".
+ * `0.6× / 1× / 3× / 10×` — a decimal only where it carries information — so a derived mark below 10×
+ * rounds to one decimal and then drops a zero one (6.087 → "6.1×", 3.0 → "3×"), and from 10× on it
+ * rounds to a whole number (13.043 → "13×", 42.6 → "43×"; owner decision 2026-10-28: a tenth is noise
+ * at two digits, and "42.6×" was too wide for the rail chip). The mark still APPLIES its exact value.
  *
- * Deliberately NOT the shared `formatZoomMultiplier`, which prints an unconditional decimal: that
- * formatter serves the LIVE zoom pill, where a digit appearing and disappearing mid-sweep would
+ * Deliberately NOT the shared `formatZoomMultiplier`, which prints an unconditional decimal below 10×:
+ * that formatter serves the LIVE zoom pill, where a digit appearing and disappearing mid-sweep would
  * shift the text width on every frame. A rail mark is a fixed value, so it can be typeset tightly.
  */
 internal fun formatZoomMark(multiplier: Float): String {
     val tenths = kotlin.math.round(multiplier * 10f).toInt()
-    return if (tenths % 10 == 0) "${tenths / 10}×" else "%.1f×".format(Locale.US, tenths / 10f)
+    return when {
+        tenths >= 100 -> "${kotlin.math.round(multiplier).toInt()}×"
+        tenths % 10 == 0 -> "${tenths / 10}×"
+        else -> "%.1f×".format(Locale.US, tenths / 10f)
+    }
 }
 
 // The ONE focal-readout typography: whole millimetres, no decimals — "300 mm", "165 mm". Every

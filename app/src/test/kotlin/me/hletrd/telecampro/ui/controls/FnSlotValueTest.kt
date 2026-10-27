@@ -132,7 +132,7 @@ class FnSlotValueTest {
     fun `zoom reads main-relative in tele and lens-local on the front camera`() {
         // TELE local 1.0 = the converter's 13x main-relative display base.
         val tele = CameraUiState(teleconverterMode = true)
-        assertEquals("13.0×", fnSlotValue(FnSlot.ZOOM, tele))
+        assertEquals("13×", fnSlotValue(FnSlot.ZOOM, tele))
         // FRONT has no place on the rear main-relative scale: honest lens-local ratio.
         val front = CameraUiState(
             facing = CameraFacing.FRONT,

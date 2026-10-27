@@ -22,11 +22,20 @@ class ZoomMarkFormatTest {
     }
 
     @Test
-    fun `a mark keeps a decimal that does`() {
-        // A generic 2x clip-on's native field, and a lens whose digital ceiling stops mid-range.
+    fun `a mark below 10x keeps a decimal that carries information`() {
+        // A generic 2x clip-on's native field.
         assertEquals("6.1×", formatZoomMark(6.0869565f))
-        assertEquals("26.1×", formatZoomMark(26.086956f))
         assertEquals("1.5×", formatZoomMark(1.5f))
+        assertEquals("9.9×", formatZoomMark(9.94f))
+    }
+
+    @Test
+    fun `a mark from 10x rounds to a whole number`() {
+        // A tenth is noise at two digits, and the TC + maker Log ceiling's "42.6×" wrapped inside the
+        // 48 dp rail chip (owner decision 2026-10-28). 9.96 prints at the whole-number form too.
+        assertEquals("26×", formatZoomMark(26.086956f))
+        assertEquals("43×", formatZoomMark(42.6f))
+        assertEquals("10×", formatZoomMark(9.96f))
     }
 
     @Test

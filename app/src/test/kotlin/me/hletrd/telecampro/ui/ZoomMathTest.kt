@@ -78,13 +78,18 @@ class ZoomMathTest {
         assertEquals(2f, modeFlip.controls.zoomRatio, 0f)
     }
 
-    @Test fun `shared zoom formatter uses photographic glyph and stable decimal`() {
+    @Test fun `shared zoom formatter keeps a decimal below 10x and rounds from 10x`() {
         val previous = Locale.getDefault()
         try {
             Locale.setDefault(Locale.GERMANY)
             assertEquals("1.5×", formatZoomMultiplier(1.5f))
-            assertEquals("10.0×", formatDisplayZoom(1f, rearMultiplier(LensChoice.TELE10X.targetEquivMm)))
-            assertEquals("13.0×", formatDisplayZoom(1f, rearMultiplier(null, teleconverter = true)))
+            assertEquals("3.2×", formatZoomMultiplier(3.2f))
+            assertEquals("9.9×", formatZoomMultiplier(9.94f))
+            // Keyed on the PRINTED value: 9.96 would print "10.0", so it takes the whole-number form.
+            assertEquals("10×", formatZoomMultiplier(9.96f))
+            assertEquals("43×", formatZoomMultiplier(42.6f))
+            assertEquals("10×", formatDisplayZoom(1f, rearMultiplier(LensChoice.TELE10X.targetEquivMm)))
+            assertEquals("13×", formatDisplayZoom(1f, rearMultiplier(null, teleconverter = true)))
         } finally {
             Locale.setDefault(previous)
         }
@@ -683,7 +688,7 @@ class ZoomMathTest {
             mainEquivMm = oneXReferenceMm(PhoneModel.VIVO_X300_ULTRA, 35f),
         )
         val marks = teleZoomMarks(1f, 10f, vivoBase, snaps = TELE_ZOOM_SNAPS)
-        assertEquals(listOf("17.4×", "30×", "60×"), marks.map { formatZoomMark(it) })
+        assertEquals(listOf("17×", "30×", "60×"), marks.map { formatZoomMark(it) })
         val bounds = effectiveZoomBounds(1f, 10f, teleconverter = true, teleDisplayBase = vivoBase)!!
         assertEquals(TELE_MAX_DISPLAY_ZOOM / vivoBase, bounds.upper, 1e-4f)
         val snapped = normalizeZoomRequest(
@@ -743,7 +748,7 @@ class ZoomMathTest {
             )
             assertEquals(1f, logical, 0f)
             assertEquals("3.0×", formatDisplayZoom(3f, logical))
-            assertEquals("10.0×", formatDisplayZoom(10f, logical))
+            assertEquals("10×", formatDisplayZoom(10f, logical))
         }
     }
 
@@ -763,7 +768,7 @@ class ZoomMathTest {
         assertEquals(69.4f / 23f, rearMultiplier(69.4f, measuredMain = 23.4f), 0f)
         assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(69.4f, measuredMain = 23.4f)))
         assertEquals(10f, rearMultiplier(230f, measuredMain = 23.4f), 0f)
-        assertEquals("10.0×", formatDisplayZoom(1f, rearMultiplier(230f, measuredMain = 23.4f)))
+        assertEquals("10×", formatDisplayZoom(1f, rearMultiplier(230f, measuredMain = 23.4f)))
         // Pre-inventory (no measured main) falls back to the nominal 23 mm, and a missing caps
         // equivalent reads the main itself rather than dividing by zero or NaN.
         assertEquals(26f / 23f, rearMultiplier(26f, measuredMain = null), 1e-6f)

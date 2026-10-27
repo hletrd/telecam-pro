@@ -833,7 +833,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      app never adopts a maker's cropped start such as the X10's printed 11×. The maker TC route
      (Video + Log (maker), 2026-10-26) reaches less: its route caps stop the TC-local zoom at the
      measured 9.8 ÷ 3 (≈42.6× TOTAL on the 300 mm kit) — the span that stays on the host tele —
-     so the rail reads 13× / 30× / 42.6× and every clamp/ruler follows through the same caps seam.
+     so the rail reads 13× / 30× / 43× (zoom labels from 10× round to whole numbers, owner decision
+     2026-10-28; the mark still applies 42.6×) and every clamp/ruler follows through the same caps seam.
   5. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
      focal ÷ the host tele focal it was designed for) so the arithmetic is auditable against the
      maker's printed figure — and host focals differ: the Hasselblad kits target a 70 mm periscope,

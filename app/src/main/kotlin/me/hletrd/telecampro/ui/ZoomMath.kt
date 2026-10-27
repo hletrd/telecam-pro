@@ -168,7 +168,15 @@ internal fun zoomRulerScale(
 }
 
 /** Camera-style zoom typography shared by every read-only zoom surface. */
-internal fun formatZoomMultiplier(zoom: Float): String = "%.1f×".format(Locale.US, zoom)
+internal fun formatZoomMultiplier(zoom: Float): String =
+    // One decimal below 10× ("3.2×"), a whole number from 10× on ("43×", owner decision 2026-10-28):
+    // a tenth carries information on one digit and is noise on two. The switch keys on the value as
+    // it would PRINT, so 9.96 reads "10×", never "10.0×".
+    if (kotlin.math.round(zoom * 10f) >= 100f) {
+        "${kotlin.math.round(zoom).toInt()}×"
+    } else {
+        "%.1f×".format(Locale.US, zoom)
+    }
 
 /** Main-relative display value for a lens-local zoom request, on [zoomDisplayMultiplier]'s scale. */
 internal fun formatDisplayZoom(localZoomRatio: Float, displayMultiplier: Float): String =
