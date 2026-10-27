@@ -310,6 +310,11 @@
     <string name="section_format">Format</string>
     <string name="section_framing">Framing</string>
     <string name="section_release">Release</string>
+    <string name="section_exposure">Exposure</string>
+    <string name="section_metering">Metering</string>
+    <string name="section_picture_profile">Picture Profile</string>
+    <string name="section_metadata">Metadata</string>
+    <string name="section_audio_recording">Recording</string>
     <string name="section_white_balance">White Balance</string>
     <string name="section_autofocus">Autofocus</string>
     <string name="section_mf_assist">MF Assist</string>

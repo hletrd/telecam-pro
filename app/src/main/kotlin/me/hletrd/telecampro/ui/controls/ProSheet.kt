@@ -1000,6 +1000,25 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::aspectRatioLabel,
         onSelect = actions::onAspectRatio,
     )
+    // Still quality is an OUTPUT setting, so it closes the Format group (owner request 2026-10-28,
+    // "group the menu"); it used to follow the zoom slider and read as part of Framing.
+    LabeledSlider(
+        // "Still", not "JPEG": the slider governs BOTH still containers (StillCapturePipeline hands
+        // the same value to HeifCapture), and HEIF is a default output — the old name claimed the
+        // control skipped a HEIF-only shooter's files (UI review #8).
+        label = stringResource(R.string.label_still_quality),
+        hint = stringResource(R.string.hint_still_quality),
+        valueLabel = state.controls.jpegQuality.toString(),
+        value = state.controls.jpegQuality.toFloat()
+            .coerceIn(STILL_QUALITY_MIN.toFloat(), STILL_QUALITY_MAX.toFloat()),
+        // Snaps to the 5-step grid (normalizeStillQuality): only changed steps reach the VM.
+        onValueChange = { raw ->
+            val snapped = normalizeStillQuality(raw.roundToInt())
+            if (snapped != state.controls.jpegQuality) actions.onJpegQuality(snapped)
+        },
+        valueRange = STILL_QUALITY_MIN.toFloat()..STILL_QUALITY_MAX.toFloat(),
+        keyboardStep = STILL_QUALITY_STEP.toFloat(),
+    )
     caps?.zoomRatioRange?.let { range ->
         // The SAME main-relative display scale as the ZOOM chip, the HUD pill and the Quick Zoom
         // ruler (AGG5-12): TELE shows the converter-equivalent scale (13–60× on the kit optic), a
@@ -1026,23 +1045,6 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             )
         }
     }
-    LabeledSlider(
-        // "Still", not "JPEG": the slider governs BOTH still containers (StillCapturePipeline hands
-        // the same value to HeifCapture), and HEIF is a default output — the old name claimed the
-        // control skipped a HEIF-only shooter's files (UI review #8).
-        label = stringResource(R.string.label_still_quality),
-        hint = stringResource(R.string.hint_still_quality),
-        valueLabel = state.controls.jpegQuality.toString(),
-        value = state.controls.jpegQuality.toFloat()
-            .coerceIn(STILL_QUALITY_MIN.toFloat(), STILL_QUALITY_MAX.toFloat()),
-        // Snaps to the 5-step grid (normalizeStillQuality): only changed steps reach the VM.
-        onValueChange = { raw ->
-            val snapped = normalizeStillQuality(raw.roundToInt())
-            if (snapped != state.controls.jpegQuality) actions.onJpegQuality(snapped)
-        },
-        valueRange = STILL_QUALITY_MIN.toFloat()..STILL_QUALITY_MAX.toFloat(),
-        keyboardStep = STILL_QUALITY_STEP.toFloat(),
-    )
     // "Release", the Sony group name for drive mode + interval + self-timer. A bare "Drive" header
     // would only echo the row directly under it, but WITHOUT a header here the three release rows
     // sat under "Format" and read as output-format settings.
@@ -1094,6 +1096,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // already memoize the identical projection).
     val availability = remember(caps, controls) { controlAvailability(caps?.controlCapabilities(), controls) }
     TabTitle(stringResource(R.string.settings_tab_exposure))
+    SectionHeader(stringResource(R.string.section_exposure))
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
@@ -1104,22 +1107,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         labelFor = { exposureModeLetter(it) },
         onSelect = actions::onExposureMode,
         enabled = availability.exposureModes.size > 1,
-    )
-    ToggleRow(
-        label = stringResource(R.string.label_ae_lock),
-        hint = stringResource(R.string.hint_ae_lock),
-        checked = controls.aeLock,
-        onCheckedChange = actions::onToggleAeLock,
-        enabled = availability.aeLockEnabled,
-    )
-    SegmentedSelector(
-        label = stringResource(R.string.label_flicker),
-        hint = stringResource(R.string.hint_flicker),
-        options = availability.antibandingModes,
-        selected = controls.antibanding,
-        labelFor = { labelContext.localizedLabel(it) },
-        onSelect = actions::onAntibanding,
-        enabled = availability.antibandingModes.size > 1,
     )
     SegmentedSelector(
         label = stringResource(R.string.label_shutter),
@@ -1162,6 +1149,9 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
 
+    // Metering and what holds or steadies it (owner request 2026-10-28, "group the menu"): the
+    // exposure group above is the value controls, this one decides what they measure.
+    SectionHeader(stringResource(R.string.section_metering))
     SegmentedSelector(
         label = stringResource(R.string.label_metering),
         hint = stringResource(R.string.hint_metering),
@@ -1171,9 +1161,23 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onMeteringMode,
         enabled = availability.meteringModes.size > 1,
     )
+    ToggleRow(
+        label = stringResource(R.string.label_ae_lock),
+        hint = stringResource(R.string.hint_ae_lock),
+        checked = controls.aeLock,
+        onCheckedChange = actions::onToggleAeLock,
+        enabled = availability.aeLockEnabled,
+    )
+    SegmentedSelector(
+        label = stringResource(R.string.label_flicker),
+        hint = stringResource(R.string.hint_flicker),
+        options = availability.antibandingModes,
+        selected = controls.antibanding,
+        labelFor = { labelContext.localizedLabel(it) },
+        onSelect = actions::onAntibanding,
+        enabled = availability.antibandingModes.size > 1,
+    )
 
-    // The one eyebrow this longest-scrolling tab gets (UI review #15): the exposure block above is
-    // a single train of thought from Mode, but WB opens a different subject mid-scroll.
     SectionHeader(stringResource(R.string.section_white_balance))
     SegmentedSelector(
         label = stringResource(R.string.label_wb),
@@ -1617,6 +1621,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
+    // The picture profile group (owner request 2026-10-28, "group the menu"): the gamma mode, its log
+    // profile and the EI offset, apart from the container/size/rate rows above.
+    SectionHeader(stringResource(R.string.section_picture_profile))
     // Gamma = Rec. 709 / HLG / Log / RAW Log / OEM Log (owner decision 2026-10-26;
     // camera/CameraState.kt VideoColorMode), then the Profile row for the two log modes. The label stays "Gamma": it
     // matches the Fn tile, dial chip, My Menu entry and "Gamma Disp. Assist" (UI review #2 — the row
@@ -1715,6 +1722,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             )
         }
     }
+    SectionHeader(stringResource(R.string.section_metadata))
     // Opt-in Gyroflow sidecar (video/GyroLogRecorder.kt). The caption names WHERE the file lands,
     // because it is not beside the clip: MediaStore refuses non-media types under DCIM.
     Captioned(stringResource(R.string.caption_gyro_log)) {
@@ -1740,6 +1748,7 @@ private fun AudioTab(state: CameraUiState, actions: CameraActions) {
             valueLabel = stringResource(R.string.settings_locked),
         )
     }
+    SectionHeader(stringResource(R.string.section_audio_recording))
     ToggleRow(
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
@@ -1749,43 +1758,6 @@ private fun AudioTab(state: CameraUiState, actions: CameraActions) {
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
     )
-    // Channel cap (AudioEncoding.kt AudioChannelMode): the armed meter shows the same count.
-    val channelLabels = me.hletrd.telecampro.video.AudioChannelMode.entries.associateWith {
-        stringResource(audioChannelLabel(it))
-    }
-    SegmentedSelector(
-        label = stringResource(R.string.label_audio_channels),
-        hint = stringResource(R.string.hint_audio_channels),
-        options = me.hletrd.telecampro.video.AudioChannelMode.entries,
-        selected = state.audioChannelMode,
-        labelFor = { channelLabels.getValue(it) },
-        onSelect = actions::onAudioChannelMode,
-        enabled = state.recordAudio && recordingMutable,
-    )
-    // Soundtrack format (video/AudioEncoding.kt): only what this device's encoders can record, so a
-    // board without an encoder (or its licence) lists fewer — or, with no AAC encoder, no rows.
-    val audioOptions = state.audioEncoderOptions
-    if (audioOptions.isNotEmpty()) {
-        Captioned(stringResource(audioCodecCaption(state.audioCodec))) {
-            SegmentedSelector(
-                label = stringResource(R.string.label_codec),
-                options = me.hletrd.telecampro.video.AudioCodec.entries.filter { it in audioOptions },
-                selected = state.audioCodec,
-                labelFor = ::audioCodecLabel,
-                onSelect = actions::onAudioCodec,
-                enabled = state.recordAudio && recordingMutable,
-            )
-        }
-        SegmentedSelector(
-            label = stringResource(R.string.label_bitrate),
-            hint = stringResource(R.string.hint_audio_bitrate),
-            options = audioOptions[state.audioCodec]?.bitratesKbps.orEmpty(),
-            selected = state.audioBitrateKbps,
-            labelFor = { "$it kbps" },
-            onSelect = actions::onAudioBitrate,
-            enabled = state.recordAudio && recordingMutable,
-        )
-    }
     SegmentedSelector(
         label = stringResource(R.string.label_input),
         hint = stringResource(R.string.hint_input),
@@ -1825,6 +1797,46 @@ private fun AudioTab(state: CameraUiState, actions: CameraActions) {
         valueRange = 0f..2f,
         enabled = state.recordAudio && recordingMutable,
     )
+    // The soundtrack's FORMAT after what is recorded and how (owner request 2026-10-28, "group the
+    // menu"): channels, codec and bitrate, apart from the input, route, direction and gain above.
+    SectionHeader(stringResource(R.string.section_format))
+    // Channel cap (AudioEncoding.kt AudioChannelMode): the armed meter shows the same count.
+    val channelLabels = me.hletrd.telecampro.video.AudioChannelMode.entries.associateWith {
+        stringResource(audioChannelLabel(it))
+    }
+    SegmentedSelector(
+        label = stringResource(R.string.label_audio_channels),
+        hint = stringResource(R.string.hint_audio_channels),
+        options = me.hletrd.telecampro.video.AudioChannelMode.entries,
+        selected = state.audioChannelMode,
+        labelFor = { channelLabels.getValue(it) },
+        onSelect = actions::onAudioChannelMode,
+        enabled = state.recordAudio && recordingMutable,
+    )
+    // Soundtrack format (video/AudioEncoding.kt): only what this device's encoders can record, so a
+    // board without an encoder (or its licence) lists fewer — or, with no AAC encoder, no rows.
+    val audioOptions = state.audioEncoderOptions
+    if (audioOptions.isNotEmpty()) {
+        Captioned(stringResource(audioCodecCaption(state.audioCodec))) {
+            SegmentedSelector(
+                label = stringResource(R.string.label_codec),
+                options = me.hletrd.telecampro.video.AudioCodec.entries.filter { it in audioOptions },
+                selected = state.audioCodec,
+                labelFor = ::audioCodecLabel,
+                onSelect = actions::onAudioCodec,
+                enabled = state.recordAudio && recordingMutable,
+            )
+        }
+        SegmentedSelector(
+            label = stringResource(R.string.label_bitrate),
+            hint = stringResource(R.string.hint_audio_bitrate),
+            options = audioOptions[state.audioCodec]?.bitratesKbps.orEmpty(),
+            selected = state.audioBitrateKbps,
+            labelFor = { "$it kbps" },
+            onSelect = actions::onAudioBitrate,
+            enabled = state.recordAudio && recordingMutable,
+        )
+    }
 }
 
 @Composable
@@ -1972,63 +1984,6 @@ private fun AdvancedTab(
 ) {
     val labelContext = LocalContext.current
     TabTitle(stringResource(R.string.settings_tab_setup))
-    SectionHeader(stringResource(R.string.section_app))
-    LabelValueRow(
-        label = stringResource(R.string.action_privacy_policy),
-        valueLabel = stringResource(R.string.action_view),
-        onClick = onOpenPrivacy,
-    )
-    ExternalNavigationRecovery(
-        failure = externalFailure,
-        onOpenPrivacyInApp = onOpenPrivacyInApp,
-    )
-    // Own section eyebrow (UI review #43): a dim TextSecondary block at the uniform gap directly
-    // under the interactive Privacy Policy row wore the exact shape of that row's caption while
-    // being unrelated to it.
-    SectionHeader(stringResource(R.string.section_legal))
-    // Trademark attribution for the named log profiles offered in the Video tab — a legal
-    // footnote, deliberately non-interactive and dim. bodySmall, NOT labelSmall: these two are the
-    // only multi-sentence PROSE in the sheet, and labelSmall is a label treatment (Medium weight)
-    // that renders three sentences as a wall of emphasized micro-text.
-    // ARRI marks are registered to the Cine Technik entity, not an "ARRI AG" (cycle-6 DS-8).
-    Text(
-        stringResource(R.string.legal_trademark_log),
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.bodySmall,
-    )
-    // The HARDWARE marks, which are the most VISIBLE brand use in this app: the phone and converter
-    // pickers list them by name so an owner can recognise their own kit. Naming a product to say
-    // "this works with that" is nominative use, but it still needs the owners stated — and the log
-    // footnote above already set that precedent for Sony/ARRI while these went unattributed.
-    Text(
-        stringResource(R.string.legal_trademark_hardware),
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.bodySmall,
-    )
-    // ONE affiliation disclaimer for every mark above, not one per paragraph. Adding the hardware
-    // marks left the section saying "not affiliated" twice in four lines — the same assurance
-    // stacked, which reads as boilerplate and is exactly what a Sony menu would not do.
-    Text(
-        stringResource(R.string.legal_no_affiliation),
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.bodySmall,
-    )
-    // Bundled-typeface attribution (SIL OFL requires the license to travel with the font; the
-    // full text ships in the repo at docs/licenses/inter-OFL.txt).
-    Text(
-        stringResource(R.string.legal_typeface),
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.bodySmall,
-    )
-    // The app's OWN licence, which was missing entirely: the project called itself open source in
-    // its README badge and store copy while granting no licence at all, which legally means all
-    // rights reserved. Apache-2.0 as of 2026-08-03; §6 of that licence grants no trademark rights,
-    // which is why the attributions above are separate from it.
-    Text(
-        stringResource(R.string.legal_app_license),
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.bodySmall,
-    )
     SectionHeader(stringResource(R.string.section_startup))
     ToggleRow(
         label = stringResource(R.string.label_remember_settings),
@@ -2099,6 +2054,65 @@ private fun AdvancedTab(
             onClick = { actions.onCameraOverride(null) },
         )
     }
+    // App information and the legal notices close the tab (owner request 2026-10-28, "group the
+    // menu"): the settings an operator changes come first, the reference text last.
+    SectionHeader(stringResource(R.string.section_app))
+    LabelValueRow(
+        label = stringResource(R.string.action_privacy_policy),
+        valueLabel = stringResource(R.string.action_view),
+        onClick = onOpenPrivacy,
+    )
+    ExternalNavigationRecovery(
+        failure = externalFailure,
+        onOpenPrivacyInApp = onOpenPrivacyInApp,
+    )
+    // Own section eyebrow (UI review #43): a dim TextSecondary block at the uniform gap directly
+    // under the interactive Privacy Policy row wore the exact shape of that row's caption while
+    // being unrelated to it.
+    SectionHeader(stringResource(R.string.section_legal))
+    // Trademark attribution for the named log profiles offered in the Video tab — a legal
+    // footnote, deliberately non-interactive and dim. bodySmall, NOT labelSmall: these two are the
+    // only multi-sentence PROSE in the sheet, and labelSmall is a label treatment (Medium weight)
+    // that renders three sentences as a wall of emphasized micro-text.
+    // ARRI marks are registered to the Cine Technik entity, not an "ARRI AG" (cycle-6 DS-8).
+    Text(
+        stringResource(R.string.legal_trademark_log),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // The HARDWARE marks, which are the most VISIBLE brand use in this app: the phone and converter
+    // pickers list them by name so an owner can recognise their own kit. Naming a product to say
+    // "this works with that" is nominative use, but it still needs the owners stated — and the log
+    // footnote above already set that precedent for Sony/ARRI while these went unattributed.
+    Text(
+        stringResource(R.string.legal_trademark_hardware),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // ONE affiliation disclaimer for every mark above, not one per paragraph. Adding the hardware
+    // marks left the section saying "not affiliated" twice in four lines — the same assurance
+    // stacked, which reads as boilerplate and is exactly what a Sony menu would not do.
+    Text(
+        stringResource(R.string.legal_no_affiliation),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // Bundled-typeface attribution (SIL OFL requires the license to travel with the font; the
+    // full text ships in the repo at docs/licenses/inter-OFL.txt).
+    Text(
+        stringResource(R.string.legal_typeface),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // The app's OWN licence, which was missing entirely: the project called itself open source in
+    // its README badge and store copy while granting no licence at all, which legally means all
+    // rights reserved. Apache-2.0 as of 2026-08-03; §6 of that licence grants no trademark rights,
+    // which is why the attributions above are separate from it.
+    Text(
+        stringResource(R.string.legal_app_license),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable

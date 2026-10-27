@@ -301,6 +301,11 @@
     <string name="section_format">포맷</string>
     <string name="section_framing">프레이밍</string>
     <string name="section_release">릴리스</string>
+    <string name="section_exposure">노출</string>
+    <string name="section_metering">측광</string>
+    <string name="section_picture_profile">픽처 프로파일</string>
+    <string name="section_metadata">메타데이터</string>
+    <string name="section_audio_recording">녹음</string>
     <string name="section_white_balance">화이트 밸런스</string>
     <string name="section_autofocus">자동 초점</string>
     <string name="section_mf_assist">수동 초점 보조</string>

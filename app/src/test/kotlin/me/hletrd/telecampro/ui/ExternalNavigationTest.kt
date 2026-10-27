@@ -18,6 +18,7 @@ import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.requestFocus
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
@@ -204,7 +205,9 @@ class ExternalNavigationTest {
         policy.assertIsFocused()
         compose.onNodeWithText(context.getString(R.string.external_privacy_unavailable))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Assertive))
-        compose.onNodeWithText(context.getString(R.string.action_view_in_app)).performClick()
+        // App and Legal close the Setup tab (2026-10-28 grouping), so the recovery row can sit below
+        // the fold: scroll it into view as a finger would before tapping it.
+        compose.onNodeWithText(context.getString(R.string.action_view_in_app)).performScrollTo().performClick()
         compose.onNode(isDialog()).assertExists()
         compose.onNodeWithText(context.getString(R.string.privacy_fallback_body)).assertExists()
     }
