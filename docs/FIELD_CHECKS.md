@@ -1213,7 +1213,11 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   admission waited for the sweep, frames 0–6 of the clip carried the Daylight step (R/G 1.25 /
   B/G 0.65 against the matrix's 1.38 / 0.55); with the wait (`awaitWbSweepSettled`) every one of
   140 frames read 1.376–1.383 / 0.554–0.566, REC admitted 0.39 s after `abandoned for a take`. The
-  production photo sweep on the final build: `sweep 0|SDR|5 presets=[2, 5, 6]` … `swept`. The POCO run is
+  production photo sweep on the final build: `sweep 0|SDR|5 presets=[2, 5, 6]` … `swept`. PMA110,
+  same code (logical photo 1×, AUTO and 3200 K, Standard and OFF): every pseudo-ZSL decision read
+  the frame's AWB mode and matched the still's (`awb=1/1`, `0/0`), so the new term does not block
+  ZSL there; those presses refused only on the dim exposure mismatch
+  (`.context/pma110-zsl-awb-2026-10-27/`). The POCO run is
   pending (its wireless ADB refused connections all session); PMA110 never sweeps (presets ignored),
   and whether its AUTO transform moves with the illuminant still needs AUTO under a second light.
   Evidence: `.context/wb-kelvin-ab-2026-10-27/`.
