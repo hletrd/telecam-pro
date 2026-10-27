@@ -2719,6 +2719,13 @@ class CameraViewModel private constructor(
         onToggleRecording()
     }
 
+    /** Debug Photo shutter for the same harnesses: the shutter's own [onCapturePhoto], Photo only. */
+    internal fun debugPressShutter() {
+        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
+        if (_state.value.mode != CaptureMode.PHOTO) return
+        onCapturePhoto()
+    }
+
     /** Read-only on-device lifecycle evidence; production state still flows through [state]. */
     internal fun previewReadinessDiagnostic(): CameraEngine.PreviewReadinessDiagnostic =
         engine.previewReadinessDiagnostic()

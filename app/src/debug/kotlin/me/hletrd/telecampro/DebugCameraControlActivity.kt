@@ -17,7 +17,8 @@ import android.os.Bundle
  * `--ez debug_record true|false` starts or stops a Video take: soak harnesses need REC on devices
  * whose shell cannot inject input (MIUI refuses `input` without its "USB debugging (Security
  * settings)" switch, measured on the POCO X3 GT 2026-10-27), and a wanted STATE rather than a toggle
- * keeps a repeated or late command from inverting the take.
+ * keeps a repeated or late command from inverting the take. `--ez debug_shutter true` presses the
+ * Photo shutter once, for the same devices' still profiling.
  */
 class DebugCameraControlActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,9 +44,16 @@ internal fun debugCameraControlCommand(intent: Intent?): DebugCameraControlComma
         ?.takeIf { it.isFinite() && it > 0f }
     val record = intent.takeIf { it.hasExtra(EXTRA_DEBUG_RECORD) }
         ?.getBooleanExtra(EXTRA_DEBUG_RECORD, false)
-    return DebugCameraControlCommand(zslSpike = zslSpike, zoomRatio = zoom, record = record)
+    val shutterPresses = if (intent.getBooleanExtra(EXTRA_DEBUG_SHUTTER, false)) 1 else 0
+    return DebugCameraControlCommand(
+        zslSpike = zslSpike,
+        zoomRatio = zoom,
+        record = record,
+        shutterPresses = shutterPresses,
+    )
 }
 
 internal const val EXTRA_ZSL_SPIKE = "zsl_spike"
 internal const val EXTRA_DEBUG_ZOOM = "debug_zoom"
 internal const val EXTRA_DEBUG_RECORD = "debug_record"
+internal const val EXTRA_DEBUG_SHUTTER = "debug_shutter"

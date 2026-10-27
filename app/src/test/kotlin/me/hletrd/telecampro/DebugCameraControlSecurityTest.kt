@@ -66,6 +66,7 @@ class DebugCameraControlSecurityTest {
             .putExtra(EXTRA_ZSL_SPIKE, true)
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
             .putExtra(EXTRA_DEBUG_RECORD, true)
+            .putExtra(EXTRA_DEBUG_SHUTTER, true)
         val controller = Robolectric.buildActivity(DebugCameraControlActivity::class.java, intent)
             .create()
         try {
@@ -74,8 +75,9 @@ class DebugCameraControlSecurityTest {
             assertFalse(started.hasExtra(EXTRA_ZSL_SPIKE))
             assertFalse(started.hasExtra(EXTRA_DEBUG_ZOOM))
             assertFalse(started.hasExtra(EXTRA_DEBUG_RECORD))
+            assertFalse(started.hasExtra(EXTRA_DEBUG_SHUTTER))
             assertEquals(
-                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f, record = true),
+                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f, record = true, shutterPresses = 1),
                 DebugCameraControlMailbox.consume(),
             )
         } finally {
@@ -92,6 +94,7 @@ class DebugCameraControlSecurityTest {
             .putExtra(EXTRA_ZSL_SPIKE, true)
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
             .putExtra(EXTRA_DEBUG_RECORD, true)
+            .putExtra(EXTRA_DEBUG_SHUTTER, true)
         val controller = Robolectric.buildActivity(MainActivity::class.java, intent).create()
         try {
             val vm = ViewModelProvider(controller.get())[me.hletrd.telecampro.ui.CameraViewModel::class.java]
@@ -123,5 +126,12 @@ class DebugCameraControlSecurityTest {
             DebugCameraControlMailbox.consume(),
         )
         assertFalse(DebugCameraControlMailbox.publish(DebugCameraControlCommand()))
+    }
+
+    @Test fun `shutter presses merged before consumption all fire`() {
+        DebugCameraControlMailbox.consume()
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(shutterPresses = 1)))
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(shutterPresses = 1)))
+        assertEquals(2, DebugCameraControlMailbox.consume()?.shutterPresses)
     }
 }

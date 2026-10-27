@@ -331,6 +331,7 @@ class MainActivity : ComponentActivity() {
         command.zslSpike?.let(vm::debugSetZslSpike)
         command.zoomRatio?.let(vm::debugApplyZoom)
         command.record?.let(vm::debugSetRecording)
+        repeat(command.shutterPresses) { vm.debugPressShutter() }
     }
 
     override fun onNewIntent(intent: Intent) {

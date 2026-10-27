@@ -8,14 +8,17 @@ internal data class DebugCameraControlCommand(
     val zoomRatio: Float? = null,
     /** Wanted REC state: true starts a Video take, false stops it; null leaves REC alone. */
     val record: Boolean? = null,
+    /** Photo shutter presses still to deliver. A COUNT, so presses merged before consumption all fire. */
+    val shutterPresses: Int = 0,
 ) {
-    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null
+    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0
 
     fun mergedWith(newer: DebugCameraControlCommand): DebugCameraControlCommand =
         DebugCameraControlCommand(
             zslSpike = newer.zslSpike ?: zslSpike,
             zoomRatio = newer.zoomRatio ?: zoomRatio,
             record = newer.record ?: record,
+            shutterPresses = shutterPresses + newer.shutterPresses,
         )
 }
 
