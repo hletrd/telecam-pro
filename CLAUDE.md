@@ -642,7 +642,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   sRGB codes (one patch 67 off), Kelvin-tagged from used presets 2.9–4.4, swept 1.7–3.3 (light drift
   over the batch 0.9–3.7). An offline "HAL look × calibration" model got only halfway and was not
   shipped. PMA110 ignores presets, so it never sweeps; it gains the per-white-point AUTO transforms
-  as it meets different light. **Two PMA110 STILL traps, both invisible in the preview:** (1) a
+  as it meets different light. **No per-device colour matrices in the repo (owner decision
+  2026-10-27): units of one model vary, so every transform is learned on the unit itself at runtime
+  and lives only in that install's `wb_route_reference` prefs. Do not ship a table of measured
+  transforms keyed by model.** The Flip6 / PMA110 matrices in `WhiteBalanceTest` are host-test
+  fixtures only. **Two PMA110 STILL traps, both invisible in the preview:** (1) a
   matrix still at the template's stabilization OFF inside a stabilized session renders some other
   WB (orange came out blue), so EVERY still on every profile rides the session's mode and is framed
   like the preview (the "Stills are framed like the PREVIEW" bullet; a 4 s matrix still in Active
