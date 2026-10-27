@@ -626,9 +626,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   need its transform (`wbSweepWanted`, `WbWire.Sweep`): each preset rides the repeating request
   until its second matching result (1.5 s cap per step), then the matrix — 1.9 s of preset-coloured
   finder on the Flip6, once per route per install (`isSwept` is persisted), NEVER while a take is
-  starting or rolling (`wbLensRebuildHeld` = recorder published OR admission in flight; a REC press
-  mid-sweep abandons it and swaps once onto the matrix inside admission, before the encoder's first
-  frame) and never on a still (a still mid-sweep takes the blended matrix; pseudo-ZSL refuses during a sweep
+  starting or rolling (`wbLensRebuildHeld` = recorder published OR admission in flight: a REC press
+  mid-sweep abandons it, swaps once onto the matrix, and REC admission waits — `awaitWbSweepSettled`,
+  ≤ 800 ms, before any allocation — until the camera reports a non-sweep frame. Device-measured on
+  the Flip6: without the wait 7 frames (0.23 s) of the Daylight step opened the clip; with it none,
+  REC admitted 0.39 s after the abandon. The route stays unswept and sweeps at the next request
+  rebuild after the take) and never on a still (a still mid-sweep takes the blended matrix; pseudo-ZSL refuses during a sweep
   and refuses any ring frame whose AWB mode differs from the still's). Flip6 A/B, mean |Δ| over 24
   patches against the HAL's own preset at the same white point: one transform per route 4.2–7.2
   sRGB codes (one patch 67 off), Kelvin-tagged from used presets 2.9–4.4, swept 1.7–3.3 (light drift

@@ -1208,7 +1208,12 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   3.27 / 1.66 / 1.97, and 4000 K landed between its neighbours on every strategy. The sweep ran once,
   on the first manual still: Incandescent → Daylight → Cloudy in 1.9 s
   (`WhiteBalance: sweep 0|SDR|5 presets=[2, 5, 6]` … `swept … learned=true`), never again (persisted).
-  Shipped: Kelvin-tagged transforms plus the sweep (CLAUDE.md White balance bullet). The POCO run is
+  Shipped: Kelvin-tagged transforms plus the sweep (CLAUDE.md White balance bullet). A take started
+  inside a sweep (video route, REC tapped 0.4 s after `WhiteBalance: sweep 5|SDR|-`): before REC
+  admission waited for the sweep, frames 0–6 of the clip carried the Daylight step (R/G 1.25 /
+  B/G 0.65 against the matrix's 1.38 / 0.55); with the wait (`awaitWbSweepSettled`) every one of
+  140 frames read 1.376–1.383 / 0.554–0.566, REC admitted 0.39 s after `abandoned for a take`. The
+  production photo sweep on the final build: `sweep 0|SDR|5 presets=[2, 5, 6]` … `swept`. The POCO run is
   pending (its wireless ADB refused connections all session); PMA110 never sweeps (presets ignored),
   and whether its AUTO transform moves with the illuminant still needs AUTO under a second light.
   Evidence: `.context/wb-kelvin-ab-2026-10-27/`.
