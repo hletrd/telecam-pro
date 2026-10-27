@@ -1104,7 +1104,9 @@ multiplies every `CONTROL_ZOOM_RATIO` written by the tele chip's unified positio
 stay TC-local; `original.zoomRatio` carries the wire value and the Hasselblad `camera.mode` hint is
 not sent (it shares the key `pro_video_log_mode` fills). The engine installs ROUTE caps whose
 `zoomRatioRange` is the reachable TC-local window `[1, 9.8 ÷ 3]` (`makerTeleRouteCaps` /
-`makerTeleLocalZoomWindow`; the caps cache keeps the camera's true range), so the ruler, TC rail
+`makerTeleLocalZoomWindow`; the caps cache keeps the camera's true range). These route caps
+also expose the host tele's physical aperture, avoiding the logical main lens's F1.6 in the
+TC exposure readout (the measured tele reports F2.26, displayed F2.3). The ruler, TC rail
 marks (13× / 30× / 42.6×), every clamp and caps reconciliation read one span. The ceiling is the
 measured `DeviceProfile.makerLogTeleMaxWireZoom`: at wire 10.0 the logical camera handed the frame
 to the 10× periscope for 1.6–1.9 s on every entry, while 9.89 and below stayed on the tele; 9.8 is

@@ -8712,7 +8712,15 @@ class CameraEngine internal constructor(
         val window = makerTeleLocalZoomWindow(
             raw.zoomRatioRange?.lower, raw.zoomRatioRange?.upper, route.wireZoomScale, route.wireZoomCeiling,
         ) ?: return raw
-        return raw.copy(zoomRatioRange = android.util.Range(window.start, window.endInclusive))
+        // This runs on setupExecutor. A cold logical open may not have prefetched the host optics
+        // yet; use its lightweight characteristics rather than showing the main lens's f-number.
+        val hostOptics = route.hostPhysicalId?.let { id ->
+            lensExifCache[id] ?: readLensExifMetadata(manager, id)?.also { lensExifCache.putIfAbsent(id, it) }
+        }
+        return raw.copy(
+            zoomRatioRange = android.util.Range(window.start, window.endInclusive),
+            lensApertureF = hostOptics?.apertureF?.takeIf { it > 0f } ?: raw.lensApertureF,
+        )
     }
 
     /** Same unified/local conversion as the lens and DNG doors; called inside the optics mutation. */

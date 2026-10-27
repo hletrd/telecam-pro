@@ -1502,6 +1502,12 @@ firmware code excerpts, stock and product clips, patch calculations and the soak
 The latest validated product is to remain installed (owner instruction); do not restore the
 older APK. Signed-release installation and final package identities are recorded separately.
 
+**TC aperture readout:** the logical camera advertises the main lens's F1.6 while the active
+tele result reports F2.26. Maker TC route caps now take the host's aperture from its cached or
+lightweight physical characteristics, so the exposure readout correctly shows F2.3. The raw
+logical caps cache, focal/zoom mapping, WB and recording pipeline are unchanged. Verified in
+immutable debug `3cd90e8d0f7f-1ee4127f`; the existing JVM/lint/coverage gates passed again.
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)
