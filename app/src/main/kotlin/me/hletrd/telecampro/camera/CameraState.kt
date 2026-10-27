@@ -123,23 +123,24 @@ enum class ColorTransfer(val isLog: Boolean = false) {
 }
 
 /**
- * The Video tab's Gamma choices, in the owner's order (2026-10-26): Off / HLG / Log / RAW Log. A
- * MODE, not a curve: Log and RAW Log each take a profile from [VIDEO_LOG_PROFILES], so the request
- * stays the one persisted [ColorTransfer] plus the RAW log intent, and the mode is DERIVED from them
- * at render time ([videoColorModeOf]) — the same request/readout split as `effectivePhotoFormats`.
+ * The Video tab's Gamma choices, in the owner's order (2026-10-26): Rec. 709 / HLG / Log / RAW Log /
+ * OEM Log. A MODE, not a curve: Log and RAW Log each take a profile from [VIDEO_LOG_PROFILES], so the
+ * request stays the one persisted [ColorTransfer] plus the RAW log intent, and the mode is DERIVED
+ * from them at render time ([videoColorModeOf]) — the same request/readout split as
+ * `effectivePhotoFormats`. Nothing persists the mode itself, so its member names are free to change
+ * (OFF became [SDR] on 2026-10-27, owner request: the first choice is a gamma, not an absence of one).
  *
- *  - [OFF]: SDR, plain Rec.709 with no curve (8-bit Main).
+ *  - [SDR]: plain Rec. 709 with no curve (8-bit Main); the UI names it "Rec. 709".
  *  - [HLG]: the display-referred SDR→HLG mapping (10-bit).
  *  - [LOG]: the ISP pipeline with a log profile applied — the programmed native S-Log3 curve on a
  *    camera that takes one, the GL decode of the tone-mapped stream elsewhere.
- *  - [RAW_LOG]: EXPERIMENTAL, the log developed in-app from the RAW stream (camera/RawLog.kt).
- *
- * The owner's fifth slot, the phone maker's OWN log pipeline, is deliberately absent: it is offered
- * only where a device's maker pipeline is reachable and integrated, and none is (PMA110's stock
- * O-Log2 route is research only, CLAUDE.md). It returns as a member when one is, never as a curve
- * this app imitates.
+ *  - [RAW_LOG]: EXPERIMENTAL, the log developed in-app from the RAW stream (camera/RawLog.kt); its
+ *    chip carries the caution tint so the row itself says so.
+ *  - [MAKER_LOG]: the phone maker's OWN log pipeline ("OEM Log"), offered only where a device's maker
+ *    pipeline is reachable and integrated (PMA110's O-Log2 route, camera/MakerLog.kt) — never a
+ *    curve this app imitates.
  */
-enum class VideoColorMode { OFF, HLG, LOG, RAW_LOG, MAKER_LOG }
+enum class VideoColorMode { SDR, HLG, LOG, RAW_LOG, MAKER_LOG }
 
 /** The profiles both log modes offer: the industry-standard curves only (owner decision 2026-10-26). */
 val VIDEO_LOG_PROFILES: List<ColorTransfer> = listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
@@ -147,7 +148,7 @@ val VIDEO_LOG_PROFILES: List<ColorTransfer> = listOf(ColorTransfer.SLOG3, ColorT
 /**
  * The modes this device can record HONESTLY ([availableTransfers]: HLG and log need a 10-bit HEVC
  * encode), plus RAW Log where [rawLogOffered] (camera/RawLog.kt) says the route can develop RAW at
- * the selected rate. Off always survives.
+ * the selected rate. Rec. 709 always survives.
  */
 fun availableVideoColorModes(
     codec: VideoCodec,
@@ -155,7 +156,7 @@ fun availableVideoColorModes(
     rawLogOffered: Boolean,
     makerLogOffered: Boolean = false,
 ): List<VideoColorMode> = when {
-    !availableTransfers(codec, tenBitEncodeAvailable).any { it.isLog } -> listOf(VideoColorMode.OFF)
+    !availableTransfers(codec, tenBitEncodeAvailable).any { it.isLog } -> listOf(VideoColorMode.SDR)
     else -> VideoColorMode.entries.filter {
         (it != VideoColorMode.RAW_LOG || rawLogOffered) &&
             (it != VideoColorMode.MAKER_LOG || makerLogOffered)
@@ -174,7 +175,7 @@ fun videoColorModeOf(
     rawLogOffered: Boolean,
     makerLogOffered: Boolean = false,
 ): VideoColorMode = when {
-    transfer == ColorTransfer.SDR -> VideoColorMode.OFF
+    transfer == ColorTransfer.SDR -> VideoColorMode.SDR
     transfer == ColorTransfer.HLG -> VideoColorMode.HLG
     transfer == ColorTransfer.MAKER_LOG -> if (makerLogOffered) VideoColorMode.MAKER_LOG else VideoColorMode.LOG
     rawLogRequested && rawLogOffered && rawLogTransfer(transfer) -> VideoColorMode.RAW_LOG

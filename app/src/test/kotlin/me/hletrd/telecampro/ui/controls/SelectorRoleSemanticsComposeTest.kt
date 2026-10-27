@@ -59,7 +59,7 @@ class SelectorRoleSemanticsComposeTest {
                     SegmentedSelector(
                         label = gamma,
                         options = modes,
-                        selected = me.hletrd.telecampro.camera.VideoColorMode.OFF,
+                        selected = me.hletrd.telecampro.camera.VideoColorMode.SDR,
                         labelFor = { context.getString(videoColorModeLabel(it)) },
                         onSelect = {},
                     )

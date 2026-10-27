@@ -74,7 +74,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         FnSlot.METERING -> context?.localizedLabel(c.meteringMode) ?: meteringModeLabel(c.meteringMode)
         FnSlot.PEAKING -> onOff(state.focusPeaking)
         FnSlot.ZEBRA -> onOff(state.zebra)
-        FnSlot.TRANSFER -> videoColorModeChipValue(state.videoColorMode, state.transfer, onOff(false))
+        FnSlot.TRANSFER -> videoColorModeChipValue(state.videoColorMode, state.transfer)
         FnSlot.AUDIO_SCENE -> context?.localizedLabel(state.audioScene) ?: audioSceneLabel(state.audioScene)
         FnSlot.GRID -> context?.localizedLabel(state.grid) ?: gridTypeLabel(state.grid)
         FnSlot.LEVEL -> onOff(state.level)

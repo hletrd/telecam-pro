@@ -3047,11 +3047,12 @@ class CameraViewModel private constructor(
     }
 
     /**
-     * Gamma = Off / HLG / Log / RAW Log (owner decision 2026-10-26; [VideoColorMode]). A mode is the
-     * transfer plus the RAW log intent, so it lands through the same two doors as before, intent
-     * FIRST so a change costs at most one session reopen: from Off/HLG the intent cannot move a
-     * session that has no log transfer, and from a log the transfer that follows is the one already
-     * selected. Off and HLG leave the intent alone — it means nothing without a log transfer.
+     * Gamma = Rec. 709 / HLG / Log / RAW Log / OEM Log (owner decision 2026-10-26; [VideoColorMode]).
+     * A mode is the transfer plus the RAW log intent, so it lands through the same two doors as
+     * before, intent FIRST so a change costs at most one session reopen: from Rec. 709/HLG the intent
+     * cannot move a session that has no log transfer, and from a log the transfer that follows is the
+     * one already selected. Rec. 709 and HLG leave the intent alone — it means nothing without a log
+     * transfer.
      */
     override fun onVideoColorMode(mode: VideoColorMode) {
         if (rejectIfRecording()) return
@@ -3063,7 +3064,7 @@ class CameraViewModel private constructor(
                 // the complete switch, including rollback; no second raw-intent write can escape it.
                 onTransfer(ColorTransfer.MAKER_LOG)
             }
-            VideoColorMode.OFF -> onTransfer(ColorTransfer.SDR)
+            VideoColorMode.SDR -> onTransfer(ColorTransfer.SDR)
             VideoColorMode.HLG -> onTransfer(ColorTransfer.HLG)
             VideoColorMode.LOG -> {
                 if (current.rawLog) setRawLogIntent(false)

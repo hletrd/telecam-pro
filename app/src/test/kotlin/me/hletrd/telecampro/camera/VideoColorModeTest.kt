@@ -9,11 +9,11 @@ class VideoColorModeTest {
     @Test
     fun `the modes come in the owner's order, with RAW Log only where the route offers it`() {
         assertEquals(
-            listOf(VideoColorMode.OFF, VideoColorMode.HLG, VideoColorMode.LOG, VideoColorMode.RAW_LOG),
+            listOf(VideoColorMode.SDR, VideoColorMode.HLG, VideoColorMode.LOG, VideoColorMode.RAW_LOG),
             availableVideoColorModes(VideoCodec.HEVC, tenBitEncodeAvailable = true, rawLogOffered = true),
         )
         assertEquals(
-            listOf(VideoColorMode.OFF, VideoColorMode.HLG, VideoColorMode.LOG),
+            listOf(VideoColorMode.SDR, VideoColorMode.HLG, VideoColorMode.LOG),
             availableVideoColorModes(VideoCodec.HEVC, tenBitEncodeAvailable = true, rawLogOffered = false),
         )
     }
@@ -21,8 +21,8 @@ class VideoColorModeTest {
     @Test
     fun `an encoder that cannot carry ten bits offers Off alone, RAW route or not`() {
         for (raw in listOf(true, false)) {
-            assertEquals(listOf(VideoColorMode.OFF), availableVideoColorModes(VideoCodec.HEVC, false, raw))
-            assertEquals(listOf(VideoColorMode.OFF), availableVideoColorModes(VideoCodec.AVC, true, raw))
+            assertEquals(listOf(VideoColorMode.SDR), availableVideoColorModes(VideoCodec.HEVC, false, raw))
+            assertEquals(listOf(VideoColorMode.SDR), availableVideoColorModes(VideoCodec.AVC, true, raw))
         }
     }
 
@@ -30,7 +30,7 @@ class VideoColorModeTest {
     fun `the mode reads off the transfer, and RAW Log needs intent and route together`() {
         for (raw in listOf(true, false)) {
             for (offered in listOf(true, false)) {
-                assertEquals(VideoColorMode.OFF, videoColorModeOf(ColorTransfer.SDR, raw, offered))
+                assertEquals(VideoColorMode.SDR, videoColorModeOf(ColorTransfer.SDR, raw, offered))
                 assertEquals(VideoColorMode.HLG, videoColorModeOf(ColorTransfer.HLG, raw, offered))
             }
         }

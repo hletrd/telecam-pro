@@ -340,7 +340,7 @@ class ControlLabelsTest {
             ColorTransfer.SLOG3_CINE to "S-Log3.Cine",
             ColorTransfer.LOGC3 to "LogC3",
             ColorTransfer.MAKER_LOG to "O-Log2",
-            ColorTransfer.SDR to "SDR",
+            ColorTransfer.SDR to "Rec. 709",
         ),
         ::transferLabel,
     )
@@ -354,15 +354,15 @@ class ControlLabelsTest {
             ColorTransfer.SLOG3_CINE to "SG3C",
             ColorTransfer.LOGC3 to "LOGC3",
             ColorTransfer.MAKER_LOG to "O-Log2",
-            ColorTransfer.SDR to "SDR",
+            ColorTransfer.SDR to "709",
         ),
         ::transferLabelShort,
     )
 
     @Test
-    fun `Gamma mode labels are string resources, Off shared with every Off`() = assertEquals(
+    fun `Gamma mode labels are string resources, the SDR mode named Rec 709`() = assertEquals(
         listOf(
-            me.hletrd.telecampro.R.string.value_off,
+            me.hletrd.telecampro.R.string.gamma_mode_rec709,
             me.hletrd.telecampro.R.string.gamma_mode_hlg,
             me.hletrd.telecampro.R.string.gamma_mode_log,
             me.hletrd.telecampro.R.string.gamma_mode_raw_log,
@@ -373,12 +373,12 @@ class ControlLabelsTest {
 
     @Test
     fun `the Gamma chip names the mode, and RAW Log carries the OSD's RAW suffix`() {
-        assertEquals("Off", videoColorModeChipValue(VideoColorMode.OFF, ColorTransfer.SDR, "Off"))
-        assertEquals("HLG", videoColorModeChipValue(VideoColorMode.HLG, ColorTransfer.HLG, "Off"))
-        assertEquals("O-Log2", videoColorModeChipValue(VideoColorMode.MAKER_LOG, ColorTransfer.MAKER_LOG, "Off"))
-        assertEquals("SLOG3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.MAKER_LOG, "Off"))
-        assertEquals("LOGC3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.LOGC3, "Off"))
-        assertEquals("SG3C RAW", videoColorModeChipValue(VideoColorMode.RAW_LOG, ColorTransfer.SLOG3_CINE, "Off"))
+        assertEquals("Rec. 709", videoColorModeChipValue(VideoColorMode.SDR, ColorTransfer.SDR))
+        assertEquals("HLG", videoColorModeChipValue(VideoColorMode.HLG, ColorTransfer.HLG))
+        assertEquals("O-Log2", videoColorModeChipValue(VideoColorMode.MAKER_LOG, ColorTransfer.MAKER_LOG))
+        assertEquals("SLOG3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.MAKER_LOG))
+        assertEquals("LOGC3", videoColorModeChipValue(VideoColorMode.LOG, ColorTransfer.LOGC3))
+        assertEquals("SG3C RAW", videoColorModeChipValue(VideoColorMode.RAW_LOG, ColorTransfer.SLOG3_CINE))
     }
 
     @Test
@@ -386,6 +386,6 @@ class ControlLabelsTest {
         assertEquals("RAW S-Log3", videoLookLabel(ColorTransfer.SLOG3, rawLog = true))
         assertEquals("S-Log3", videoLookLabel(ColorTransfer.SLOG3, rawLog = false))
         assertEquals("HLG", videoLookLabel(ColorTransfer.HLG, rawLog = true))
-        assertEquals("SDR", videoLookLabel(ColorTransfer.SDR, rawLog = true))
+        assertEquals("Rec. 709", videoLookLabel(ColorTransfer.SDR, rawLog = true))
     }
 }

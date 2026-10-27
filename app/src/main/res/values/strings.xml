@@ -384,6 +384,7 @@
     <string name="warning_native_log_unverified">Unverified on this device · check exposure</string>
     <!-- Gamma modes (VideoColorMode): Off reuses value_off. HLG is the standard's name, kept in
          Latin in Korean too (like S-Log3 / LogC3), but it is not on the closed abbreviation list. -->
+    <string name="gamma_mode_rec709">Rec. 709</string>
     <string name="gamma_mode_hlg">HLG</string>
     <string name="gamma_mode_log">Log</string>
     <string name="gamma_mode_raw_log">RAW Log</string>
@@ -583,7 +584,7 @@
     <string name="hint_drive">Single shot, burst, exposure bracketing (AEB) or interval time-lapse.</string>
     <string name="hint_exposure_mode">P is automatic; S fixes the shutter; ISO fixes the sensitivity; M fixes both.</string>
     <string name="hint_flicker">Matches mains lighting (50 or 60 Hz) to stop banding under artificial light.</string>
-    <string name="hint_gamma">Off is standard video; HLG suits HDR screens; Log and RAW Log are flat, for grading.</string>
+    <string name="hint_gamma">Rec. 709 is standard video; HLG suits HDR screens; Log and RAW Log are flat, for grading.</string>
     <string name="hint_log_profile">Pick the one your grading LUTs expect. S-Log3.Cine has a smaller gamut than S-Log3.</string>
     <string name="hint_fps">29.97 and 59.94 are the video standard; 23.976 gives a film look.</string>
     <string name="hint_frame_lines">Guides for a crop to another aspect ratio.</string>
@@ -628,7 +629,7 @@
     <string name="hint_photo_ois">Optical stabilization for photos. Turn it off on a tripod.</string>
     <string name="hint_waveform">Brightness across the frame, from left to right.</string>
     <string name="hint_zebra">Stripes over areas close to clipping.</string>
-    <string name="gamma_mode_maker_log">Log (maker)</string>
+    <string name="gamma_mode_maker_log">OEM Log</string>
     <string name="caption_maker_log">O-Log2 · 10-bit · stills off</string>
     <string name="caption_maker_log_8bit">O-Log2 · 8-bit output · stills off</string>
 </resources>

@@ -43,7 +43,7 @@ class FnSlotValueTest {
             FnSlot.METERING to "Matrix",
             FnSlot.PEAKING to "Off",
             FnSlot.ZEBRA to "Off",
-            FnSlot.TRANSFER to "Off", // the Gamma chip names the MODE (Off), not the file curve
+            FnSlot.TRANSFER to "Rec. 709", // the Gamma chip names the MODE (Rec. 709 since 2026-10-27)
             FnSlot.AUDIO_SCENE to "Standard",
             FnSlot.GRID to "Thirds",
             FnSlot.LEVEL to "Off",

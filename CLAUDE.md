@@ -1140,7 +1140,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
   Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
   established all this (de1d1a03) is removed now that the product path exists.
-  **Gamma is a MODE: Off / HLG / Log / RAW Log (owner decision 2026-10-26).** The Video tab's
+  **Gamma is a MODE: Off / HLG / Log / RAW Log (owner decision 2026-10-26).** **UI names since
+  2026-10-27 (owner request): Rec. 709 / HLG / Log / RAW Log / OEM Log** — the first mode is
+  `VideoColorMode.SDR` (it was `OFF`; nothing persists the mode, so the rename moves no stored
+  value), the OSD's short form is `709`, "OEM Log" is the label this file still calls "Log (maker)",
+  and RAW Log's chip carries the `CameraColors.Caution` tint because it is experimental. The Video tab's
   Gamma row offers `VideoColorMode` in that order, and a Log Profile row (S-Log3 / S-Log3.Cine /
   LogC3, `VIDEO_LOG_PROFILES`) under the two log modes. The REQUEST stays the persisted
   `ColorTransfer` plus the RAW log intent (`rawLog`), plus a persisted `logProfile` memory that Log /

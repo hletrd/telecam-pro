@@ -348,6 +348,7 @@
     <string name="video_raw_log_source">센서 RAW에서 앱이 직접 현상합니다 · 10비트, 센서 화이트에서 클리핑</string>
     <string name="video_raw_log_source_8bit">센서 RAW에서 앱이 직접 현상합니다 · 이 기기는 8비트 출력, 센서 화이트에서 클리핑</string>
     <string name="warning_native_log_unverified">이 기기에서 미검증 · 노출을 확인하세요</string>
+    <string name="gamma_mode_rec709">Rec. 709</string>
     <string name="gamma_mode_hlg">HLG</string>
     <string name="gamma_mode_log">로그</string>
     <string name="gamma_mode_raw_log">RAW 로그</string>
@@ -543,7 +544,7 @@
     <string name="hint_drive">단일 촬영, 연속 촬영, 노출 브래킷(AEB), 인터벌 타임랩스.</string>
     <string name="hint_exposure_mode">P는 자동, S는 셔터, ISO는 감도, M은 둘 다 직접 정합니다.</string>
     <string name="hint_flicker">인공조명(50/60Hz)에 맞춰 줄무늬 깜빡임을 막습니다.</string>
-    <string name="hint_gamma">꺼짐은 일반 영상, HLG는 HDR 화면용, 로그와 RAW 로그는 색보정용 평탄한 영상입니다.</string>
+    <string name="hint_gamma">Rec. 709는 일반 영상, HLG는 HDR 화면용, 로그와 RAW 로그는 색보정용 평탄한 영상입니다.</string>
     <string name="hint_log_profile">색보정 LUT에 맞는 프로파일을 고르세요. S-Log3.Cine은 S-Log3보다 색역이 좁습니다.</string>
     <string name="hint_fps">29.97·59.94는 동영상 표준이고, 23.976은 영화 느낌을 줍니다.</string>
     <string name="hint_frame_lines">다른 화면비로 자를 때의 가이드입니다.</string>
@@ -588,7 +589,7 @@
     <string name="hint_photo_ois">사진 광학식 손떨림 보정입니다. 삼각대에서는 끄세요.</string>
     <string name="hint_waveform">화면 왼쪽부터 오른쪽까지의 밝기입니다.</string>
     <string name="hint_zebra">과노출에 가까운 영역에 줄무늬를 표시합니다.</string>
-    <string name="gamma_mode_maker_log">Log (제조사)</string>
+    <string name="gamma_mode_maker_log">OEM 로그</string>
     <string name="caption_maker_log">O-Log2 · 10비트 · 사진 촬영 불가</string>
     <string name="caption_maker_log_8bit">O-Log2 · 8비트 출력 · 사진 촬영 불가</string>
 </resources>

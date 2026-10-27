@@ -1617,8 +1617,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
-    // Gamma = Off / HLG / Log / RAW Log (owner decision 2026-10-26; camera/CameraState.kt
-    // VideoColorMode), then the Profile row for the two log modes. The label stays "Gamma": it
+    // Gamma = Rec. 709 / HLG / Log / RAW Log / OEM Log (owner decision 2026-10-26;
+    // camera/CameraState.kt VideoColorMode), then the Profile row for the two log modes. The label stays "Gamma": it
     // matches the Fn tile, dial chip, My Menu entry and "Gamma Disp. Assist" (UI review #2 — the row
     // that owns a setting must carry the name the tile cycling it shows). RAW Log is offered only
     // where it can act (rawLogOffered: a RAW-developable camera at a rate the RAW stream sustains);
@@ -1655,6 +1655,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             // without Main10 — device-seen on TB331FC 2026-10-26, where it described three modes
             // the row did not offer).
             hint = if (state.videoColorModes.size > 1) stringResource(R.string.hint_gamma) else null,
+            // RAW Log is EXPERIMENTAL (A19): its chip carries the caution tint (owner request
+            // 2026-10-27) so the row says so before the caption does.
+            cautionFor = { it == VideoColorMode.RAW_LOG },
         )
     }
     // One short highlighted line (owner direction 2026-10-26: visible, not wordy) where Log rides a

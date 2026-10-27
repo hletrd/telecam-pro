@@ -637,7 +637,7 @@ private fun FnDialChip(
                 // the old "TF" abbreviation read as nonsense (feedback). It cycles the Gamma MODES,
                 // exactly like the Fn tile (performQuickFn).
                 label = stringResource(R.string.label_gamma),
-                value = videoColorModeChipValue(state.videoColorMode, state.transfer, offValue),
+                value = videoColorModeChipValue(state.videoColorMode, state.transfer),
                 active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,
                 onClick = {

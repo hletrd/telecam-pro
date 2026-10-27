@@ -496,12 +496,13 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
     ColorTransfer.MAKER_LOG -> "O-Log2"
-    ColorTransfer.SDR -> "SDR"
+    // The standard SDR video gamma by name (owner request 2026-10-27), like the curves above it.
+    ColorTransfer.SDR -> "Rec. 709"
 }
 
-/** The Gamma row's chip label for a [VideoColorMode], as a string resource (Off reuses "Off"). */
+/** The Gamma row's chip label for a [VideoColorMode], as a string resource. */
 internal fun videoColorModeLabel(mode: VideoColorMode): Int = when (mode) {
-    VideoColorMode.OFF -> me.hletrd.telecampro.R.string.value_off
+    VideoColorMode.SDR -> me.hletrd.telecampro.R.string.gamma_mode_rec709
     VideoColorMode.HLG -> me.hletrd.telecampro.R.string.gamma_mode_hlg
     VideoColorMode.LOG -> me.hletrd.telecampro.R.string.gamma_mode_log
     VideoColorMode.RAW_LOG -> me.hletrd.telecampro.R.string.gamma_mode_raw_log
@@ -516,13 +517,14 @@ internal fun videoLookLabel(transfer: ColorTransfer, rawLog: Boolean): String =
     if (rawLog && rawLogTransfer(transfer)) "RAW ${transferLabel(transfer)}" else transferLabel(transfer)
 
 /**
- * The Gamma Fn chip / dial value for a mode: the localized [offLabel] for Off (the chip cycles MODES,
- * so it names the mode, not "SDR"), the compact profile for the log modes, with RAW Log carrying the
- * same " RAW" suffix the OSD tag shows for an accepted RAW log session.
+ * The Gamma Fn chip / dial value for a mode: "Rec. 709" for the SDR mode (the chip cycles MODES, and
+ * since 2026-10-27 that mode is named for its gamma rather than "Off"), the compact profile for the
+ * log modes, with RAW Log carrying the same " RAW" suffix the OSD tag shows for an accepted RAW log
+ * session.
  */
-internal fun videoColorModeChipValue(mode: VideoColorMode, transfer: ColorTransfer, offLabel: String): String =
+internal fun videoColorModeChipValue(mode: VideoColorMode, transfer: ColorTransfer): String =
     when (mode) {
-        VideoColorMode.OFF -> offLabel
+        VideoColorMode.SDR -> transferLabel(ColorTransfer.SDR)
         VideoColorMode.HLG -> transferLabelShort(ColorTransfer.HLG)
         VideoColorMode.LOG -> transferLabelShort(me.hletrd.telecampro.camera.effectiveRecordingTransfer(transfer, false))
         VideoColorMode.RAW_LOG -> transferLabelShort(transfer) + " RAW"
@@ -547,5 +549,5 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
     ColorTransfer.MAKER_LOG -> "O-Log2"
-    ColorTransfer.SDR -> "SDR"
+    ColorTransfer.SDR -> "709"
 }

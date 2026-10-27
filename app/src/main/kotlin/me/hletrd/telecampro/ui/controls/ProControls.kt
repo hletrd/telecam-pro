@@ -188,12 +188,19 @@ internal fun Captioned(caption: String?, content: @Composable () -> Unit) {
 @Composable
 internal fun chipLabelStyle() = MaterialTheme.typography.labelMedium.copy(letterSpacing = 0.1.sp)
 
-/** Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise. */
+/**
+ * Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise.
+ *
+ * [caution] marks an EXPERIMENTAL option (Gamma = RAW Log; owner request 2026-10-27, "slightly
+ * different so it reads as exp"): the label and the selected fill take [CameraColors.Caution], the
+ * menu's "offered but unverified" orange, in place of white. Same chip, same geometry — only the ink
+ * changes, so the row stays quiet. The selected option's caption still says "Experimental" in words.
+ */
 @Composable
-internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
+internal fun pixelChipColors(caution: Boolean = false) = FilterChipDefaults.filterChipColors(
     containerColor = Color.Transparent,
-    labelColor = CameraColors.TextPrimary,
-    selectedContainerColor = CameraColors.TextPrimary,
+    labelColor = if (caution) CameraColors.Caution else CameraColors.TextPrimary,
+    selectedContainerColor = if (caution) CameraColors.Caution else CameraColors.TextPrimary,
     selectedLabelColor = Color.Black,
     // The multi-select check (OutputFormatChip) inherits this: without it M3's default
     // primary-tinted leading icon rendered near-invisible lavender on the filled white chip.
@@ -209,12 +216,20 @@ internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
  * so the row said "disabled" and "tappable" at once. Material resolves the disabled edge through this
  * app's own scheme (`onSurface` is white here), landing at white/0.12 — close to the 0.55 the labels
  * dim by, and no new hand-picked number.
+ *
+ * A [caution] chip (see [pixelChipColors]) draws the edge in [CameraColors.Caution] at the
+ * same reduced weight as [CameraColors.AffordanceEdge] is to white, so it reads as a tint of that
+ * edge rather than a second, louder one.
  */
 @Composable
-internal fun pixelChipBorder(selected: Boolean, enabled: Boolean = true) = FilterChipDefaults.filterChipBorder(
+internal fun pixelChipBorder(
+    selected: Boolean,
+    enabled: Boolean = true,
+    caution: Boolean = false,
+) = FilterChipDefaults.filterChipBorder(
     enabled = enabled,
     selected = selected,
-    borderColor = CameraColors.AffordanceEdge,
+    borderColor = if (caution) CameraColors.Caution.copy(alpha = 0.55f) else CameraColors.AffordanceEdge,
     selectedBorderWidth = 0.dp,
 )
 
@@ -289,8 +304,11 @@ internal fun <T> SegmentedSelector(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     hint: String? = null,
+    cautionFor: (T) -> Boolean = { false },
 ) {
-    Captioned(hint) { SegmentedSelectorCore(label, options, selected, labelFor, onSelect, modifier, enabled) }
+    Captioned(hint) {
+        SegmentedSelectorCore(label, options, selected, labelFor, onSelect, modifier, enabled, cautionFor)
+    }
 }
 
 @Composable
@@ -302,6 +320,7 @@ private fun <T> SegmentedSelectorCore(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    cautionFor: (T) -> Boolean = { false },
 ) {
     Column(
         modifier = modifier
@@ -377,8 +396,8 @@ private fun <T> SegmentedSelectorCore(
                                 softWrap = false,
                             )
                         },
-                        colors = pixelChipColors(),
-                        border = pixelChipBorder(isSelected, enabled),
+                        colors = pixelChipColors(caution = cautionFor(option)),
+                        border = pixelChipBorder(isSelected, enabled, caution = cautionFor(option)),
                     )
                 }
             }

@@ -857,7 +857,7 @@ class CameraViewModelRobolectricTest {
         assertEquals(ColorTransfer.SLOG3, v.state.value.transfer) // fresh default profile
         v.onTransfer(ColorTransfer.LOGC3) // the Profile row
         assertEquals(ColorTransfer.LOGC3, v.state.value.logProfile)
-        v.onVideoColorMode(VideoColorMode.OFF)
+        v.onVideoColorMode(VideoColorMode.SDR)
         assertEquals(ColorTransfer.SDR, v.state.value.transfer)
         v.onVideoColorMode(VideoColorMode.HLG)
         assertEquals(ColorTransfer.HLG, v.state.value.transfer)
@@ -875,7 +875,7 @@ class CameraViewModelRobolectricTest {
         assertTrue(v.state.value.rawLog)
         assertEquals(ColorTransfer.SLOG3_CINE, v.state.value.transfer)
         // Off keeps the intent (it means nothing without a log); RAW Log from Off lands back on it.
-        v.onVideoColorMode(VideoColorMode.OFF)
+        v.onVideoColorMode(VideoColorMode.SDR)
         assertTrue(v.state.value.rawLog)
         v.onVideoColorMode(VideoColorMode.RAW_LOG)
         assertEquals(ColorTransfer.SLOG3_CINE, v.state.value.transfer)
