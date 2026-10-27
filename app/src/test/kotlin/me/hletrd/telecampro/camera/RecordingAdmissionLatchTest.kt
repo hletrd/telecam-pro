@@ -124,4 +124,15 @@ class RecordingAdmissionLatchTest {
             assertEquals(stopLatched, latchedStop)
         }
     }
+
+    @Test
+    fun `in flight exactly from admission to its completion`() {
+        // The WB sweep hold reads this: a take that is STARTING already counts (WhiteBalance.kt).
+        val latch = RecordingAdmissionLatch()
+        assertFalse(latch.isInFlight())
+        assertTrue(latch.tryBeginAdmission())
+        assertTrue(latch.isInFlight())
+        latch.completeAdmission(succeeded = true)
+        assertFalse(latch.isInFlight())
+    }
 }

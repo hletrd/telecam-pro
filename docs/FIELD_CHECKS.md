@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, and one from the Flip6 in-app run (manual Kelvin taking the priming light's colour transform),
+**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the Kelvin-transform run on the POCO, and AUTO under a second light on the PMA110,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1198,6 +1198,21 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   0.56–0.59 s, the still request carrying the session's mode. PMA110 was not re-run (another
   session held it); its still requests are unchanged by construction, and review confirmed it.
 
+- **Manual Kelvin now takes the HAL's own transform at its white point (2026-10-27, owner: "try
+  them all").** A/B build `6985c61a93b3-ad0764ba` (SHA-256 `b890c06b…`), Photo 1× stabilization OFF,
+  each strategy from an empty reference store, the room's light by then brighter (AUTO ≈ 3780 K).
+  Truth = the HAL's own preset at the same white point, taken at the batch's start and end (drift
+  1.6 / 3.7 / 0.9 codes). Mean |Δ| over 24 patches, sRGB codes, at 2870 / 5160 / 6310 K: one
+  transform per route (the old store) 7.16 / 4.18 / 4.98 (one patch 67 off at 2870 K, grey blue
+  −8.9 at 6310 K); Kelvin-tagged, presets learned from use 4.41 / 3.75 / 2.90; swept
+  3.27 / 1.66 / 1.97, and 4000 K landed between its neighbours on every strategy. The sweep ran once,
+  on the first manual still: Incandescent → Daylight → Cloudy in 1.9 s
+  (`WhiteBalance: sweep 0|SDR|5 presets=[2, 5, 6]` … `swept … learned=true`), never again (persisted).
+  Shipped: Kelvin-tagged transforms plus the sweep (CLAUDE.md White balance bullet). The POCO run is
+  pending (its wireless ADB refused connections all session); PMA110 never sweeps (presets ignored),
+  and whether its AUTO transform moves with the illuminant still needs AUTO under a second light.
+  Evidence: `.context/wb-kelvin-ab-2026-10-27/`.
+
 **HLG10 and RAW log sessions, PMA110 in-app (2026-10-27).** Same build fingerprint as above,
 immutable debug `2f83c64c3945-e1fd4149` (code identical to `c87497de`), rear 1× Video, 4K 29.97,
 one 6 s take per setting in the same warm room (HAL AUTO reports 2807 K, R 1.75 / B 2.96, ISO 9052
@@ -1219,9 +1234,9 @@ were restored afterwards. Evidence: `.context/a23-pma110-logroutes-2026-10-27/`.
   File against finder was not compared on these routes (log and HLG encodings).
 
 **Remaining:** (1) the FRONT route (white balance and framing) was not run: its camera faces away
-from the chart, so it needs an operator; (2) an owner decision from the Flip6 run: where a manual
-Kelvin should get its transform when the HAL's CCM moves with the illuminant. The Flip6 proves the
-CCM moves there; its Standard stills keep the full field (ON crops only that HAL's preview). An
+from the chart, so it needs an operator; (2) RESOLVED 2026-10-27 (Kelvin-tagged transforms + sweep,
+above), with the POCO run and a PMA110 second-light check open. The Flip6 proves the CCM moves
+there; its Standard stills keep the full field (ON crops only that HAL's preview). An
 offline model that keeps the HAL's look and swaps in the sensor calibration's colorimetric matrix
 (T = T_auto · C(K_auto)⁻¹ · C(K)) gets only halfway: a grey under this room's light at Daylight
 gains renders B/G 0.44–0.48 against the HAL's own 0.25 and today's −0.04 (clipped), because the

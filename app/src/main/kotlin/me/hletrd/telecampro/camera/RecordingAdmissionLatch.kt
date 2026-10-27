@@ -35,6 +35,10 @@ internal class RecordingAdmissionLatch {
         return true
     }
 
+    /** Whether an admission is in flight: a take is starting (advisory, for holds that span it). */
+    @Synchronized
+    fun isInFlight(): Boolean = inFlight
+
     /** Advisory recheck for an async allocation owner published after Stop latched its request. */
     @Synchronized
     fun hasStopRequest(): Boolean = inFlight && stopRequested

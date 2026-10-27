@@ -323,13 +323,31 @@ internal sealed interface WbWire {
      * until its first converged frame supplies one ([WbReferenceStore]), then rebuild. Writes AUTO.
      */
     data class Prime(val awbMode: Int) : WbWire
+    /**
+     * A matrix WB is wanted on a route that honours presets and was never swept: run the preset
+     * [awbMode] until its frames report the HAL's own transform at that white point, then the next
+     * ([wbSweepPresets]); the matrix follows once the last one is learned. Writes the preset.
+     */
+    data class Sweep(val awbMode: Int) : WbWire
+}
+
+/** The CONTROL_AWB_MODE a request carrying [this] writes (OFF for an app-owned white point); null for none. */
+internal fun WbWire.awbMode(): Int? = when (this) {
+    WbWire.Omit -> null
+    is WbWire.Auto -> awbMode
+    is WbWire.Preset -> awbMode
+    is WbWire.Prime -> awbMode
+    is WbWire.Sweep -> awbMode
+    is WbWire.Cct, is WbWire.MakerCct, is WbWire.Matrix -> CameraMetadata.CONTROL_AWB_MODE_OFF
 }
 
 /**
  * Resolves the WB keys for an already-NORMALIZED packet ([ManualControls.normalizedFor]) on a route.
- * [routeTransform] is the route's own colour transform from its last AWB-AUTO frames (null = never
- * seen); [transformRequired] is false only where no processed pixel depends on it (a RAW-only
- * session, whose developer takes just the gains), so priming would buy nothing there.
+ * [routeTransform] is the route's own colour transform at the packet's white point
+ * ([WbReferenceStore.lookup], [wbTransformKelvin]; null = never seen); [transformRequired] is false
+ * only where no processed pixel depends on it (a RAW-only session, whose developer takes just the
+ * gains), so priming or sweeping would buy nothing there. [sweepPreset] is the preset a pending
+ * sweep runs next ([wbSweepWanted]); null on every still request, which never sweeps.
  */
 internal fun resolveWbWire(
     c: ManualControls,
@@ -338,10 +356,12 @@ internal fun resolveWbWire(
     routeTransform: DoubleArray?,
     transformRequired: Boolean,
     makerLog: Boolean = false,
+    sweepPreset: Int? = null,
 ): WbWire {
     val auto = exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, cap.awbModes)
     fun autoWire(): WbWire = auto?.let { WbWire.Auto(it, false) } ?: WbWire.Omit
     fun matrix(gains: FloatArray, target: WbTarget?): WbWire = when {
+        sweepPreset != null && transformRequired -> WbWire.Sweep(sweepPreset)
         routeTransform != null -> WbWire.Matrix(gains, routeTransform.copyOf())
         !transformRequired -> WbWire.Matrix(
             gains,
@@ -427,67 +447,262 @@ internal fun plausibleWbTransform(t: DoubleArray?): Boolean {
 }
 
 /**
- * Every route's own colour transform, learned from its AWB-AUTO frames and replayed under manual WB
- * (TRANSFORM_MATRIX needs one; Camera2 itself documents that replaying a FAST/HIGH_QUALITY frame's
- * gains and transform reproduces its white point). Process-wide, shared by successive controllers,
- * seeded from and mirrored to storage by the engine so a relaunch in manual WB needs no priming.
- *
- * Lookup is EXACT: another sensor's transform is not "close" — PMA110's maker session reports
- * [1.125 −0.188 0.063 …] on the 1× sensor and [0.984 0.094 −0.078 …] on the 3× it zooms onto — so a
- * key never seen primes once (per route, per sensor, per install) instead of borrowing a neighbour's.
- * [latestKey] only GUESSES which sensor a logical camera will start on, so a reopen on the sensor the
- * operator left it on needs no rebuild.
+ * One learned colour transform of a route and the white point its frame was balanced for, as a
+ * correlated colour temperature read off the frame's own gains through the sensor calibration
+ * ([wbFrameKelvin]); null where the route has no calibration to read it with.
  */
-internal class WbReferenceStore(initial: Map<WbRouteKey, DoubleArray> = emptyMap()) {
-    private class Entry(val transform: DoubleArray, val order: Long)
+internal class WbReferenceSample(val kelvin: Double?, val transform: DoubleArray)
 
-    private val entries = java.util.concurrent.ConcurrentHashMap<WbRouteKey, Entry>()
+/**
+ * Every route's own colour transforms, learned from its AWB-AUTO frames (and, where the HAL honours
+ * them, its preset frames) and replayed under manual WB (TRANSFORM_MATRIX needs one; Camera2 itself
+ * documents that replaying a FAST/HIGH_QUALITY frame's gains and transform reproduces its white
+ * point). Process-wide, shared by successive controllers, seeded from and mirrored to storage by the
+ * engine so a relaunch in manual WB needs no priming.
+ *
+ * A route keeps SEVERAL transforms, one per white point it was seen at, because a HAL's colour
+ * transform moves with the illuminant: the Galaxy Z Flip6 reports a blue row of −0.20 / −1.27 /
+ * +2.47 for Incandescent, −0.10 / −1.13 / +2.23 for AUTO in a 3200 K room and +0.04 / −0.75 /
+ * +1.71 for Daylight (2026-10-27, FIELD_CHECKS A23). Replaying the room's transform under 5000 K
+ * gains drove blue to the floor (grey patches 127 / 81 / 7 against the Daylight preset's
+ * 125 / 89 / 23 at nearly the same gains). [lookup] with a Kelvin therefore blends the two learned
+ * transforms around it, linearly in mired like the DNG ColorMatrix pair: on the Flip6 that predicts
+ * Daylight from Incandescent + Cloudy and AUTO from Incandescent + Daylight within 0.07 per element.
+ * Outside the learned range the nearest transform stands; with none carrying a Kelvin, the latest.
+ *
+ * Lookup is EXACT per route: another sensor's transform is not "close" — PMA110's maker session
+ * reports [1.125 −0.188 0.063 …] on the 1× sensor and [0.984 0.094 −0.078 …] on the 3× it zooms
+ * onto — so a key never seen primes once (per route, per sensor, per install) instead of borrowing
+ * a neighbour's. [latestKey] only GUESSES which sensor a logical camera will start on, so a reopen
+ * on the sensor the operator left it on needs no rebuild. [isSwept] records that a route's honoured
+ * presets were collected once ([wbSweepPresets]), so it never sweeps again.
+ */
+internal class WbReferenceStore {
+    private class Entry(val kelvin: Double?, val transform: DoubleArray, val order: Long)
+
+    private val entries = HashMap<WbRouteKey, List<Entry>>()
+    private val swept = HashSet<WbRouteKey>()
     private val sequence = java.util.concurrent.atomic.AtomicLong()
 
     /** Called (from the offering thread) after a NEW or materially changed transform is stored. */
-    @Volatile var onChanged: ((Map<WbRouteKey, DoubleArray>) -> Unit)? = null
+    @Volatile var onChanged: ((WbReferenceSnapshot) -> Unit)? = null
 
-    init {
-        initial.forEach { (k, v) -> if (plausibleWbTransform(v)) entries[k] = Entry(v.copyOf(), sequence.incrementAndGet()) }
+    /** The most recently learned transform of [key], whatever its white point. */
+    @Synchronized
+    fun lookup(key: WbRouteKey): DoubleArray? = entries[key]?.maxByOrNull { it.order }?.transform?.copyOf()
+
+    /**
+     * The transform for a white point of [kelvin] on [key]: blended between the learned transforms
+     * around it (mired), the nearest outside their range, or [lookup]'s latest when no learned
+     * transform carries a Kelvin or [kelvin] is null.
+     */
+    @Synchronized
+    fun lookup(key: WbRouteKey, kelvin: Double?): DoubleArray? {
+        val list = entries[key] ?: return null
+        val known = list.filter { it.kelvin != null }
+        if (kelvin == null || !kelvin.isFinite() || kelvin <= 0.0 || known.isEmpty()) {
+            return list.maxByOrNull { it.order }?.transform?.copyOf()
+        }
+        return interpolateWbTransform(known.map { it.kelvin!! to it.transform }, kelvin)
     }
 
-    fun lookup(key: WbRouteKey): DoubleArray? = entries[key]?.transform?.copyOf()
-
     /** The most recently learned key of [cameraId] in [shape] — on a logical camera, its last sensor. */
+    @Synchronized
     fun latestKey(cameraId: String, shape: WbSessionShape): WbRouteKey? = entries.entries
         .filter { it.key.cameraId == cameraId && it.key.shape == shape }
-        .maxByOrNull { it.value.order }
+        .maxByOrNull { e -> e.value.maxOf { it.order } }
         ?.key
 
     /**
-     * Stores [transform] for [key]. Returns true when it is new or moved by more than
-     * [WB_REFERENCE_EPSILON] in any element — the only case that persists or should rebuild a request.
+     * Stores [transform] for [key] at the white point [kelvin]. A sample within
+     * [WB_REFERENCE_MERGE_MIRED] of a stored one replaces it (AWB settles a few mired either side of
+     * one light); a Kelvin-less sample replaces the Kelvin-less one. At most
+     * [WB_REFERENCE_MAX_SAMPLES] Kelvin samples per route ([capped]). Returns true when the
+     * white point is new or its transform moved by more than [WB_REFERENCE_EPSILON] in any element —
+     * the only case that persists or should rebuild a request.
      */
-    fun offer(key: WbRouteKey, transform: DoubleArray): Boolean {
+    fun offer(key: WbRouteKey, transform: DoubleArray, kelvin: Double? = null): Boolean {
         if (!plausibleWbTransform(transform)) return false
-        val previous = entries[key]
-        val changed = previous == null ||
-            (0 until 9).any { abs(previous.transform[it] - transform[it]) > WB_REFERENCE_EPSILON }
-        entries[key] = Entry(transform.copyOf(), sequence.incrementAndGet())
+        val k = kelvin?.takeIf { it.isFinite() && it > 0.0 }
+        val changed = synchronized(this) {
+            val list = entries[key].orEmpty()
+            val same = list.firstOrNull { e -> sameWhitePoint(e.kelvin, k) }
+            val moved = same == null ||
+                (0 until 9).any { abs(same.transform[it] - transform[it]) > WB_REFERENCE_EPSILON }
+            entries[key] = capped(list.filter { it !== same } + Entry(k, transform.copyOf(), sequence.incrementAndGet()))
+            moved
+        }
         if (changed) onChanged?.invoke(snapshot())
         return changed
     }
 
-    fun snapshot(): Map<WbRouteKey, DoubleArray> = entries.mapValues { it.value.transform.copyOf() }
+    /**
+     * [list] with at most [WB_REFERENCE_MAX_SAMPLES] Kelvin samples: each surplus one is the OLDER of
+     * the two white points closest in mired, so the range survives — a sweep's Incandescent and
+     * Cloudy anchors are never pushed out by AUTO learning filling the middle (review 2026-10-27).
+     */
+    private fun capped(list: List<Entry>): List<Entry> {
+        var next = list
+        while (next.count { it.kelvin != null } > WB_REFERENCE_MAX_SAMPLES) {
+            val byMired = next.filter { it.kelvin != null }.sortedBy { 1e6 / it.kelvin!! }
+            val (a, b) = byMired.zipWithNext().minBy { (a, b) -> 1e6 / b.kelvin!! - 1e6 / a.kelvin!! }
+            val victim = if (a.order < b.order) a else b
+            next = next.filter { it !== victim }
+        }
+        return next
+    }
+
+    /** Whether [key]'s honoured presets were already collected ([markSwept]). */
+    @Synchronized
+    fun isSwept(key: WbRouteKey): Boolean = key in swept
+
+    /** Records that [key]'s preset sweep finished; persisted with the transforms. */
+    fun markSwept(key: WbRouteKey) {
+        val added = synchronized(this) { swept.add(key) }
+        if (added) onChanged?.invoke(snapshot())
+    }
+
+    /** Every route's samples NEWEST FIRST (what [seed] expects back), and the swept routes. */
+    @Synchronized
+    fun snapshot(): WbReferenceSnapshot = WbReferenceSnapshot(
+        samples = entries.mapValues { (_, list) ->
+            list.sortedByDescending { it.order }.map { WbReferenceSample(it.kelvin, it.transform.copyOf()) }
+        },
+        swept = swept.toSet(),
+    )
 
     /**
      * Adds persisted transforms without notifying and without displacing anything learned in this
-     * process (storage loads off the main thread and may land after the first session learned).
-     * Seeded entries rank older than every learned one.
+     * process (storage loads off the main thread and may land after the first session learned): a
+     * persisted white point joins a route only where no learned sample already holds it. Seeded
+     * entries rank older than every learned one and keep their persisted order (newest first).
      */
-    fun seed(persisted: Map<WbRouteKey, DoubleArray>) {
-        persisted.forEach { (k, v) ->
-            if (plausibleWbTransform(v)) entries.putIfAbsent(k, Entry(v.copyOf(), -sequence.incrementAndGet()))
+    @Synchronized
+    fun seed(persisted: WbReferenceSnapshot) {
+        persisted.samples.forEach { (k, samples) ->
+            val have = entries[k].orEmpty()
+            val added = samples.filter { s ->
+                plausibleWbTransform(s.transform) && have.none { e -> sameWhitePoint(e.kelvin, s.kelvin) }
+            }.map { Entry(it.kelvin, it.transform.copyOf(), -sequence.incrementAndGet()) }
+            if (added.isNotEmpty()) entries[k] = capped(have + added)
         }
+        swept.addAll(persisted.swept)
     }
+
+    private fun sameWhitePoint(a: Double?, b: Double?): Boolean =
+        if (a == null || b == null) a == b else abs(1e6 / a - 1e6 / b) < WB_REFERENCE_MERGE_MIRED
+
+    /** [seed] for Kelvin-less transforms (the pre-2026-10-27 store, and host tests). */
+    fun seed(persisted: Map<WbRouteKey, DoubleArray>) =
+        seed(WbReferenceSnapshot(persisted.mapValues { listOf(WbReferenceSample(null, it.value)) }, emptySet()))
 
     companion object {
         /** Below the HAL's own 1/128 transform quantization: smaller moves are AWB noise. */
         const val WB_REFERENCE_EPSILON = 0.01
+
+        /**
+         * One white point per this many mired: ~±90 K at 3000 K, ~±250 K at 5000 K — wider than an
+         * AUTO frame's settling jitter, narrower than the Flip6's preset spacing (Incandescent
+         * 2873 K / Daylight 5162 K / Cloudy 6313 K / Shade ≈ 7500 K are ≥ 25 mired apart).
+         */
+        const val WB_REFERENCE_MERGE_MIRED = 10.0
+
+        /** Kelvin samples kept per route; the oldest goes first. */
+        const val WB_REFERENCE_MAX_SAMPLES = 12
     }
 }
+
+/** What [WbReferenceStore] persists: every route's samples and the routes already swept. */
+internal data class WbReferenceSnapshot(
+    val samples: Map<WbRouteKey, List<WbReferenceSample>>,
+    val swept: Set<WbRouteKey>,
+)
+
+/**
+ * The transform at [kelvin] from Kelvin-tagged [samples]: linear in mired between the two around it
+ * (rows that each sum to 1 still sum to 1), the nearest one's outside their range.
+ */
+internal fun interpolateWbTransform(samples: List<Pair<Double, DoubleArray>>, kelvin: Double): DoubleArray {
+    val byMired = samples.sortedBy { 1e6 / it.first }
+    val mired = 1e6 / kelvin
+    val lo = byMired.lastOrNull { 1e6 / it.first <= mired }
+    val hi = byMired.firstOrNull { 1e6 / it.first >= mired }
+    if (lo == null) return byMired.first().second.copyOf()
+    if (hi == null || hi === lo) return lo.second.copyOf()
+    val mLo = 1e6 / lo.first
+    val mHi = 1e6 / hi.first
+    val w = if (mHi - mLo < 1e-9) 0.0 else (mired - mLo) / (mHi - mLo)
+    return DoubleArray(9) { i -> lo.second[i] * (1.0 - w) + hi.second[i] * w }
+}
+
+/**
+ * The white point a frame's COLOR_CORRECTION_GAINS ([r], [g], [b]) balance for, found the DNG way
+ * through [calibration] ([RawDevelopMath.neutralCct]); null without a calibration, or when the
+ * gains cannot be read as a white point.
+ */
+internal fun wbFrameKelvin(calibration: ColorCalibration?, r: Double, g: Double, b: Double): Double? {
+    if (calibration == null || !(r > 0.0 && g > 0.0 && b > 0.0)) return null
+    return runCatching {
+        RawDevelopMath.neutralCct(
+            doubleArrayOf(r, g, b),
+            calibration.colorMatrix1,
+            calibration.colorMatrix2,
+            calibration.calibration1,
+            calibration.calibration2,
+            calibration.cct1,
+            calibration.cct2,
+        )
+    }.getOrNull()?.takeIf { it.isFinite() && it > 0.0 }
+}
+
+/**
+ * The white point whose transform a matrix wire for [c] should replay: the manual Kelvin, an
+ * ignored preset's target, or the custom gains' own white point. Null when the route has no
+ * calibration (its learned transforms carry no Kelvin either) or the packet owns no white point.
+ */
+internal fun wbTransformKelvin(c: ManualControls, cap: WbCapability, calibration: ColorCalibration?): Double? {
+    if (calibration == null) return null
+    return when (c.wbMode) {
+        WbMode.MANUAL -> normalizedWbKelvin(c.wbKelvin, cap).toDouble()
+        WbMode.CUSTOM -> c.customWbGains?.let { g ->
+            wbFrameKelvin(calibration, g.r.toDouble(), (g.gEven + g.gOdd) / 2.0, g.b.toDouble())
+        }
+        WbMode.INCANDESCENT, WbMode.FLUORESCENT, WbMode.DAYLIGHT, WbMode.CLOUDY, WbMode.SHADE ->
+            if (wbAppOwned(c, cap)) wbPresetTarget(c.wbMode)?.kelvin?.toDouble() else null
+        WbMode.AUTO -> null
+    }
+}
+
+/**
+ * The presets a route sweeps once to learn the HAL's own transform at each white point: the
+ * along-the-locus ones (fluorescent presets carry a tint the Kelvin read ignores), in the order a
+ * HAL that honours them is advertised to apply. Empty where presets are ignored — PMA110 renders
+ * every preset with the AUTO gains, so there is nothing to learn.
+ */
+internal fun wbSweepPresets(cap: WbCapability): List<Int> =
+    if (!cap.presetsHonoured) {
+        emptyList()
+    } else {
+        listOf(
+            CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT,
+            CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+            CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT,
+            CameraMetadata.CONTROL_AWB_MODE_SHADE,
+        ).filter { exactAdvertisedMode(it, cap.awbModes) != null }
+    }
+
+/**
+ * Whether the repeating request for [c] should sweep the route's presets first: the packet wants an
+ * app-owned white point (manual Kelvin or custom gains), the HAL honours at least two locus presets,
+ * a calibration can read their white points, processed pixels depend on the transform, and the
+ * route has not been swept before.
+ */
+internal fun wbSweepWanted(
+    c: ManualControls,
+    cap: WbCapability,
+    calibrated: Boolean,
+    alreadySwept: Boolean,
+    transformRequired: Boolean,
+): Boolean = !alreadySwept && calibrated && transformRequired &&
+    (c.wbMode == WbMode.MANUAL || c.wbMode == WbMode.CUSTOM) && wbAppOwned(c, cap) &&
+    wbSweepPresets(cap).size >= 2

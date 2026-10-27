@@ -275,16 +275,21 @@ class CameraEngine internal constructor(
     // relearns it).
     private val wbReferencePersistence = me.hletrd.telecampro.storage.WbReferencePersistence(context)
     private val wbReferences = WbReferenceStore()
-    @Volatile private var wbReferencePersistedKeys: Set<WbRouteKey> = emptySet()
+    @Volatile private var wbReferencePersistedShape: Set<String> = emptySet()
     @Volatile private var wbReferencePersistedAtMs = 0L
 
     init {
         wbReferences.onChanged = { snapshot ->
             val now = android.os.SystemClock.uptimeMillis()
-            if (!wbReferencePersistedKeys.containsAll(snapshot.keys) ||
+            // A new route, white point or sweep persists at once; a drifting known one at most once a
+            // minute. The shape is every (route, rounded Kelvin) plus the swept routes.
+            val shape = snapshot.samples.flatMap { (k, samples) ->
+                samples.map { k.encode() + "@" + (it.kelvin?.let(Math::round) ?: "-") }
+            }.toSet() + snapshot.swept.map { "swept:" + it.encode() }
+            if (!wbReferencePersistedShape.containsAll(shape) ||
                 now - wbReferencePersistedAtMs >= WB_REFERENCE_PERSIST_INTERVAL_MS
             ) {
-                wbReferencePersistedKeys = snapshot.keys
+                wbReferencePersistedShape = shape
                 wbReferencePersistedAtMs = now
                 runCatching { ioExecutor.execute { wbReferencePersistence.save(snapshot) } }
             }
@@ -2735,9 +2740,10 @@ class CameraEngine internal constructor(
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
-        // One store for every controller (WhiteBalance.kt); a take holds lens-crossing WB rebuilds.
+        // One store for every controller (WhiteBalance.kt); a take — starting or rolling — holds
+        // lens-crossing WB rebuilds and any preset sweep.
         ctrl.wbReferences = wbReferences
-        ctrl.wbLensRebuildHeld = { recorder != null }
+        ctrl.wbLensRebuildHeld = { recorder != null || recAdmission.isInFlight() }
         // Every result callback is identity-gated: a CLOSING controller's capture results keep
         // arriving on its camera thread for a beat after the replacement is wired, and an ungated
         // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a

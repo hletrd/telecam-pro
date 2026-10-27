@@ -406,4 +406,184 @@ class WhiteBalanceTest {
         assertFalse(WbWire.Matrix(floatArrayOf(1f, 1f, 1f, 2f), autoTransform) == WbWire.Matrix(floatArrayOf(1f, 1f, 1f, 3f), autoTransform))
         assertTrue(abs(WbWire.Matrix(floatArrayOf(1f, 1f, 1f, 2f), autoTransform).hashCode()) >= 0)
     }
+
+    // ---- Kelvin-tagged references and the preset sweep (Galaxy Z Flip6, 2026-10-27, A23) ----
+
+    private fun m128(vararg v: Int) = DoubleArray(9) { v[it] / 128.0 }
+
+    // The Flip6's own transforms (result keys, camera 0 / sensor 5) and their white points read
+    // through camera 0's calibration (.context/a23-flip6-generic-still-2026-10-27/).
+    private val flip6Incandescent = m128(168, -26, -14, -41, 153, 16, -26, -162, 316)
+    private val flip6Daylight = m128(186, -61, 2, -27, 167, -12, 5, -96, 219)
+    private val flip6Cloudy = m128(193, -67, 2, -23, 160, -9, 3, -83, 208)
+    private val flip6Auto = doubleArrayOf(1.33594, -0.25, -0.08594, -0.28125, 1.21875, 0.0625, -0.10156, -1.13281, 2.22656)
+
+    private fun maxDiff(a: DoubleArray, b: DoubleArray) = (0 until 9).maxOf { abs(a[it] - b[it]) }
+
+    @Test fun `mired interpolation of the HAL's own transforms predicts the one between`() {
+        val predicted = interpolateWbTransform(listOf(2873.0 to flip6Incandescent, 6313.0 to flip6Cloudy), 5162.0)
+        assertTrue(maxDiff(predicted, flip6Daylight) < 0.08)
+        // The room's AUTO transform from Incandescent + Daylight, within the same bound.
+        val auto = interpolateWbTransform(listOf(2873.0 to flip6Incandescent, 5162.0 to flip6Daylight), 3201.0)
+        assertTrue(maxDiff(auto, flip6Auto) < 0.08)
+        // Exact at a sample, clamped outside the learned range, rows still summing to 1.
+        val samples = listOf(2873.0 to flip6Incandescent, 5162.0 to flip6Daylight, 6313.0 to flip6Cloudy)
+        assertArrayEquals(flip6Daylight, interpolateWbTransform(samples, 5162.0), 1e-12)
+        assertArrayEquals(flip6Incandescent, interpolateWbTransform(samples, 2000.0), 1e-12)
+        assertArrayEquals(flip6Cloudy, interpolateWbTransform(samples, 9000.0), 1e-12)
+        val mid = interpolateWbTransform(samples, 4000.0)
+        for (r in 0 until 3) assertEquals(1.0, mid[r * 3] + mid[r * 3 + 1] + mid[r * 3 + 2], 0.01)
+    }
+
+    @Test fun `a route keeps one transform per white point and blends them for a Kelvin`() {
+        val store = WbReferenceStore()
+        val key = WbRouteKey("0", WbSessionShape.SDR, "5")
+        assertTrue(store.offer(key, flip6Auto, 3201.0))
+        // One white point only: every Kelvin gets it, as before the Kelvin tags.
+        assertArrayEquals(flip6Auto, store.lookup(key, 5000.0), 0.0)
+        assertTrue(store.offer(key, flip6Incandescent, 2873.0))
+        assertTrue(store.offer(key, flip6Daylight, 5162.0))
+        assertTrue(store.offer(key, flip6Cloudy, 6313.0))
+        assertArrayEquals(flip6Daylight, store.lookup(key, 5162.0), 1e-12)
+        assertTrue(maxDiff(store.lookup(key, 5000.0)!!, flip6Daylight) < 0.05)
+        // No Kelvin asked: the latest, exactly what one-transform routes always replayed.
+        assertArrayEquals(flip6Cloudy, store.lookup(key), 0.0)
+        assertArrayEquals(flip6Cloudy, store.lookup(key, null), 0.0)
+        // AWB settling a few mired off a stored white point replaces it rather than adding one.
+        assertFalse(store.offer(key, flip6Daylight, 5200.0))
+        assertEquals(4, store.snapshot().samples.getValue(key).size)
+    }
+
+    @Test fun `a route keeps at most a dozen white points and always the newest`() {
+        val store = WbReferenceStore()
+        val key = WbRouteKey("2", WbSessionShape.SDR, null)
+        // 20 mired apart, so none merges: 10000 K down to ~2800 K. Which surplus point goes is the
+        // closest pair's older one (the range test below pins that); here only the cap.
+        val kelvins = (0 until 14).map { 1e6 / (100.0 + it * 20.0) }
+        kelvins.forEach { store.offer(key, flip6Daylight, it) }
+        val kept = store.snapshot().samples.getValue(key).mapNotNull { it.kelvin }
+        assertEquals(WbReferenceStore.WB_REFERENCE_MAX_SAMPLES, kept.size)
+        assertEquals(kelvins.last(), kept.first(), 0.0)
+    }
+
+    @Test fun `a frame's white point reads back the Kelvin its gains were built for`() {
+        for (k in listOf(3000, 5000, 7000)) {
+            val g = wbTargetGains(pma110Cam2, WbTarget(k, 0))
+            val read = wbFrameKelvin(pma110Cam2, g[0].toDouble(), g[1].toDouble(), g[3].toDouble())!!
+            assertEquals(k.toDouble(), read, k * 0.03)
+        }
+        assertNull(wbFrameKelvin(null, 2.0, 1.0, 1.5))
+        assertNull(wbFrameKelvin(pma110Cam2, 0.0, 1.0, 1.5))
+    }
+
+    @Test fun `the transform Kelvin follows the packet's own white point`() {
+        assertEquals(4300.0, wbTransformKelvin(ManualControls(wbMode = WbMode.MANUAL, wbKelvin = 4300), flip6, pma110Cam2))
+        assertNull(wbTransformKelvin(ManualControls(), flip6, pma110Cam2))
+        assertNull(wbTransformKelvin(ManualControls(wbMode = WbMode.MANUAL, wbKelvin = 4300), flip6, null))
+        // An honoured preset is the HAL's own; an ignored one rides the matrix at its target.
+        assertNull(wbTransformKelvin(ManualControls(wbMode = WbMode.DAYLIGHT), flip6, pma110Cam2))
+        assertEquals(5500.0, wbTransformKelvin(ManualControls(wbMode = WbMode.DAYLIGHT), pma110, pma110Cam2))
+        val custom = ManualControls(wbMode = WbMode.CUSTOM, customWbGains = WbGains(2.13f, 1f, 1f, 1.645f))
+        assertEquals(5000.0, wbTransformKelvin(custom, flip6, pma110Cam2)!!, 250.0)
+    }
+
+    @Test fun `only a HAL that honours presets is swept, along the locus, once, and never for RAW`() {
+        assertEquals(
+            listOf(
+                CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT,
+                CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+                CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT,
+            ),
+            wbSweepPresets(flip6),
+        )
+        assertTrue(wbSweepPresets(pma110).isEmpty())
+        val manual = ManualControls(wbMode = WbMode.MANUAL, wbKelvin = 5000)
+        assertTrue(wbSweepWanted(manual, flip6, calibrated = true, alreadySwept = false, transformRequired = true))
+        assertFalse(wbSweepWanted(manual, flip6, calibrated = true, alreadySwept = true, transformRequired = true))
+        assertFalse(wbSweepWanted(manual, flip6, calibrated = false, alreadySwept = false, transformRequired = true))
+        assertFalse(wbSweepWanted(manual, flip6, calibrated = true, alreadySwept = false, transformRequired = false))
+        assertFalse(wbSweepWanted(ManualControls(), flip6, calibrated = true, alreadySwept = false, transformRequired = true))
+        assertFalse(wbSweepWanted(ManualControls(wbMode = WbMode.DAYLIGHT), flip6, true, false, true))
+        assertFalse(wbSweepWanted(manual, pma110, calibrated = true, alreadySwept = false, transformRequired = true))
+    }
+
+    @Test fun `a pending sweep step takes the repeating wire for an app-owned white point only`() {
+        val manual = ManualControls(wbMode = WbMode.MANUAL, wbKelvin = 5000)
+        val step = CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
+        assertEquals(WbWire.Sweep(step), resolveWbWire(manual, flip6, pma110Cam2, flip6Auto, true, sweepPreset = step))
+        assertFalse(WbWire.Sweep(step).awbOff)
+        // AUTO, an honoured preset and a RAW-only session ignore a pending step.
+        assertTrue(resolveWbWire(ManualControls(), flip6, pma110Cam2, flip6Auto, true, sweepPreset = step) is WbWire.Auto)
+        assertTrue(resolveWbWire(ManualControls(wbMode = WbMode.DAYLIGHT), flip6, pma110Cam2, flip6Auto, true, sweepPreset = step) is WbWire.Preset)
+        assertTrue(resolveWbWire(manual, flip6, pma110Cam2, flip6Auto, false, sweepPreset = step) is WbWire.Matrix)
+        // Without a pending step the matrix carries the route's transform, as always.
+        assertTrue(resolveWbWire(manual, flip6, pma110Cam2, flip6Auto, true) is WbWire.Matrix)
+    }
+
+    @Test fun `a swept route stays swept through the snapshot and a seed`() {
+        val store = WbReferenceStore()
+        val key = WbRouteKey("0", WbSessionShape.SDR, "5")
+        var notified = 0
+        store.onChanged = { notified++ }
+        assertFalse(store.isSwept(key))
+        store.markSwept(key)
+        store.markSwept(key)
+        assertEquals(1, notified)
+        val restored = WbReferenceStore()
+        restored.seed(store.snapshot())
+        assertTrue(restored.isSwept(key))
+    }
+
+    @Test fun `every wire names the AWB mode its request carries`() {
+        val off = CameraMetadata.CONTROL_AWB_MODE_OFF
+        assertNull(WbWire.Omit.awbMode())
+        assertEquals(CameraMetadata.CONTROL_AWB_MODE_AUTO, WbWire.Auto(CameraMetadata.CONTROL_AWB_MODE_AUTO, true).awbMode())
+        assertEquals(CameraMetadata.CONTROL_AWB_MODE_AUTO, WbWire.Prime(CameraMetadata.CONTROL_AWB_MODE_AUTO).awbMode())
+        assertEquals(CameraMetadata.CONTROL_AWB_MODE_SHADE, WbWire.Preset(CameraMetadata.CONTROL_AWB_MODE_SHADE).awbMode())
+        assertEquals(CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT, WbWire.Sweep(CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT).awbMode())
+        assertEquals(off, WbWire.Cct(3200, 0).awbMode())
+        assertEquals(off, WbWire.MakerCct(3200, 0).awbMode())
+        assertEquals(off, WbWire.Matrix(floatArrayOf(1f, 1f, 1f, 2f), autoTransform).awbMode())
+    }
+
+    @Test fun `a reload keeps which white point was learned last`() {
+        val store = WbReferenceStore()
+        val key = WbRouteKey("0", WbSessionShape.SDR, "5")
+        store.offer(key, flip6Cloudy, 6313.0)
+        store.offer(key, flip6Incandescent, 2873.0)
+        store.offer(key, flip6Daylight, 5162.0)
+        val restored = WbReferenceStore()
+        restored.seed(store.snapshot())
+        // Newest first through the snapshot, so the reload's "latest" is still Daylight.
+        assertArrayEquals(flip6Daylight, restored.lookup(key), 0.0)
+        assertEquals(listOf(5162.0, 2873.0, 6313.0), restored.snapshot().samples.getValue(key).map { it.kelvin })
+    }
+
+    @Test fun `AUTO learning crowding the middle never pushes out the swept ends`() {
+        val store = WbReferenceStore()
+        val key = WbRouteKey("0", WbSessionShape.SDR, "5")
+        store.offer(key, flip6Incandescent, 2850.0)
+        store.offer(key, flip6Cloudy, 7500.0)
+        // Sixteen AUTO white points 11 mired apart between them, all newer than the two anchors.
+        (0 until 16).forEach { i -> store.offer(key, flip6Daylight, 1e6 / (330.0 - i * 11.0)) }
+        val kept = store.snapshot().samples.getValue(key).mapNotNull { it.kelvin }
+        assertEquals(WbReferenceStore.WB_REFERENCE_MAX_SAMPLES, kept.size)
+        assertTrue(2850.0 in kept)
+        assertTrue(7500.0 in kept)
+    }
+
+    @Test fun `a late seed merges persisted white points into a route that learned first`() {
+        val persisted = WbReferenceStore().apply {
+            offer(WbRouteKey("0", WbSessionShape.SDR, "5"), flip6Incandescent, 2873.0)
+            offer(WbRouteKey("0", WbSessionShape.SDR, "5"), flip6Cloudy, 6313.0)
+        }.snapshot()
+        val store = WbReferenceStore()
+        val key = WbRouteKey("0", WbSessionShape.SDR, "5")
+        store.offer(key, flip6Auto, 2900.0)
+        store.seed(persisted)
+        val kelvins = store.snapshot().samples.getValue(key).map { it.kelvin }
+        // The learned 2900 K holds its white point (2873 K is within the merge radius); Cloudy joins.
+        assertEquals(listOf(2900.0, 6313.0), kelvins)
+        assertArrayEquals(flip6Auto, store.lookup(key, 2900.0), 0.0)
+    }
 }

@@ -202,6 +202,14 @@ class CameraController internal constructor(
     private var wbPriming = false
     private var wbPrimeStartedMs = 0L
     private var lastWbObserveMs = 0L
+    // Preset sweep ([wbSweepWanted]): the route being swept, the presets still to learn, whether the
+    // repeating request currently carries one, when its step began and how many matching results it
+    // has produced. Camera-thread confined like the rest.
+    private var wbSweepKey: WbRouteKey? = null
+    private val wbSweepQueue = ArrayDeque<Int>()
+    private var wbSweeping = false
+    private var wbSweepStepStartedMs = 0L
+    private var wbSweepMatches = 0
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -1854,27 +1862,72 @@ class CameraController internal constructor(
             ?: wbReferences.latestKey(wbCameraId(), wbShape)?.physicalId
     }
 
-    /** The WB keys [c] puts on a request on this route right now ([resolveWbWire]). */
-    private fun wbWireFor(c: ManualControls): WbWire {
+    /**
+     * The WB keys [c] puts on a request on this route right now ([resolveWbWire]): the route's own
+     * transform at the packet's white point ([WbReferenceStore.lookup]). Only the repeating request
+     * passes [sweep]; a still, the ZSL intent and the session parameters never sweep.
+     */
+    private fun wbWireFor(c: ManualControls, sweep: Boolean = false): WbWire {
         val key = WbRouteKey(wbCameraId(), wbShape, wbExpectedPhysicalId())
+        val normalized = c.normalizedFor(caps)
+        val cap = caps.controlCapabilities().wb
+        val calibration = caps.colorCalibrationFor(key.physicalId)
+        // A RAW-only session's developer takes the result GAINS alone (RawLogBridge): no processed
+        // pixel depends on the transform, so it never primes or sweeps.
+        val transformRequired = wbShape != WbSessionShape.RAW_LOG
         return resolveWbWire(
-            c = c.normalizedFor(caps),
-            cap = caps.controlCapabilities().wb,
-            calibration = caps.colorCalibrationFor(key.physicalId),
-            routeTransform = wbReferences.lookup(key),
-            // A RAW-only session's developer takes the result GAINS alone (RawLogBridge): no
-            // processed pixel depends on the transform, so it never primes.
-            transformRequired = wbShape != WbSessionShape.RAW_LOG,
+            c = normalized,
+            cap = cap,
+            calibration = calibration,
+            routeTransform = wbReferences.lookup(key, wbTransformKelvin(normalized, cap, calibration)),
+            transformRequired = transformRequired,
             makerLog = wbShape == WbSessionShape.MAKER_LOG,
+            sweepPreset = if (sweep) {
+                wbSweepStep(key, normalized, cap, calibration != null, transformRequired)
+            } else {
+                null
+            },
         )
+    }
+
+    /**
+     * The preset the repeating request sweeps next on [key], or null. A sweep starts when
+     * [wbSweepWanted] holds and no take is rolling, and is abandoned (to resume later) if one starts:
+     * every step is a repeating-request swap and a preset-coloured preview, neither of which may
+     * land in a file ([wbLensRebuildHeld]).
+     */
+    private fun wbSweepStep(
+        key: WbRouteKey,
+        c: ManualControls,
+        cap: WbCapability,
+        calibrated: Boolean,
+        transformRequired: Boolean,
+    ): Int? {
+        if (wbLensRebuildHeld()) return null
+        if (wbSweepKey == key && wbSweepQueue.isNotEmpty()) return wbSweepQueue.first()
+        wbSweepKey = null
+        wbSweepQueue.clear()
+        if (!wbSweepWanted(c, cap, calibrated, wbReferences.isSwept(key), transformRequired)) return null
+        wbSweepKey = key
+        wbSweepQueue.addAll(wbSweepPresets(cap))
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i(TAG, "WhiteBalance: sweep ${key.encode()} presets=${wbSweepQueue.toList()}")
+        }
+        return wbSweepQueue.firstOrNull()
     }
 
     /** [wbWireFor] for the repeating request, recording what it was built for (camera thread). */
     private fun repeatingWbWire(): WbWire {
-        val wire = wbWireFor(controls)
+        val wire = wbWireFor(controls, sweep = true)
         val priming = wire is WbWire.Prime
         if (priming && !wbPriming) wbPrimeStartedMs = android.os.SystemClock.uptimeMillis()
         wbPriming = priming
+        val sweeping = wire is WbWire.Sweep
+        if (sweeping && !wbSweeping) {
+            wbSweepStepStartedMs = android.os.SystemClock.uptimeMillis()
+            wbSweepMatches = 0
+        }
+        wbSweeping = sweeping
         wbWireIsMatrix = wire is WbWire.Matrix
         wbWireAwbOff = wire.awbOff
         wbWireKey = WbRouteKey(wbCameraId(), wbShape, wbExpectedPhysicalId())
@@ -1890,7 +1943,7 @@ class CameraController internal constructor(
      */
     private fun observeWhiteBalance(request: CaptureRequest, result: TotalCaptureResult) {
         val now = android.os.SystemClock.uptimeMillis()
-        val interval = if (wbPriming) WB_PRIME_OBSERVE_INTERVAL_MS else WB_OBSERVE_INTERVAL_MS
+        val interval = if (wbPriming || wbSweeping) WB_PRIME_OBSERVE_INTERVAL_MS else WB_OBSERVE_INTERVAL_MS
         if (now - lastWbObserveMs < interval) return
         lastWbObserveMs = now
         val physical = if (caps.isLogicalMultiCamera) {
@@ -1898,7 +1951,12 @@ class CameraController internal constructor(
         } else {
             null
         }
-        if (request.get(CaptureRequest.CONTROL_AWB_MODE) == CameraMetadata.CONTROL_AWB_MODE_AUTO) {
+        val requestAwb = request.get(CaptureRequest.CONTROL_AWB_MODE)
+        if (wbSweeping) {
+            observeWbSweep(result, requestAwb, now)
+            return
+        }
+        if (requestAwb == CameraMetadata.CONTROL_AWB_MODE_AUTO) {
             if (physical != null) wbObservedPhysicalId = physical
             val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
             val settled = awbState == CameraMetadata.CONTROL_AWB_STATE_CONVERGED ||
@@ -1910,7 +1968,7 @@ class CameraController internal constructor(
                 ?.let { t -> DoubleArray(9) { i -> t.getElement(i % 3, i / 3).toDouble() } }
                 ?.takeIf(::plausibleWbTransform)
             val stored = when {
-                learned != null -> { wbReferences.offer(key, learned); true }
+                learned != null -> { wbReferences.offer(key, learned, wbResultKelvin(key, result)); true }
                 // A HAL that never reports a usable transform must not keep the route on AUTO:
                 // identity is what PMA110's TC route reports in a bare session, the least-wrong
                 // blind guess.
@@ -1926,6 +1984,14 @@ class CameraController internal constructor(
                 }
                 postToCamera { if (!closed) startPreview() }
             }
+            return
+        }
+        // An honoured preset on the wire (the operator's own choice): the HAL's transform at that
+        // white point, learned like an AUTO frame so a later manual Kelvin can blend it.
+        if (requestAwb != null && requestAwb in wbSweepPresets(caps.controlCapabilities().wb) &&
+            result.get(CaptureResult.CONTROL_AWB_MODE) == requestAwb
+        ) {
+            learnWbSample(WbRouteKey(wbCameraId(), wbShape, physical ?: wbExpectedPhysicalId()), result)
             return
         }
         // Manual matrix WB on a logical camera: the HAL crossed onto another sensor, whose own
@@ -1944,6 +2010,70 @@ class CameraController internal constructor(
         if (smoothPreviewBoost || wbLensRebuildHeld()) return
         wbObservedPhysicalId = physical
         postToCamera { if (!closed) startPreview() }
+    }
+
+    /**
+     * One sweep step's observation (paced like priming): the second result that both asked for and
+     * reports the step's preset carries the HAL's own transform at that white point; a step that
+     * never produces one gives up after [WB_SWEEP_STEP_TIMEOUT_MS]. Each finished step rebuilds the
+     * repeating request — onto the next preset, or onto the blended matrix once the route is swept.
+     */
+    private fun observeWbSweep(result: TotalCaptureResult, requestAwb: Int?, now: Long) {
+        val key = wbSweepKey ?: return
+        val preset = wbSweepQueue.firstOrNull() ?: return
+        if (wbLensRebuildHeld()) {
+            // A take is starting: no preset frame and no step swap may reach the file. Abandon the
+            // sweep (the route stays unswept, so it sweeps after the take) and swap once onto the
+            // blended matrix now, inside admission, before the encoder's first frame.
+            wbSweepKey = null
+            wbSweepQueue.clear()
+            wbSweepMatches = 0
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                android.util.Log.i(TAG, "WhiteBalance: sweep ${key.encode()} abandoned for a take at $preset")
+            }
+            postToCamera { if (!closed) startPreview() }
+            return
+        }
+        var learned = false
+        if (requestAwb == preset && result.get(CaptureResult.CONTROL_AWB_MODE) == preset) {
+            wbSweepMatches++
+            if (wbSweepMatches >= WB_SWEEP_MATCHES) learned = learnWbSample(key, result)
+        }
+        if (!learned && now - wbSweepStepStartedMs < WB_SWEEP_STEP_TIMEOUT_MS) return
+        wbSweepQueue.removeFirst()
+        wbSweepMatches = 0
+        wbSweepStepStartedMs = now
+        if (wbSweepQueue.isEmpty()) {
+            // Swept even if a step timed out: a HAL that never reports a transform must not sweep
+            // again on every rebuild; the matrix then falls back to priming like any unknown route.
+            wbReferences.markSwept(key)
+            wbSweepKey = null
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                android.util.Log.i(TAG, "WhiteBalance: swept ${key.encode()} last=$preset learned=$learned")
+            }
+        }
+        postToCamera { if (!closed) startPreview() }
+    }
+
+    /** The white point a result's own gains balance for on [key]'s sensor ([wbFrameKelvin]). */
+    private fun wbResultKelvin(key: WbRouteKey, result: CaptureResult): Double? {
+        val g = result.get(CaptureResult.COLOR_CORRECTION_GAINS) ?: return null
+        return wbFrameKelvin(
+            caps.colorCalibrationFor(key.physicalId),
+            g.red.toDouble(),
+            (g.greenEven + g.greenOdd) / 2.0,
+            g.blue.toDouble(),
+        )
+    }
+
+    /** Stores [result]'s transform for [key] at its own white point; false when none is usable. */
+    private fun learnWbSample(key: WbRouteKey, result: CaptureResult): Boolean {
+        val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+            ?.let { t -> DoubleArray(9) { i -> t.getElement(i % 3, i / 3).toDouble() } }
+            ?.takeIf(::plausibleWbTransform)
+            ?: return false
+        wbReferences.offer(key, transform, wbResultKelvin(key, result))
+        return true
     }
 
     /**
@@ -2299,6 +2429,9 @@ class CameraController internal constructor(
             }
             return false
         }
+        // The WB the real still would carry: a ring frame rendered in another AWB mode is another
+        // white balance (a preset sweep, or the frames just before an operator's WB change).
+        val stillWb = wbWireFor(c)
         val intent = ZslStillIntent(
             manualAe = manualAeAdmitted(c, caps),
             wantProcessed = true,
@@ -2317,16 +2450,19 @@ class CameraController internal constructor(
             // stillVideoStabMode(c, …). Equal for every servable (sub-1/15 s) still on every profile;
             // only a long PMA110 still in an Active session differs, and the ring never serves one.
             framedLikeRing = zslStillFramingMatches(
-                stillVideoStabMode(c, wbAppOwned = wbWireFor(c).awbOff),
+                stillVideoStabMode(c, wbAppOwned = stillWb.awbOff),
                 sessionVideoStabMode(),
             ),
+            awbMode = stillWb.awbMode(),
+            wbSweeping = wbSweeping,
         )
         if (!zslIntentEligible(intent)) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                 android.util.Log.i(
                     TAG,
                     "ZslRefuse: intent manualAe=${intent.manualAe} raw=${intent.wantRaw} " +
-                        "flash=${intent.flash} gesture=${intent.gestureActive} framing=${intent.framedLikeRing}",
+                        "flash=${intent.flash} gesture=${intent.gestureActive} framing=${intent.framedLikeRing} " +
+                        "wbSweep=${intent.wbSweeping}",
                 )
             }
             return false
@@ -2340,6 +2476,7 @@ class CameraController internal constructor(
                 exposureNs = r.get(CaptureResult.SENSOR_EXPOSURE_TIME),
                 iso = r.get(CaptureResult.SENSOR_SENSITIVITY),
                 zoomRatio = r.get(CaptureResult.CONTROL_ZOOM_RATIO),
+                awbMode = r.get(CaptureResult.CONTROL_AWB_MODE),
             )
             if (!zslFrameAdmissible(facts, intent, nowNs)) {
                 if (i == zslRing.indices.last && recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
@@ -2347,7 +2484,7 @@ class CameraController internal constructor(
                         TAG,
                         "ZslRefuse: newest frame age=${(nowNs - facts.timestampNs) / 1_000_000}ms " +
                             "exp=${facts.exposureNs}/${intent.exposureNs} iso=${facts.iso}/${intent.iso} " +
-                            "zoom=${facts.zoomRatio}/${intent.zoomRatio}",
+                            "zoom=${facts.zoomRatio}/${intent.zoomRatio} awb=${facts.awbMode}/${intent.awbMode}",
                     )
                 }
                 continue
@@ -3370,6 +3507,10 @@ class CameraController internal constructor(
         const val WB_OBSERVE_INTERVAL_MS = 1_000L
         const val WB_PRIME_OBSERVE_INTERVAL_MS = 100L
         const val WB_PRIME_TIMEOUT_MS = 3_000L
+        // A sweep step learns from its second matching result (>= 100 ms after the first, so the
+        // HAL has applied the preset) and gives up after 1.5 s.
+        const val WB_SWEEP_MATCHES = 2
+        const val WB_SWEEP_STEP_TIMEOUT_MS = 1_500L
         // Maker TC lens guard read pacing: a lens handover is a sustained state, not a frame event,
         // so a quarter-second reaction costs nothing while the per-result String read drops to about
         // one frame in eight at 30 fps.

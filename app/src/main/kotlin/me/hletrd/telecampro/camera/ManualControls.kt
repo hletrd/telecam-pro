@@ -1240,6 +1240,11 @@ private fun CaptureRequest.Builder.applyWhiteBalance(wire: WbWire) {
             set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
             set(CaptureRequest.CONTROL_AWB_LOCK, false)
         }
+        // A sweep step: the HAL's own preset, so its frames report the HAL's transform there.
+        is WbWire.Sweep -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
+            set(CaptureRequest.CONTROL_AWB_LOCK, false)
+        }
         is WbWire.Preset -> set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
         is WbWire.MakerCct -> {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)

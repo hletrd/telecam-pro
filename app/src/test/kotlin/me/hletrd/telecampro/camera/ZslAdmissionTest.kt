@@ -33,14 +33,20 @@ class ZslAdmissionTest {
         zoomRatio: Float = 2f,
         gestureActive: Boolean = false,
         framedLikeRing: Boolean = true,
-    ) = ZslStillIntent(manualAe, wantProcessed, wantRaw, flash, exposureNs, iso, zoomRatio, gestureActive, framedLikeRing)
+        awbMode: Int? = null,
+        wbSweeping: Boolean = false,
+    ) = ZslStillIntent(
+        manualAe, wantProcessed, wantRaw, flash, exposureNs, iso, zoomRatio, gestureActive, framedLikeRing,
+        awbMode, wbSweeping,
+    )
 
     private fun frame(
         ageNs: Long = 50_000_000L,
         exposureNs: Long? = 8_000_000L,
         iso: Int? = 400,
         zoomRatio: Float? = 2f,
-    ) = ZslFrameFacts(nowNs - ageNs, exposureNs, iso, zoomRatio)
+        awbMode: Int? = null,
+    ) = ZslFrameFacts(nowNs - ageNs, exposureNs, iso, zoomRatio, awbMode)
 
     // ---- intent eligibility ----
 
@@ -90,6 +96,25 @@ class ZslAdmissionTest {
             preview,
         )
         assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = longActive), nowNs))
+    }
+
+    @Test
+    fun `a ring frame rendered in another white balance mode never serves`() {
+        val off = android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_OFF
+        val daylight = android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
+        // A manual-Kelvin still (AWB OFF) against a sweep's leftover Daylight frame: refused.
+        assertFalse(zslFrameAdmissible(frame(awbMode = daylight), intent(awbMode = off), nowNs))
+        // Same mode serves; an unread frame mode refuses (may miss, never a wrong frame).
+        assertTrue(zslFrameAdmissible(frame(awbMode = off), intent(awbMode = off), nowNs))
+        assertFalse(zslFrameAdmissible(frame(awbMode = null), intent(awbMode = off), nowNs))
+        // No still mode known (a route with no AWB key at all): the term is skipped.
+        assertTrue(zslFrameAdmissible(frame(awbMode = daylight), intent(awbMode = null), nowNs))
+    }
+
+    @Test
+    fun `a running preset sweep refuses before any frame is consulted`() {
+        assertFalse(zslIntentEligible(intent(wbSweeping = true)))
+        assertFalse(zslFrameAdmissible(frame(), intent(wbSweeping = true), nowNs))
     }
 
     // ---- the honest gate: actual vs intended sensor values ----

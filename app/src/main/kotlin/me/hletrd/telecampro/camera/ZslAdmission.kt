@@ -54,6 +54,8 @@ internal data class ZslFrameFacts(
     val exposureNs: Long?,
     val iso: Int?,
     val zoomRatio: Float?,
+    /** The frame's own CONTROL_AWB_MODE result; null when unread. */
+    val awbMode: Int?,
 )
 
 /** What the shutter press is asking for, snapshotted once at capture dispatch. */
@@ -78,6 +80,15 @@ internal data class ZslStillIntent(
      * (FIELD_CHECKS A23) — for latency, the framing twin of the exposure rule above.
      */
     val framedLikeRing: Boolean,
+    /**
+     * The CONTROL_AWB_MODE the real still would carry (OFF for an app-owned white point), or null
+     * to skip the check. A ring frame rendered in another mode is another white balance: during a
+     * preset sweep (WhiteBalance.kt) the ring holds preset frames while the still carries the
+     * manual matrix, and the last sweep frames stay young enough to serve after it ends.
+     */
+    val awbMode: Int?,
+    /** A preset sweep is running: every ring frame carries a sweep preset, never the still's WB. */
+    val wbSweeping: Boolean,
 )
 
 /**
@@ -90,7 +101,7 @@ internal data class ZslStillIntent(
 internal fun zslIntentEligible(intent: ZslStillIntent): Boolean =
     intent.manualAe && intent.wantProcessed && !intent.wantRaw &&
         (intent.flash == FlashMode.OFF || intent.flash == FlashMode.TORCH) &&
-        !intent.gestureActive && intent.framedLikeRing
+        !intent.gestureActive && intent.framedLikeRing && !intent.wbSweeping
 
 /**
  * Whether one buffered frame IS the requested still. [nowNs] shares the SENSOR_TIMESTAMP clock
@@ -110,6 +121,7 @@ internal fun zslFrameAdmissible(frame: ZslFrameFacts, intent: ZslStillIntent, no
     if (abs(log2Ratio(frameExposureNs.toDouble(), intent.exposureNs.toDouble())) > ZSL_VALUE_TOLERANCE_STOPS) return false
     if (abs(log2Ratio(frameIso.toDouble(), intent.iso.toDouble())) > ZSL_VALUE_TOLERANCE_STOPS) return false
     if (abs(frameZoom / intent.zoomRatio - 1f) > ZSL_ZOOM_TOLERANCE) return false
+    if (intent.awbMode != null && frame.awbMode != intent.awbMode) return false
     return true
 }
 

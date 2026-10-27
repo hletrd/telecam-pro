@@ -609,11 +609,36 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4230 K +10 = CIE F2, Daylight 5500, Cloudy 6500, Shade 7500); GENERIC keeps CONTROL_AWB_MODE
   presets (Flip6 honours them). Path order is by CAPABILITY, never a model string: calibration →
   matrix; else CCT mode; else uncalibrated matrix. The maker route's forced-AUTO stopgap
-  (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement. **Two PMA110
-  STILL traps, both profile-gated and both invisible in the preview:** (1) a matrix still at the
-  template's stabilization OFF inside a stabilized session renders some other WB (orange came out
-  blue), so EVERY still rides the session's mode and is framed like the preview (the "Stills are
-  framed like the PREVIEW" bullet; a 4 s matrix still in Active has no working mode); (2) Face
+  (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement.
+  **The transform moves with the illuminant, so a route keeps one per white point (2026-10-27,
+  A23).** The Galaxy Z Flip6's own transform blue row is −0.20 / −1.27 / +2.47 at Incandescent,
+  +0.04 / −0.75 / +1.71 at Daylight; replaying the one learned in a warm room under 5000 K gains
+  drove blue to the floor (grey 127 / 81 / 7 against the Daylight preset's 125 / 89 / 23 at nearly
+  the same gains). `WbReferenceStore` now tags each learned transform with the white point its own
+  result gains balance for (`wbFrameKelvin`, the RAW developer's `neutralCct` through the sensor
+  calibration), keeps up to 12 per route (10-mired merge; a surplus point is the older of the two
+  closest in mired, so a sweep's end anchors survive AUTO learning), and `lookup(key, kelvin)` blends the two
+  around the target linearly in mired (nearest outside the range; the latest when none carries a
+  Kelvin — a route without calibration, or the pre-Kelvin store). On the Flip6 that predicts
+  Daylight from Incandescent + Cloudy within 0.07 per element. Honoured presets on the wire are
+  learned too, and a route whose HAL honours ≥ 2 locus presets (`wbSweepPresets`: Incandescent /
+  Daylight / Cloudy / Shade as advertised) is SWEPT once when manual Kelvin or custom gains first
+  need its transform (`wbSweepWanted`, `WbWire.Sweep`): each preset rides the repeating request
+  until its second matching result (1.5 s cap per step), then the matrix — 1.9 s of preset-coloured
+  finder on the Flip6, once per route per install (`isSwept` is persisted), NEVER while a take is
+  starting or rolling (`wbLensRebuildHeld` = recorder published OR admission in flight; a REC press
+  mid-sweep abandons it and swaps once onto the matrix inside admission, before the encoder's first
+  frame) and never on a still (a still mid-sweep takes the blended matrix; pseudo-ZSL refuses during a sweep
+  and refuses any ring frame whose AWB mode differs from the still's). Flip6 A/B, mean |Δ| over 24
+  patches against the HAL's own preset at the same white point: one transform per route 4.2–7.2
+  sRGB codes (one patch 67 off), Kelvin-tagged from used presets 2.9–4.4, swept 1.7–3.3 (light drift
+  over the batch 0.9–3.7). An offline "HAL look × calibration" model got only halfway and was not
+  shipped. PMA110 ignores presets, so it never sweeps; it gains the per-white-point AUTO transforms
+  as it meets different light. **Two PMA110 STILL traps, both invisible in the preview:** (1) a
+  matrix still at the template's stabilization OFF inside a stabilized session renders some other
+  WB (orange came out blue), so EVERY still on every profile rides the session's mode and is framed
+  like the preview (the "Stills are framed like the PREVIEW" bullet; a 4 s matrix still in Active
+  has no working mode); (2, profile-gated) Face
   Priority's FACE_PRIORITY scene (CONTROL_MODE USE_SCENE_MODE) overrides an app-owned WB on stills —
   the result echoes the gains, the pixels carry the fixed blue cast
   (`facePrioritySceneOverridesManualWb`: the scene half stands down while WB is app-owned, detection
