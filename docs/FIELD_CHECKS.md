@@ -1177,6 +1177,12 @@ HLG code passthrough and unchanged SDR (48 renders, 144 channel checks, toleranc
 FAILED the HLG coloured patch `[40,48,64]`, R=44 instead of 40; corrected immutable debug
 `e191e6917bbb-34b6e502` PASSED. **PMA110:** the same corrected APK PASSED. This tests the actual
 shader mathematics, not camera sampler/data-space negotiation. JVM tests: 2992, no failures.
+**Ported onto `main` after the still-framing commits (2026-10-27):** the GL sources and this test
+are byte-identical to the corrected commit, so the PMA110 result stands; PMA110 was not re-run
+because another session held it for the lit A20 comparison. Immutable debug
+`2f83c64c3945-e1fd4149` (APK SHA-256 `96843b16…`) PASSED on the **Galaxy Z Flip6** (Adreno 750,
+Android 17) and on the **TB331FC** (Adreno 610, Android 15), a third GPU/driver. Host gate: 3005
+JVM tests with no failures, 168 docs checks, release lint ran.
 
 **Fresh stock control and DRC probes:** scene was effectively dark; POCO disconnected. Stock
 Pro Video 4K30 O-Log2 at UI ISO 400 / 1/30 s returned actual ISO 800 / 33,322,214 ns, gain ratio
