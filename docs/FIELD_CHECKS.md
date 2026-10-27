@@ -1189,7 +1189,11 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   0.991 / 0.683; Daylight 1.403 / 0.274 vs 1.398 / 0.241; 5000 K on the same blue floor). Every
   press delivered (a 5-frame burst included), press to image 0.51–0.59 s in Standard and Active
   alike. ZSL now passes the framing term in stabilized sessions and refused only on the dim
-  exposure mismatch. Shipped as one law for every profile; the profile flag is removed.
+  exposure mismatch. Shipped as one law for every profile; the profile flag is removed. The
+  committed build (immutable debug `202a31cb9abc-42bf6eb1`, SHA-256 `abd3b91b…`) reproduced it:
+  Active AUTO and 3000 K stills 1.000 of the finder, a Standard still 1.239, each delivered in
+  0.56–0.59 s, the still request carrying the session's mode. PMA110 was not re-run (another
+  session held it); its still requests are unchanged by construction, and review confirmed it.
 
 **HLG10 and RAW log sessions, PMA110 in-app (2026-10-27).** Same build fingerprint as above,
 immutable debug `2f83c64c3945-e1fd4149` (code identical to `c87497de`), rear 1× Video, 4K 29.97,
