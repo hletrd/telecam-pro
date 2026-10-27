@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -24,6 +24,8 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A20** has its measured DCG/DRC gap closed by A26; it still needs a rear 1× native-Log soak, wider gamut/lighting coverage and ColorOS 16 validation,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
 **A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the POCO still checks (needs "USB debugging (Security settings)") and its calibration-vs-preset gain mismatch, and AUTO under a second light on the PMA110,
+**A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer, a ten-minute Flip6 SurfaceTexture-path take and the S20, S23 Ultra and PMA110 runs,
+**A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -51,6 +53,41 @@ adb install -r -t "$EVIDENCE_APK"
 ```
 
 ---
+
+## Test fleet
+
+Every handset and tablet this app has run on, with the firmware it carried when last read. Read
+`getprop ro.build.fingerprint` again before quoting a result against it: an OTA moves every row.
+Wireless-ADB ports and the USB host change per session and are deliberately not recorded.
+
+| Device | Model | SoC | Android (SDK) · OEM build | Patch | Profile | Last read |
+|---|---|---|---|---|---|---|
+| OPPO Find X9 Ultra | PMA110 | SM8850 | 17 (37) · ColorOS `PMA110_17.0.0.106(CN01)` | 2026-09-01 | PMA110 | 2026-10-28 |
+| Samsung Galaxy Z Flip6 | SM-F741N | SM8650 | 17 (37) · One UI 9.0 `F741NKSU4EZIH` | 2026-09-05 | GENERIC | 2026-10-28 |
+| Samsung Galaxy S23 Ultra | SM-S918N | SM8550 | 16 (36) · One UI 8.5 `S918NKSS8FZI1` | 2026-09-05 | GENERIC | 2026-10-28 |
+| Samsung Galaxy S20 5G | SM-G981N | SM8250 | 13 (33) · One UI 5.1 `G981NKSS8IYC2` | 2025-03-01 | GENERIC | 2026-10-28 |
+| Xiaomi POCO X3 GT | 21061110AG | MT6891 | 13 (33) · MIUI 14 `V14.0.6.0.TKPMIXM` | 2024-04-01 | GENERIC | 2026-10-28 |
+| Lenovo Xiaoxin Pad 2024 (小新Pad 2024) | TB331FC | SM6225 | 15 (35) · ZUXOS `1.1.10.680` | 2025-11-05 | GENERIC | 2026-10-28 |
+| Lenovo tablet | TB336ZU | MediaTek | 16 (36) | — | GENERIC | 2026-09-09 |
+| Android emulator | sdk_gphone64_arm64 | — | 13 (33) | — | GENERIC | 2026-08-10 |
+
+What the app offers on each, as measured (the reason a check is or is not runnable there):
+
+- **PMA110:** Gamma Rec. 709 / HLG / Log / RAW Log / OEM Log; RGBA1010102 EGL; RAW16 33.3 ms on
+  cameras 2/3/4; the P010 ten-bit native-log bridge.
+- **Galaxy Z Flip6:** Rec. 709 / HLG / Log / RAW Log; RGBA1010102; native Log on the 8-bit stream (no
+  P010 bridge, a PMA110-family profile flag); RAW on logical camera 0.
+- **Galaxy S23 Ultra:** RGBA1010102; four optical presets (0.6 / 1 / 3 / 10×); the UI ran in ko-KR.
+  Gamma set not yet read on the current build.
+- **Galaxy S20 5G:** paired 2026-10-28; nothing measured yet.
+- **POCO X3 GT:** Rec. 709 only (no Main10 HEVC encoder, no RGBA1010102 config); RAW16 advertises
+  50 ms on every camera, so RAW Log (≥ 24 fps) is never offered; stabilization up to Standard. Shell
+  `input` needs MIUI's "USB debugging (Security settings)" over USB and wireless alike — on since
+  2026-10-28; before that, REC and the shutter went through the debug ingress (`debug_record`,
+  `debug_shutter`).
+- **TB331FC:** Rec. 709 only (no Main10); largest video 2688×1512 at 29.97 / 30, which the encoder
+  refuses in portrait (A27); RAW16 33.3 ms; no video stabilization.
+- **TB336ZU:** one 26 mm rear lens, zoom 1.0–8.0; an 8-bit-only MediaTek HEVC encoder.
 
 ## A. Indoors, lit room, no converter — 5 min
 
@@ -712,6 +749,10 @@ RAW Log → Log each cost exactly ONE reopen. A RAW LogC3 take and a RAW S-Log3 
 through the S-Log3 inverse and the LogC3 OETF predicts the LogC3 file's within 2 codes of 1023 at
 every percentile from p0.5 to p99.5 (median 258 → predicted 242.3, measured 241), so the GL re-encode
 of the developer's S-Log3 into LogC3 is right on device.
+
+**Galaxy Z Flip6, ten-minute RAW Log take 2026-10-27 (GENERIC, logical camera 0):** cadence and file
+held for the whole take with no developed frame lost, while the phone reached thermal status 4
+(CRITICAL) at five minutes — numbers in A27. The POCO X3 GT never offers RAW Log (RAW16 50 ms).
 
 ### A20. Stock O-Log2 through the product GL recorder — ◐ HALF DONE 2026-10-26
 
@@ -1531,6 +1572,69 @@ gap above 50 ms. Its capture result retains DRC 8 / LUT endpoint 3685 under the 
 Steady stabilization and ISO 4202 request, independently of the debug test configuration.
 Program AE was also checked in debug: AE ON chose ISO 3197 / 13.928 ms while retaining an
 approximately 8× gain split. Final installed hashes were read back from both package paths.
+
+### A27. Long takes hold cadence, file and temperature on the GENERIC fleet — ◐ HALF DONE 2026-10-27
+
+One ten-minute take per device in the mode under test (`.context/soak-2026-10-27/soak.py`, local):
+REC by tap, or by the debug ingress's `debug_record` where the shell cannot inject input. Every 30 s
+it samples per-process CPU from `/proc/<pid>/stat`, thermal status and HAL temperatures, battery,
+the app's RSS from `/proc/<pid>/status` and GPU busy where readable — never `dumpsys media.camera`
+or `meminfo` during the take. Then the clip (frame count, PTS intervals, full software decode, audio
+track) and the app's own rows: `EncoderClock` (real frames placed on the grid against slots filled
+by repeating one), `FrameGap`, and RAW Log's `RawDevelop` profile.
+
+**Pass:** the selected rate with no PTS interval above 1.5 frames, a clean full decode, audio where
+the microphone is granted, `EncoderClock` filling at most 2 % of slots (a fill is a repeated frame),
+and the clip at the size the menu names. Thermal status is recorded with the minute it changed.
+
+**Immutable debug `21d6240a939c-90986afb` (SHA-256 `59439d31…`), 2026-10-27:**
+
+- **Galaxy Z Flip6, RAW Log S-Log3.Cine, 4K 29.97, Active, audio — file PASS, thermal CRITICAL.**
+  18 011 frames / 600.967 s, `30000/1001`, every PTS interval 33.367 ms, AAC 600.96 s, decode
+  clean; `EncoderClock` placed 18 041, dropped 30, filled 0; `RawDevelop` 30.0 fps in all 67
+  windows, missing(camera=1 developed=0) over 19 877 frames. Thermal status 0 → 3 at 4 min → 4 at
+  5 min and held: AP 39.6 → 73.4 °C, skin 33.6 → 57.3 °C, battery 30.8 → 51.0 °C. Mean CPU app
+  120 %, Samsung camera HAL 98 %, codec 40 %; GPU busy 63 % → 92 % from ~6 min. Throttling doubled
+  the developer's per-frame cost (upload 5.9 → 11.5 ms, CPU develop 6.9 → 13.1 ms, GPU passes
+  9.5 → 14.1 ms, latency 44 → 55 ms) without losing a frame. App RSS 350 → 437 MB peak. Ten
+  minutes held cadence; nothing longer is claimed.
+- **POCO X3 GT, Rec. 709 (its only gamma), 4K 29.97, Standard, no audio — FAIL.** RECORD_AUDIO is
+  not granted on that install and the debug REC path skips the prompt, so the clip is video-only by
+  design. 16 718 frames / 600.47 s with 41 PTS holes of 1.03–1.17 s; `EncoderClock` placed only
+  2 181 real frames (3.6 fps) and filled 14 537 slots. The HAL ran at ~30 fps throughout (≈ 18 167
+  3A frames, AE converged at ISO 434 · 33.3 ms), thermal status 0 (CPU 47 → 62 °C), so frames are
+  lost between the HAL and the encoder inside the app's process: `FrameGap` reports 20–27 real-frame
+  gaps over 200 ms per 15 s window, up to 1.19 s, from ~20 s into the take. Root cause open.
+- **TB331FC, Rec. 709, "2688×1512" 29.97, audio — decode PASS, size and cadence FAIL.** 17 998
+  frames / 600.6 s, every interval 33.367 ms, AAC, decode clean, thermal 0 — but the clip is
+  **1008×1792**: `c2.qti.hevc.encoder` refuses 1512×2688 and the size ladder spends resolution
+  (`encoder=1008x1792 (asked 1512x2688)`). `EncoderClock` placed 13 950 and filled 4 059 (22.6 %
+  repeats). The HAL runs 30.0 fps (camera watch: frameDuration 33.33 ms, exposure 33.28 ms, ISO
+  3200) while cameraserver queues ~23 fps into the app's SurfaceTexture. Taking the GL input off the
+  preview frame spacer (`TIMESTAMP_BASE_SENSOR`, experiment `c5bc5920`, branch
+  `exp/no-preview-spacer`) changed nothing — placed 785 / filled 294 in 30 s against 806 / 267 — so
+  the spacer is not the cause. At **1080p** the same tablet places 733 and fills 13 (98 % real) at
+  full size: there, 2688×1512 is strictly worse than 1080p.
+
+Open: the POCO root cause (needs a trace from a fresh process — the soak's process had spent its
+diagnostic row budget, so the follow-up take logged no `EncoderClock`), whether TB331FC should
+offer 2688×1512 at all, a ten-minute Flip6 take on the SurfaceTexture path (Log or Rec. 709), and
+the S20, S23 Ultra and PMA110.
+
+### A28. RAW still latency and throughput — ◐ HALF DONE 2026-10-27
+
+`.context/soak-2026-10-27/raw_profile.py stills` (local): ten presses 4 s apart, then ten 0.3 s
+apart, under a perfetto trace (sched, process stats, atrace gfx/camera/video). Timing is the app's
+own debug rows: `CaptureFamily: registered` (admission) → `ShutterLag: started` (exposure start) →
+`ShutterLag: completed` (result) → `CaptureFamily: settled` (every file published).
+
+- **TB331FC, HEIF + DNG, Photo P, 1×, immutable debug `21d6240a939c-90986afb`:** 14 of 20 presses
+  captured, 14 HEIF + 14 DNG, no error. Admission → exposure 454 ms median (423–489), → result
+  596 ms, → every file 1 234 ms (1 183–1 458). A press while a capture is in flight is not admitted,
+  so the rapid run took one shot per ~1.15 s (4 of 10 presses). App CPU 25.6 s over the 68 s
+  window; RSS 251 → 314 MB.
+
+Open: the Flip6, S23 Ultra, S20, POCO and the PMA110 reference.
 
 ## B. Held in hand — 3 min
 
