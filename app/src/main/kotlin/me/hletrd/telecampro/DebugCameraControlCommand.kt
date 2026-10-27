@@ -6,13 +6,16 @@ import java.util.concurrent.atomic.AtomicReference
 internal data class DebugCameraControlCommand(
     val zslSpike: Boolean? = null,
     val zoomRatio: Float? = null,
+    /** Wanted REC state: true starts a Video take, false stops it; null leaves REC alone. */
+    val record: Boolean? = null,
 ) {
-    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null
+    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null
 
     fun mergedWith(newer: DebugCameraControlCommand): DebugCameraControlCommand =
         DebugCameraControlCommand(
             zslSpike = newer.zslSpike ?: zslSpike,
             zoomRatio = newer.zoomRatio ?: zoomRatio,
+            record = newer.record ?: record,
         )
 }
 

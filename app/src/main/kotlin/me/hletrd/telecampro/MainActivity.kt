@@ -330,6 +330,7 @@ class MainActivity : ComponentActivity() {
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
         command.zoomRatio?.let(vm::debugApplyZoom)
+        command.record?.let(vm::debugSetRecording)
     }
 
     override fun onNewIntent(intent: Intent) {

@@ -2706,6 +2706,19 @@ class CameraViewModel private constructor(
         if (ratio > 0f) applyZoomRatio(ratio)
     }
 
+    /**
+     * Debug REC ingress for soak harnesses (DebugCameraControlActivity). Drives the SAME
+     * [onToggleRecording] the shutter does, but only toward the wanted state and only in Video, so a
+     * repeated command is a no-op. It skips MainActivity's microphone prompt: without the permission
+     * the recorder takes its ordinary video-only path, which the harness reads from the file.
+     */
+    internal fun debugSetRecording(want: Boolean) {
+        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
+        val s = _state.value
+        if (s.mode != CaptureMode.VIDEO || s.isRecording == want) return
+        onToggleRecording()
+    }
+
     /** Read-only on-device lifecycle evidence; production state still flows through [state]. */
     internal fun previewReadinessDiagnostic(): CameraEngine.PreviewReadinessDiagnostic =
         engine.previewReadinessDiagnostic()

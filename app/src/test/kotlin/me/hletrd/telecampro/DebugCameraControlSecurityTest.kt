@@ -65,6 +65,7 @@ class DebugCameraControlSecurityTest {
         val intent = Intent(app, DebugCameraControlActivity::class.java)
             .putExtra(EXTRA_ZSL_SPIKE, true)
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
+            .putExtra(EXTRA_DEBUG_RECORD, true)
         val controller = Robolectric.buildActivity(DebugCameraControlActivity::class.java, intent)
             .create()
         try {
@@ -72,8 +73,9 @@ class DebugCameraControlSecurityTest {
             assertEquals(ComponentName(app, MainActivity::class.java), started.component)
             assertFalse(started.hasExtra(EXTRA_ZSL_SPIKE))
             assertFalse(started.hasExtra(EXTRA_DEBUG_ZOOM))
+            assertFalse(started.hasExtra(EXTRA_DEBUG_RECORD))
             assertEquals(
-                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f),
+                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f, record = true),
                 DebugCameraControlMailbox.consume(),
             )
         } finally {
@@ -89,10 +91,12 @@ class DebugCameraControlSecurityTest {
         val intent = Intent(app, MainActivity::class.java)
             .putExtra(EXTRA_ZSL_SPIKE, true)
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
+            .putExtra(EXTRA_DEBUG_RECORD, true)
         val controller = Robolectric.buildActivity(MainActivity::class.java, intent).create()
         try {
             val vm = ViewModelProvider(controller.get())[me.hletrd.telecampro.ui.CameraViewModel::class.java]
             assertEquals(1f, vm.state.value.controls.zoomRatio)
+            assertFalse(vm.state.value.isRecording)
             assertNull(DebugCameraControlMailbox.consume())
         } finally {
             controller.destroy()
@@ -107,5 +111,17 @@ class DebugCameraControlSecurityTest {
             DebugCameraControlCommand(zslSpike = false, zoomRatio = 4f),
             DebugCameraControlMailbox.consume(),
         )
+    }
+
+    @Test fun `the newest wanted REC state wins when commands merge`() {
+        DebugCameraControlMailbox.consume()
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(record = true)))
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(zoomRatio = 2f)))
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(record = false)))
+        assertEquals(
+            DebugCameraControlCommand(zoomRatio = 2f, record = false),
+            DebugCameraControlMailbox.consume(),
+        )
+        assertFalse(DebugCameraControlMailbox.publish(DebugCameraControlCommand()))
     }
 }
