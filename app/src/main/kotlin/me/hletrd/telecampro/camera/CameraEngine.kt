@@ -2769,6 +2769,20 @@ class CameraEngine internal constructor(
         }
     }
 
+    /** Capture ownership at OPEN, after dual-open has resolved its accepted aspect and delivered size. */
+    private fun registerExtendedVideoRasterOpenOwnership(ctrl: CameraController) {
+        synchronized(this) {
+            extendedVideoRasterOpenOwnership[ctrl] = ExtendedVideoRasterOpenOwnership(
+                opticsGeneration = opticsIntentGeneration.get(),
+                pipelineGeneration = videoPipelinePublicationGeneration.get(),
+                requestedSize = requestedVideoSize,
+                requestedSizeDirectWrites = requestedVideoSizeDirectWrites,
+                openGate = openGate,
+                deliveredSize = videoSize,
+            )
+        }
+    }
+
     private fun wireController(ownedGl: GlPipeline): CameraController {
         // A fresh controller means a fresh gesture world: clear the interaction state so a glide
         // that was cut short by a remap door (whose invalidate deliberately skips the boost-off
@@ -2777,16 +2791,6 @@ class CameraEngine internal constructor(
         // exact submit for one gesture).
         zoomInteractionState = ZoomInteractionState()
         val ctrl = CameraController(context)
-        val extendedRasterOwnership = synchronized(this) {
-            ExtendedVideoRasterOpenOwnership(
-                opticsGeneration = opticsIntentGeneration.get(),
-                pipelineGeneration = videoPipelinePublicationGeneration.get(),
-                requestedSize = requestedVideoSize,
-                requestedSizeDirectWrites = requestedVideoSizeDirectWrites,
-                openGate = openGate,
-                deliveredSize = videoSize,
-            ).also { extendedVideoRasterOpenOwnership[ctrl] = it }
-        }
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
@@ -2836,7 +2840,6 @@ class CameraEngine internal constructor(
                 routeKey = routeKey,
                 size = size,
                 callbackOpticsGeneration = generation,
-                attempted = extendedRasterOwnership,
             )
         }
         ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
@@ -2955,6 +2958,7 @@ class CameraEngine internal constructor(
             // silently drop an admitted hi-res session (or keep one video mode denies).
             ctrl.hiResStill = resolvedHiResStill(sel, c)
             ctrl.setRawEis(rawEisFor(c))
+            registerExtendedVideoRasterOpenOwnership(ctrl)
             ctrl.open(
                 selection = sel,
                 caps = c,
@@ -4272,9 +4276,9 @@ class CameraEngine internal constructor(
         routeKey: String,
         size: Size,
         callbackOpticsGeneration: Long,
-        attempted: ExtendedVideoRasterOpenOwnership,
     ) {
         synchronized(this) {
+            val attempted = extendedVideoRasterOpenOwnership[refused] ?: return
             val currentRouteKey = selection?.let {
                 rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
             }
@@ -5196,6 +5200,7 @@ class CameraEngine internal constructor(
                 // halves defensively at its reader seam.
                 next.hiResStill = resolvedHiResStill(sel, c)
                 next.setRawEis(rawEisFor(c))
+                registerExtendedVideoRasterOpenOwnership(next)
                 next.open(
                     selection = sel,
                     caps = c,

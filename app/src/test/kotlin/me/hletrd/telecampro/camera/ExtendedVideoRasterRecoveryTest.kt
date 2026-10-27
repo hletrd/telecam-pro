@@ -214,6 +214,18 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
+    fun `dual-open ownership uses the accepted size resolved after controller wiring`() {
+        val fixture = extendedFixture(outgoingSizeAtWire = fullHd)
+        var published: Size? = null
+        fixture.engine.onVideoSizeChosen = { size, _ -> published = size }
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(uhd, published)
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+    }
+
+    @Test
     fun `fatal recovery cannot choose the refused 8K graph again`() {
         val fixture = extendedFixture()
         val cause = IllegalStateException("device fatal")
@@ -233,7 +245,10 @@ class ExtendedVideoRasterRecoveryTest {
         assertEquals(uhd, chooseVideoSize(fixture.engine))
     }
 
-    private fun extendedFixture(intermediateSize: Size? = null): Fixture {
+    private fun extendedFixture(
+        intermediateSize: Size? = null,
+        outgoingSizeAtWire: Size? = null,
+    ): Fixture {
         val engine = CameraEngine(app)
         val projected = ViewModelTestAccess.caps().copy(
             availableVideoSizes = listOfNotNull(eightK, intermediateSize, uhd, fullHd),
@@ -249,12 +264,20 @@ class ExtendedVideoRasterRecoveryTest {
         setField(engine, "requestedVideoTransfer", ColorTransfer.MAKER_LOG)
         setField(engine, "requestedVideoSize", eightK)
         setField(engine, "requestedVideoSizeDirectWrites", 1L)
-        setField(engine, "videoSize", eightK)
-        setField(engine, "previewStreamSize", eightK)
+        setField(engine, "videoSize", outgoingSizeAtWire ?: eightK)
+        setField(engine, "previewStreamSize", outgoingSizeAtWire ?: eightK)
         (field(engine, "opticsIntentGeneration") as AtomicLong).set(7L)
         (field(engine, "videoPipelinePublicationGeneration") as AtomicLong).set(11L)
         val controller = wireController(engine)
         setField(engine, "controller", controller)
+        if (outgoingSizeAtWire != null) {
+            // The dual-open candidate resolves its accepted stream AFTER wireController returns.
+            setField(engine, "videoSize", eightK)
+            setField(engine, "previewStreamSize", eightK)
+        }
+        CameraEngine::class.java.declaredMethods.single {
+            it.name == "registerExtendedVideoRasterOpenOwnership"
+        }.apply { isAccessible = true }.invoke(engine, controller)
         return Fixture(engine, controller)
     }
 
