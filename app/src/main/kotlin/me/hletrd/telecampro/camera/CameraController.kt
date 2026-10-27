@@ -1865,6 +1865,7 @@ class CameraController internal constructor(
             // A RAW-only session's developer takes the result GAINS alone (RawLogBridge): no
             // processed pixel depends on the transform, so it never primes.
             transformRequired = wbShape != WbSessionShape.RAW_LOG,
+            makerLog = wbShape == WbSessionShape.MAKER_LOG,
         )
     }
 

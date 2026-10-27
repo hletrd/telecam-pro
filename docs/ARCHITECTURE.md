@@ -1006,7 +1006,8 @@ unused.
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
 **White balance (`WhiteBalance.kt`, device-measured 2026-10-27, [FIELD_CHECKS A23](FIELD_CHECKS.md)):**
-AUTO rides `CONTROL_AWB_MODE_AUTO` (+ lock). Every app-owned white point — manual Kelvin + tint,
+AUTO rides `CONTROL_AWB_MODE_AUTO` (+ lock). Outside the maker Kelvin/preset path below, each
+app-owned white point — manual Kelvin + tint,
 custom (measured) gains, and on a preset-ignoring profile the presets — rides AWB OFF +
 `COLOR_CORRECTION_MODE_TRANSFORM_MATRIX` with BOTH `COLOR_CORRECTION_GAINS` and
 `COLOR_CORRECTION_TRANSFORM`: Camera2 documents the gains as camera-owned in FAST/HIGH_QUALITY and
@@ -1025,6 +1026,15 @@ only where `wbModeAvailable` says a mechanism applies it. Two PMA110 still quirk
 (table above): every still rides the session's stabilization (a matrix still at OFF renders the
 wrong white balance, so stills follow the preview framing, `StillFraming.kt`), and Face Priority's
 scene half stands down while WB is app-owned.
+
+**Maker white balance (2026-10-27, FIELD_CHECKS A25):** on an accepted `MAKER_LOG` session,
+`resolveWbWire` selects `MakerCct` for Kelvin and preset targets. It writes AWB OFF, FAST,
+`com.qti.stats.awbwrapper.AWBCCT` and `com.oplus.manualWB.color_tone` on the session/repeating
+requests. This preserves the OEM colour processing and uses its own Kelvin/Tone table; maker
+Tint is native Tone, not the calibrated path's Duv scale. It does not need an AUTO CCM primer
+or a rebuild to recalibrate on a physical-lens change. AUTO, custom measured gains, refused
+maker sessions and all other Gamma/photo routes retain the existing WB resolver. Standard
+CCT or qcamera3's manual-WB temperature is not equivalent to this wrapper tag.
 
 **Source transfer correctness (2026-10-27, FIELD_CHECKS A24):** `MakerLogSource` implements the
 single-log2 inverse in OPPO's [official ACES workflow V2](https://www.oppo.com/en/o-log-technical-downloads/),

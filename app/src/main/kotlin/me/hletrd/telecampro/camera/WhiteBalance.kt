@@ -26,13 +26,16 @@ import kotlin.math.hypot
  * transform is honoured byte-exactly on every route, the maker one included — so that is the path,
  * with the route's own colour transform (see [WbReferenceStore]): each route renders its own
  * gamut (the maker route's is a wide log gamut, the TC route reports I with colour handled downstream),
- * so no single calibrated matrix is right everywhere.
+ * so no single calibrated matrix is right everywhere. Follow-up on the maker route found the
+ * stock AWBCCT vendor key: AWB OFF + FAST + AWBCCT + colour tone uses the OEM Kelvin table and
+ * retains processing that TRANSFORM_MATRIX bypasses even with identical gains and CCM. Maker
+ * Kelvin/presets therefore take that path; custom gains and every other route keep the matrix.
  */
 
-/** A Kelvin + tint white point. Tint is Camera2's scale: ±50 = ±0.01 Duv; + = magenta. */
+/** Kelvin + tint controls. Calibrated/CCT paths interpret tint as Duv; maker Log uses native Tone. */
 data class WbTarget(val kelvin: Int, val tint: Int)
 
-/** The app's tint range, identical to COLOR_CORRECTION_COLOR_TINT's (−50 … +50 = ±0.01 Duv). */
+/** Tint range. Standard/calibrated paths use ±0.01 Duv; maker Log uses the OEM's native Tone units. */
 const val WB_TINT_LIMIT = 50
 
 /** Duv per tint unit: Camera2 maps ±50 onto ±0.01 Duv (CaptureRequest.COLOR_CORRECTION_COLOR_TINT). */
@@ -57,6 +60,8 @@ const val MAX_WB_CHANNEL_GAIN = 8f
  * and a spec HAL that honours presets (Galaxy Z Flip6, 2026-10-27) renders DAYLIGHT ≈ 5160 K and
  * CLOUDY ≈ 6310 K through its own calibration, nowhere near a 6504 K daylight that would leave no
  * room above it for cloudy and shade. Where presets ARE honoured these values are never used.
+ * Maker Log sends these control values to the OEM's Kelvin/Tone table; that path does not claim
+ * the calibrated path's absolute Duv value for the preset tint.
  */
 internal fun wbPresetTarget(mode: WbMode): WbTarget? = when (mode) {
     WbMode.INCANDESCENT -> WbTarget(2856, 0)
@@ -297,13 +302,15 @@ internal fun normalizedWbKelvin(kelvin: Int, cap: WbCapability): Int =
 /** Exactly the WB keys one request carries. */
 internal sealed interface WbWire {
     /** True when the request turns the HAL's AWB OFF (the app owns the white point). */
-    val awbOff: Boolean get() = this is Matrix || this is Cct
+    val awbOff: Boolean get() = this is Matrix || this is Cct || this is MakerCct
 
     /** The route advertises no AWB mode at all: write no WB key. */
     data object Omit : WbWire
     data class Auto(val awbMode: Int, val lock: Boolean) : WbWire
     data class Preset(val awbMode: Int) : WbWire
     data class Cct(val kelvin: Int, val tint: Int) : WbWire
+    /** Confirmed maker session only: FAST colour processing, OEM Kelvin table and native Tone. */
+    data class MakerCct(val kelvin: Int, val tone: Int) : WbWire
     /** AWB OFF + TRANSFORM_MATRIX + [gains] `[R, G_even, G_odd, B]` + row-major [transform]. */
     class Matrix(val gains: FloatArray, val transform: DoubleArray) : WbWire {
         override fun equals(other: Any?): Boolean =
@@ -330,6 +337,7 @@ internal fun resolveWbWire(
     calibration: ColorCalibration?,
     routeTransform: DoubleArray?,
     transformRequired: Boolean,
+    makerLog: Boolean = false,
 ): WbWire {
     val auto = exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, cap.awbModes)
     fun autoWire(): WbWire = auto?.let { WbWire.Auto(it, false) } ?: WbWire.Omit
@@ -346,7 +354,9 @@ internal fun resolveWbWire(
             target?.let { calibratedWbTransform(calibration, it, gains) } ?: RawDevelopMath.IDENTITY.copyOf(),
         )
     }
-    fun kelvin(target: WbTarget): WbWire = when (wbKelvinPath(cap)) {
+    fun kelvin(target: WbTarget): WbWire = if (makerLog) {
+        WbWire.MakerCct(target.kelvin, target.tint.coerceIn(-WB_TINT_LIMIT, WB_TINT_LIMIT))
+    } else when (wbKelvinPath(cap)) {
         WbKelvinPath.MATRIX_CALIBRATED -> matrix(wbTargetGains(calibration, target), target)
         WbKelvinPath.MATRIX_APPROXIMATE -> matrix(wbTargetGains(null, target), target)
         WbKelvinPath.CCT -> WbWire.Cct(

@@ -11,6 +11,10 @@ internal object MakerLogProtocol {
     const val MODE_NAME = "pro_video_log_mode"
     const val GAMMA_INFO = "com.oplus.gamma.info"
     const val OPERATION_MODE = "com.oplus.operation.mode"
+    // Stock manual WB with FAST processing. Standard CCT and qcamera3.manualWB temperature
+    // are ignored on this route; AWBCCT reaches the OEM Kelvin table without bypassing its colour.
+    const val WB_CCT = "com.qti.stats.awbwrapper.AWBCCT"
+    const val WB_TONE = "com.oplus.manualWB.color_tone"
 }
 
 /**

@@ -234,6 +234,23 @@ class WhiteBalanceTest {
         assertTrue(resolveWbWire(manual, noAuto, pma110Cam2, null, true) is WbWire.Matrix)
     }
 
+    @Test fun `maker Kelvin bypasses matrix priming while AUTO and custom gains keep their semantics`() {
+        fun wire(c: ManualControls, transform: DoubleArray? = null, maker: Boolean = true) =
+            resolveWbWire(c, pma110, pma110Cam2, transform, true, makerLog = maker)
+        val manual = ManualControls(wbMode = WbMode.MANUAL, wbKelvin = 5000, wbTint = 4)
+        assertEquals(WbWire.MakerCct(5000, 4), wire(manual))
+        assertTrue(wire(manual).awbOff)
+        assertEquals(WbWire.MakerCct(5000, -50), wire(manual.copy(wbTint = -80)))
+        assertEquals(WbWire.MakerCct(5500, 0), wire(ManualControls(wbMode = WbMode.DAYLIGHT)))
+        assertEquals(WbWire.Auto(CameraMetadata.CONTROL_AWB_MODE_AUTO, true), wire(ManualControls(awbLock = true)))
+        val custom = ManualControls(wbMode = WbMode.CUSTOM, customWbGains = WbGains(2f, 1f, 1f, 3f))
+        assertTrue(wire(custom) is WbWire.Prime)
+        assertEquals(WbWire.Matrix(floatArrayOf(2f, 1f, 1f, 3f), autoTransform), wire(custom, autoTransform))
+        // A refused maker request uses the ordinary route and must never retain OEM WB keys.
+        assertTrue(wire(manual, maker = false) is WbWire.Prime)
+        assertTrue(wire(manual, autoTransform, maker = false) is WbWire.Matrix)
+    }
+
     @Test fun `a calibration-less CCT route carries temperature and tint`() {
         val cct = pma110.copy(calibrated = false, cctMin = 2856, cctMax = 6500)
         assertEquals(

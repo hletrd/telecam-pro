@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -1330,6 +1330,83 @@ Evidence: `.context/log-lit-review-2026-10-27/exclusive-window/` contains clips,
 dumps, actual APK hashes, patch coordinates/samples, scripts, plots and cleanup verification.
 The original installed APK and scoped app preferences were restored exactly; stock ISO was
 returned to UI 400. No production capture policy changed in this comparison.
+
+### A25. Maker Log colour transport and OEM white balance — ✅ PASSED 2026-10-27
+
+**Transport is not the large colour error.** The isolated stage probe uses a PRIVATE/TP10
+SurfaceTexture, a recordable RGBA1010102 EGL target and the same Main10 BT.2020/full/SDR-transfer
+encoder setup. On the PMA110 Adreno 840, 24 exact synthetic RGB patches read back with zero
+input error; decoded-video mean absolute RGB errors are 0.645 / 0.515 / 0.678 of a 10-bit code
+(maximum 2.462). Encoded YUV matches the BT.2020 full-range matrix within one code, whereas
+BT.709, BT.601 and limited-range candidates do not. Camera-buffer sampling is independently
+checked on the SAME latched frame: `GL_EXT_YUV_target` supplies unconverted YUV, ordinary OES
+supplies RGB. Across 32,400 samples the BT.2020/full inverse has RGB mean absolute error
+0.290 / 0.295 / 0.276, maximum below one code. ESSL 1 (the app's sampling language) and ESSL 3
+readbacks are pixel-identical. These checks do not certify every device or codec.
+
+The direct camera-to-encoder probe also differs from stock; bypassing GL does not remove it.
+In the warm-lit chart, GL versus direct encoding has RGB mean absolute differences
+1.07 / 0.58 / 1.46 codes across 24 patch interiors (separate captures, 30 frames each).
+Both probes use the stock's exact 5000 K gains and CCM, yet TRANSFORM_MATRIX retains a blue
+mean error of 19.41 against stock, maximum 56.57. The main discrepancy precedes GL.
+
+**Native WB fix:** AWB OFF + FAST + `com.qti.stats.awbwrapper.AWBCCT` (int Kelvin) and
+`com.oplus.manualWB.color_tone` (int Tone) reaches the stock WB/colour path. The wrapper CCT
+key alone changes actual gains: 3000 K gives R 1.5156/B 2.4287, 8000 K gives R 2.5850/B 1.2793
+on the main camera. qcamera3's `manualWB.color_temperature` alone stays at the erroneous fixed
+R 0.8506/B 5.2627 at both tested temperatures. At 5000 K the OEM Tone −20 / +20 produces
+R 2.0225/B 1.5342 and R 2.2813/B 1.7334. Standard `COLOR_CORRECTION_COLOR_TINT` with FAST is not
+that Tone control. The stock UI itself showed Warmth 5000 K and Tone +4; the matched native
+probe sends BOTH values, giving stock's R 2.1719/B 1.6494. At physical tele 4, wire zoom 3.2,
+3000/8000 K produce distinct correct-direction gains and their own CCMs. An AUTO repeating
+request following native session WB seeds resumes AWB convergence instead of holding 5000 K.
+
+| Lighting epoch | Matrix WB mean absolute RGB error | Native FAST WB mean absolute RGB error |
+|---|---|---|
+| Warm light, stock 12:00 | 6.12 / 11.00 / 19.41 | 2.96 / 4.12 / 6.71 |
+| Brighter light, stock 12:33 | 4.90 / 11.02 / 23.88 | 1.48 / 2.12 / 4.20 |
+
+All values are 10-bit code differences against the corresponding stock take, not calibrated
+colour accuracy. The illumination changed between epochs; cross-epoch comparisons are invalid.
+Within the brighter epoch, adding wrapper CCT to TRANSFORM_MATRIX without switching to FAST
+changes patch means by only 0.31 / 0.27 / 0.30 codes. The improved path requires FAST processing;
+matching reported gains/CCM alone did not retain it. Warm-light maximum blue error falls from
+56.57 to 11.40; the brighter comparison from 120.52 to 14.03. Residual stock differences remain.
+
+`WbWire.MakerCct` now selects that path only on the maker session for manual Kelvin and preset
+white points. Maker Tint uses the native OEM Tone scale; it does not claim Camera2 Duv units.
+AUTO and custom gains retain their existing paths, as do ordinary photo, HLG, app Log, RAW Log
+and refused maker sessions. No global colour fit or compensating shader matrix was introduced.
+
+**Gain split remains open.** Direct encoder output (video-buffer flag 1), native FAST WB,
+session warm-start DRC 6, repeating `pro_video_mode`, and feature-1 selector 0 all remain
+long/short 64/64, DRC 1, gamma endpoint 2843 at actual ISO 6387 / 33,322,214 ns. Repeating
+`professional_mode` removes the Log LUT and is not a candidate. Fresh stock controls report
+DRC 6 in warm light and 8 in the brighter scene. The exported `CustomTuningInfo` blob also
+contains a differing feature selector (stock 0, extension 26); setting the public Feature1Mode
+key to 0 does not establish control of that internal selector. Binary inspection finds real
+DCG/manual-exposure routines, but `manualDRCSetCtrl` is read through `__system_property_get`,
+not a CaptureRequest tag. No system property or firmware was modified. No universal Camera2
+impossibility claim follows from these tests.
+
+Evidence: `.context/log-stage-review-2026-10-27/`, including probe sources and APK hashes,
+raw packed same-frame YUV/RGB, pattern targets, recordings, full request/results, analysis and
+vendor-library excerpts. Stage probe APK `c962d808…` (phase 1); phase-specific string override
+probe `303db4fb…` (phase 2). The original phase-1 APK was overwritten when phase 2 was built;
+its measured hash and source are retained, plus a separately identified rebuild (`91c97c82…`).
+That rebuild is not represented as the original measured binary.
+
+**Product verification:** immutable `5c910e6afe4e-14b0138d`, APK SHA-256 `e8de5056…`, records
+5000 K / Tone +4 as FAST with stock-exact gains R 2.171875/B 1.649414. Its 14.021 s Main10
+recording carries actual ISO 6387 / 33,322,214 ns and DRC 1. Against the brighter-epoch stock,
+24 patch means differ by RGB 1.75 / 1.21 / 5.36 codes on average (maximum blue 14.59).
+Patch interiors avoid edges; product AF settled at 2.47 diopters versus the probes' fixed 1.9,
+so this does not claim matching sharpness or noise. Product 3000/8000 K follows the measured
+OEM table. A LIVE 8000 K → AUTO switch drops the wrapper CCT request and converges to new AWB
+gains; LIVE Daylight then writes 5500 K / Tone 0. TC and ordinary SDR boundary checks are
+recorded in the accompanying product summary. Host JVM tests: 3005, no failures; debug lint
+and Partition-A coverage passed. Python host suites passed; the initial combined gate stopped
+at the newly added dashboard entry, corrected with a clean 168-check documentation pass.
 
 ## B. Held in hand — 3 min
 

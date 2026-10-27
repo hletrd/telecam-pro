@@ -583,7 +583,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   2026-10-26: an 18 s S-mode take absorbed 107 loop ticks with the request generation unchanged
   (that dark room had the loop pegged at the ISO ceiling, so it shows the hold engaging, not a
   correction being held back).
-- **White balance = TRANSFORM_MATRIX with the ROUTE'S OWN colour transform (owner request "WB must
+- **White balance uses the route's own colour processing (owner request "WB must
   be fixed", device-measured 2026-10-27, `WhiteBalance.kt`, `docs/FIELD_CHECKS.md` A23).** Isolated
   Camera2 probe + ColorChecker on PMA110, every route (logical photo 0, standalone 2 SDR and native
   S-Log3, TELE 4 + 0x80b4, maker 0x830b at 1× and on the 3×): AWB PRESETS are accepted, echoed and
@@ -594,7 +594,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Kelvin table but an IDENTITY colour transform (pixels identical to TRANSFORM_MATRIX with the same
   gains and I — visibly desaturated) and on the maker session ignores the temperature outright;
   TRANSFORM_MATRIX with gains AND a transform is honoured byte-exactly everywhere, maker included.
-  So: AWB OFF + TRANSFORM_MATRIX + gains from the active SENSOR's ColorMatrix calibration
+  Outside the maker Kelvin/preset exception below: AWB OFF + TRANSFORM_MATRIX + gains from the active SENSOR's ColorMatrix calibration
   (`wbTargetGains`, Krystek Planckian locus, tint = Camera2's ±50 = ±0.01 Duv, + = magenta) + the
   transform the route's own AWB-AUTO frames report (`WbReferenceStore`, keyed by camera, session
   shape and physical sensor, looked up EXACTLY; mirrored to `wb_route_reference` prefs). The
@@ -1131,10 +1131,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   preserves its codes, and conversion to an app Log profile first changes linear BT.2020 into
   the BT.709 working coordinates without clipping. The former second 709-to-2020 matrix changed
   colours while neutral-only tests passed. Hardware shader tests cover both sources and SDR.
-  **WB on the maker route is the operator's (since 2026-10-27; see the White balance bullet).**
-  The 2026-10-26 forced-AUTO stopgap (`makerLogWbControls`) rested on a FAST-mode measurement: the
-  OEM session ignores presets, FAST gains and CCT temperature, but honours TRANSFORM_MATRIX with gains
-  AND a transform exactly, like every other route — so it was deleted. The maker route's missing
+  **Maker Kelvin/preset WB uses the OEM table (2026-10-27, FIELD_CHECKS A25).** AWB OFF + FAST +
+  `com.qti.stats.awbwrapper.AWBCCT` (int Kelvin) + `com.oplus.manualWB.color_tone` (int Tone) reaches
+  the stock colour path on the confirmed maker session, including its tele route. Standard CCT,
+  `qcamera3.manualWB.color_temperature`, and FAST plus standard gains do not substitute for AWBCCT.
+  `WbWire.MakerCct` bypasses matrix priming; AUTO and custom gains retain their existing paths.
+  In maker mode the tint control uses the OEM Tone units, not a calibrated ±0.01 Duv claim.
+  The prior TRANSFORM_MATRIX path did honour its gains/CCM but those metadata did not prove pixel
+  equality with stock FAST processing. The forced-AUTO stopgap remains removed. The maker route's missing
   DCG/DRC highlight gap (stock `drc_gain` 8 vs the app's 1, ~2.4 stops in the measured bright scene)
   remains unresolved and was REOPENED by the owner on 2026-10-27. Prior negative trials establish
   that their tested keys and stream shapes did not reproduce the gain split; they do NOT prove
@@ -1333,7 +1337,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   DCG flags, short-gain requests, split session/repeating extension markers and an HLG10 stream
   profile have not reproduced the split. Removing the repeating SDK marker disables the OEM Log
   path altogether. This is a measured limitation of the tested routes, not an exhaustive proof
-  of impossibility or SDK-only access. WB is independently fixed by TRANSFORM_MATRIX (A23).
+  of impossibility or SDK-only access. WB was fixed with TRANSFORM_MATRIX (A23); maker Kelvin/presets now use native AWBCCT (A25).
   The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
   has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor

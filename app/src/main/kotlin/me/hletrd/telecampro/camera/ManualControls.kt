@@ -1241,6 +1241,12 @@ private fun CaptureRequest.Builder.applyWhiteBalance(wire: WbWire) {
             set(CaptureRequest.CONTROL_AWB_LOCK, false)
         }
         is WbWire.Preset -> set(CaptureRequest.CONTROL_AWB_MODE, wire.awbMode)
+        is WbWire.MakerCct -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
+            set(CaptureRequest.Key(MakerLogProtocol.WB_CCT, Int::class.javaObjectType), wire.kelvin)
+            set(CaptureRequest.Key(MakerLogProtocol.WB_TONE, Int::class.javaObjectType), wire.tone)
+        }
         is WbWire.Cct -> if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.BAKLAVA) {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_CCT)
