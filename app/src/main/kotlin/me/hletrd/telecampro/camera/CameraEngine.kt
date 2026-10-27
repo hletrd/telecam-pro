@@ -702,16 +702,10 @@ class CameraEngine internal constructor(
 
     /** Projects one route's RAW camera sizes through the active exact encoder/Gamma packet. */
     private fun projectRouteCaps(sel: TeleSelection, routeRaw: CameraCaps, raw: CameraCaps): CameraCaps =
-        projectDebugOem8kCandidate(
+        projectRecordableVideoSizes(
             raw = routeRaw,
             candidates = videoEncoderCandidates,
             rawLog = rawLogWanted(sel, raw),
-            debugBuild = BuildConfig.DEBUG,
-            // The unadvertised raster is a DEBUG measurement input, never a release/GENERIC offer.
-            // It follows the desired OEM topology but disappears as soon as that route is refused.
-            probeRequested = true,
-            oemLogRoute = makerLogWanted() && !makerLogRefused,
-            profile = deviceProfile,
         )
 
     /**

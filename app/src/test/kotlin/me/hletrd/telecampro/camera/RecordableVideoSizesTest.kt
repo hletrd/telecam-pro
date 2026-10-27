@@ -56,50 +56,6 @@ class RecordableVideoSizesTest {
     }
 
     @Test
-    fun `debug OEM probe adds 8K only after exact encoder proof`() {
-        val projected = projectDebugOem8kCandidate(
-            raw = capsWith(sizes = listOf(uhd)),
-            candidates = candidatesWith8k30,
-            debugBuild = true,
-            probeRequested = true,
-            oemLogRoute = true,
-            profile = DeviceProfile.PMA110,
-        )
-        val refused = projectDebugOem8kCandidate(
-            raw = capsWith(sizes = listOf(uhd)),
-            candidates = candidatesWithout8k,
-            debugBuild = true,
-            probeRequested = true,
-            oemLogRoute = true,
-            profile = DeviceProfile.PMA110,
-        )
-
-        assertEquals(listOf(eightK, uhd), projected.availableVideoSizes)
-        assertEquals(setOf(23.976, 24.0, 29.97, 30.0), projected.extendedVideoSizeRates[eightK])
-        assertTrue(eightK !in projected.openGateVideoSizes)
-        assertTrue(eightK !in refused.availableVideoSizes)
-    }
-
-    @Test
-    fun `release and GENERIC cannot receive the debug OEM 8K candidate`() {
-        for ((debugBuild, profile) in listOf(
-            false to DeviceProfile.PMA110,
-            true to DeviceProfile.GENERIC,
-        )) {
-            val projected = projectDebugOem8kCandidate(
-                raw = capsWith(sizes = listOf(uhd)),
-                candidates = candidatesWith8k30,
-                debugBuild = debugBuild,
-                probeRequested = true,
-                oemLogRoute = true,
-                profile = profile,
-            )
-            assertTrue(eightK !in projected.availableVideoSizes)
-            assertTrue(projected.extendedVideoSizeRates.isEmpty())
-        }
-    }
-
-    @Test
     fun `an extended size keeps only its exactly supported standard rates`() {
         val projected = projectRecordableVideoSizes(
             raw = capsWith(sizes = listOf(eightK, uhd)),
