@@ -15,6 +15,9 @@ internal object MakerLogProtocol {
     // are ignored on this route; AWBCCT reaches the OEM Kelvin table without bypassing its colour.
     const val WB_CCT = "com.qti.stats.awbwrapper.AWBCCT"
     const val WB_TONE = "com.oplus.manualWB.color_tone"
+    // Repeating requests only. On the OEM Log pipeline this selects native tuning (Feature 2 = 0)
+    // and restores the unequal DCG gains. It does not submit a still or a Camera2 capture burst.
+    const val CAPTURE_TYPE = "com.oplus.burst.capture.type"
 }
 
 /**

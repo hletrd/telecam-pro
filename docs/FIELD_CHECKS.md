@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -21,7 +21,7 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
+**A20** has its measured DCG/DRC gap closed by A26; it still needs a rear 1× native-Log soak, wider gamut/lighting coverage and ColorOS 16 validation,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
 **A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the Kelvin-transform run on the POCO, and AUTO under a second light on the PMA110,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
@@ -896,7 +896,7 @@ not measured. Geometric registration is approximate and restricted to flat regio
 native gain-split investigation separate from this candidate. The plot, sample array and script
 are preserved in `.context/log-gamma-review-2026-10-27/`.
 
-**Remaining:** the DCG/DRC highlight range is reopened for investigation (2026-10-27);
+**Remaining (updated by A26):** the measured DCG/DRC highlight gap is closed;
 the manual-WB override is resolved by A23 (TRANSFORM_MATRIX, all routes); additional TC
 operation-mode combinations, a sustained soak of this rear 1× route (A21's soak covers the TC
 route), gamut beyond ColorChecker saturation, and ColorOS 16 remain open. Local evidence:
@@ -1405,7 +1405,7 @@ white points. Maker Tint uses the native OEM Tone scale; it does not claim Camer
 AUTO and custom gains retain their existing paths, as do ordinary photo, HLG, app Log, RAW Log
 and refused maker sessions. No global colour fit or compensating shader matrix was introduced.
 
-**Gain split remains open.** Direct encoder output (video-buffer flag 1), native FAST WB,
+**Gain split at this stage — superseded by A26 later on 2026-10-27.** Direct encoder output (video-buffer flag 1), native FAST WB,
 session warm-start DRC 6, repeating `pro_video_mode`, and feature-1 selector 0 all remain
 long/short 64/64, DRC 1, gamma endpoint 2843 at actual ISO 6387 / 33,322,214 ns. Repeating
 `professional_mode` removes the Log LUT and is not a candidate. Fresh stock controls report
@@ -1438,6 +1438,69 @@ passed. Python host suites passed (204 + 21 + 195 tests); the combined gate stop
 added dashboard entry, corrected with a clean 168-check documentation pass. Compileall and diff
 checks also passed. Both pre-test APKs and the original camera-settings bytes were restored;
 stock ISO returned to UI 400, with its original 5000 K / Tone +4 retained.
+
+### A26. TC O-Log2 native HDR gain policy — ✅ PASSED 2026-10-27
+
+**Problem and change.** The accepted OEM Log source previously used equal long/short gains and
+clipped before stock. The missing repeating-request key is `com.oplus.burst.capture.type=1`
+(int), applied only while `makerLogAttempt` is active. Session parameters and every ordinary
+photo/video fallback omit it. The app still uses ONE repeating video request and does not call
+`captureBurst` or add still outputs. Existing O-Log2 pass-through carries the restored range.
+
+**Primary firmware evidence:** `camera.oemlayer.v2.so`'s `TuningPolicy::SelectMode` builds the
+68-byte custom tuning record; the differing selector at byte 32 is **Feature 2**, not Feature 1.
+`CameraHWConfiguration.config` `[Feature2ModeMatch]` rows 19/20 label selector 26 as `ThirdAPK`.
+`ORequestObject::GetInputMetaData` reads OEM enum 139, mapped by `OMetadataDefs` to
+`com.oplus.burst.capture.type`, into the request's burst-type field. `MatchFeature2Mode` clears
+Feature 2 to zero when that field is 1. This is a demonstrated control path, unlike earlier
+inferences from isolated system-camera strings. Sending public Feature1Mode=0 addressed a
+different selector; it could not disprove this path.
+
+**Matched sensor control:** stock PRO VIDEO O-Log2 4K30 at 3× and the app's TC + Log (maker)
+both use physical tele 4, requested ISO 6400 / 1/30 s, actual ISO **6395 / 33,308,327 ns**,
+WB 5000 K / Tone +4, NR/edge FAST and OIS on/EIS off. Their WB gains and colour matrix match.
+The stock launch intent resets zoom to 1×, so the final reference requires an explicit
+request zoom 3.0 AND physical id 4 proof before recording; mistargeted early takes are excluded.
+The physical converter's attachment was not independently established. This check proves
+sensor/processing behaviour in TC mode, not an outdoor optical test through confirmed glass (A21).
+
+| Observable | Stock 3× | Prior app TC | Updated app TC |
+|---|---:|---:|---:|
+| Long / short gain | 64 / 8 | 64 / 64 | 64 / 8 |
+| DRC gain | 8 | 1 | 8 |
+| Log LUT entry 255 (12-bit) | 3685 | 2843 | 3685 |
+| White-patch R (10-bit) | 763.89 | 710.91 | 761.91 |
+| White-patch G (10-bit) | 711.61 | 710.31 | 711.31 |
+
+All 1024 Log entries and both 257-entry IPE/preview gamma arrays are identical between stock and
+the updated app. The camera→encoder probe also reproduces this with the new key; the main-camera
+control reproduces the gain split too. Standalone tele 4 + video operation mode 0x80b5 also reaches
+HDR Log (direct encoder and PRIVATE/OES paths), but its severe defocus at the supplied focus
+setting invalidates a pixel comparison. It remains a probe, not a new production route.
+
+Compared 60 frames at 3 s, native 32×32-pixel interiors of all 24 chart patches, with orientation
+handled only by 90°/180° pixel permutations. No fitted gain, colour matrix, LUT or exposure lift.
+Mean absolute RGB differences from stock fall from **9.67 / 5.37 / 4.21** to
+**1.70 / 0.60 / 1.28** ten-bit codes; maxima after the change are **3.18 / 1.58 / 4.32**.
+The restored white R above the old ~711 ceiling is recorded signal, not a changed metadata tag.
+The current installation uses the existing MAX bitrate setting (~99.4 Mb/s target at 4K29.97),
+not the prior ULTRA setting; this was an operator configuration, not a global bitrate policy
+change. Compression/noise differences still belong to the measured output, not sensor read-noise.
+A formal full-range chart and other lenses/lighting are not certified by these patch measurements.
+
+**Product stability:** immutable debug `5f33b262eed3-2b68782f` records a 14.982 s / 449-frame
+matched take and a **93.694 s / 2808-frame** TC soak. Main10, BT.2020 full range; both have zero
+duplicate PTS and no gap above 33.367 ms. The full soak decodes cleanly. Camera service
+[metadata monitoring](https://source.android.com/docs/core/camera/debugging) plus dumps at
+3/30/60/90 s retain physical 4, DRC 8 and matching gamma/WB. Photo transition opens standalone 4
+with neither the SDK marker nor the new capture-type key; returning to Video reinstates DRC 8.
+Live TC off/on also retains the native gain policy. The source change passed 3022 JVM tests,
+debug lint, Partition-A coverage and all host Python/docs checks.
+
+Evidence: `.context/tc-log-parity-2026-10-27/` contains the exact APK, all requests/results,
+firmware code excerpts, stock and product clips, patch calculations and the soak validation.
+The latest validated product is to remain installed (owner instruction); do not restore the
+older APK. Signed-release installation and final package identities are recorded separately.
 
 ## B. Held in hand — 3 min
 

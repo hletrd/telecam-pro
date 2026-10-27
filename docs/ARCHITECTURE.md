@@ -1060,6 +1060,13 @@ It is offered on the rear automatic route at up to 30 fps, without Open Gate, an
 with the teleconverter too (below). No SDK library
 or package impersonation is involved. The SDK tag must be omitted entirely on ordinary fallback.
 
+Maker repeating requests additionally carry `com.oplus.burst.capture.type=1` (int), after the
+base protocol. This is a per-request OEM tuning policy, not a Camera2 still/burst submission.
+On the measured HAL it resets Feature 2 from ThirdAPK 26 to native 0 and restores stock's
+unequal DCG gains and Log range (FIELD_CHECKS A26). Configure-time parameters and ordinary
+fallback/photo/SDR/HLG requests never carry this override. The existing source-code passthrough
+records the wider signal without an added curve or digital exposure lift.
+
 `MakerLog.kt` owns eligibility, effective fallback and the source proof: operation mode 0x830b,
 Log format 0 and an actual 1024-entry gamma table with black 754 and an increasing first 256 entries
 (the rest are padding). Ready is deferred until this proof; 30 unconfirmed results rebuild the
@@ -1079,8 +1086,10 @@ native-curve EI offset never alters the maker source. Source/GL precision drives
 
 Matched-exposure stock/probe gamma arrays were identical. Product testing confirms sensor mode 21,
 HDR mode 1/two exposures and error-free 4K Main10 + AAC recording (FIELD_CHECKS A20). Pixel identity
-and exact gamut equivalence remain unproven: stock's VideoColorBT709 result differs. Standalone and
-TC operation modes did not reproduce the full same processing signature, so they stay unused.
+and exact gamut equivalence outside the measured chart remain unproven: stock's VideoColorBT709
+result still differs. A26 restores matching DCG/gamma arrays and measures close TC pixel agreement.
+Standalone 4 + video operation mode 0x80b5 now reaches native HDR in a probe, but has not passed the
+matched focus/optics comparison; the product keeps the validated logical TC route.
 
 **TC + Log (maker)** (owner request 2026-10-26) keeps that signature by keeping its camera: with the
 converter on, Video + Log (maker) opens logical camera 0 with the unchanged maker protocol instead of

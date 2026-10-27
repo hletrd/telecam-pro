@@ -1610,7 +1610,12 @@ class CameraController internal constructor(
                 // The curve is ALWAYS the plain S-Log3: GL applies the EI lift after decoding (a
                 // k-scaled curve was measured not to lift on PMA110, see Shaders.nativeSceneLinear).
                 applyNativeLogToneCurve(1.0)
-                if (makerLogAttempt) applyMakerLogParameters()
+                if (makerLogAttempt) {
+                    applyMakerLogParameters()
+                    // Without this OEM request policy, the same Log LUT runs with equal long/short
+                    // gains (Feature 2 = ThirdAPK). Keep configure-time and ordinary requests clean.
+                    set(CaptureRequest.Key(MakerLogProtocol.CAPTURE_TYPE, Int::class.javaObjectType), 1)
+                }
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact

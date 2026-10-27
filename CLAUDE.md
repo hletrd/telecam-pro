@@ -1171,18 +1171,24 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `WbWire.MakerCct` bypasses matrix priming; AUTO and custom gains retain their existing paths.
   In maker mode the tint control uses the OEM Tone units, not a calibrated ±0.01 Duv claim.
   The prior TRANSFORM_MATRIX path did honour its gains/CCM but those metadata did not prove pixel
-  equality with stock FAST processing. The forced-AUTO stopgap remains removed. The maker route's missing
-  DCG/DRC highlight gap (stock `drc_gain` 8 vs the app's 1, ~2.4 stops in the measured bright scene)
-  remains unresolved and was REOPENED by the owner on 2026-10-27. Prior negative trials establish
-  that their tested keys and stream shapes did not reproduce the gain split; they do NOT prove
-  every Camera2 route impossible or that the authenticated SDK is the only solution. The earlier
-  identical impossibility claim for WB was disproved. Keep source acceptance, Log encoding and
-  actual highlight range separate (`docs/FIELD_CHECKS.md` A20/A24).
+  equality with stock FAST processing. The forced-AUTO stopgap remains removed.
+  **Native HDR gain policy (2026-10-27, FIELD_CHECKS A26):** maker REPEATING requests carry
+  `com.oplus.burst.capture.type = 1` (int). OEM `TuningPolicy::MatchFeature2Mode` then selects
+  Feature 2 = 0 instead of the ThirdAPK profile 26, and the AEC applies the unequal gains:
+  measured TC long/short 64/8, DRC 8 and Log LUT endpoint 3685, all matching stock, versus the
+  old 64/64, DRC 1 and endpoint 2843. This selects the OEM policy on the existing video stream;
+  it does not submit stills or a Camera2 burst. It is absent from session parameters and every
+  non-maker request. TC chart means now match stock within RGB 1.70 / 0.60 / 1.28 ten-bit codes;
+  the previously clipped white R=711 is restored to 762 (stock 764). A 93.694 s / 2808-frame
+  product take has no PTS interval above 33.367 ms. The previous SDK-only/impossibility claims
+  were disproved; neither this result nor the gain ratio is a certified total dynamic-range test.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
   work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
-  mode offers 1080p/4K at 30/60 fps and no O-Log2), and the full maker signature exists only on
-  logical 0 (standalone 4 + 0x830b = HDR 0; standalone 4 + 0x80b4 + `pro_video_log_mode` = an SDR-like
-  gamma). So with TC on, Video + Log (maker) opens the LOGICAL camera with the unchanged maker protocol
+  mode offers 1080p/4K at 30/60 fps and no O-Log2). The selected product route is logical 0:
+  standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. A26's
+  newer standalone 4 + VIDEO 0x80b5 probe does reach native Log/HDR, but its focus/optics behaviour
+  has not passed the matched chart check, so it is not selected. With TC on, Video + Log (maker)
+  opens the LOGICAL camera with the native protocol
   (`makerLogTeleRouteWanted` / `teleRouteCameraId`, used by EVERY TELE door — startup/reopen, mode,
   lens/TC, recall) and holds it on the host tele by zoom; the afocal 180°, TC-local zoom, focal and
   magnification readouts, OSD and EXIF are the ordinary TC route's, untouched. The zoom stays
@@ -1363,14 +1369,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Refusal rebuilds without any SDK tag. A camera-device failure disables the native attempt for the
   recovery sequence; explicit mode selection can retry. Product evidence is in FIELD_CHECKS A20:
   4K Main10 + AAC, 345 frames / 11.5115 s, maximum PTS interval 33.367 ms, full decode clean.
-  **Observed highlight limitation (A20, reopened 2026-10-27):** stock's reported long/short gains
-  differ while the tested app route uses equal gains, despite both reporting HDR mode 1/data 2.
-  In the bright comparison the LUT endpoint implies 2.416 stops less encoded range. A fresh dark
-  control at actual ISO 800 / 33.322 ms still reports stock gain ratio 4 versus probe 1. Explicit
-  DCG flags, short-gain requests, split session/repeating extension markers and an HLG10 stream
-  profile have not reproduced the split. Removing the repeating SDK marker disables the OEM Log
-  path altogether. This is a measured limitation of the tested routes, not an exhaustive proof
-  of impossibility or SDK-only access. WB was fixed with TRANSFORM_MATRIX (A23); maker Kelvin/presets now use native AWBCCT (A25).
+  **Former highlight gap — resolved in the measured comparison by A26 (2026-10-27).** The
+  old route's equal long/short gains and LUT endpoint 2843 were real; changing DCG flags, explicit
+  short gains, extension markers or stream profiles did not fix them. The missing repeating
+  capture-type policy above restores stock's gain split and full Log LUT. Verified on main and
+  tele probes and in the TC product recording/soak. Broader lighting/optical range and a formal
+  dynamic-range chart are not certified by this check. WB uses the OEM path described in A25.
   The measured route is available on ColorOS 17; ColorOS 16 shares the configuration protocol but
   has not been retested with this integrated implementation.
   The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor
