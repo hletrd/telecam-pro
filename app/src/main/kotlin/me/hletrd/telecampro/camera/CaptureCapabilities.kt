@@ -301,6 +301,16 @@ data class CameraCaps(
      * ([DeviceProfile.facePrioritySceneOverridesManualWb]).
      */
     val facePrioritySceneKeepsManualWb: Boolean = true,
+    /**
+     * The advertised SESSION / CAPTURE-REQUEST key NAMES under vivo's namespaces and the QTI session
+     * parameters ([makerLogVendorKeyNames]; every other vendor's names are dropped at the read). The
+     * experimental vivo maker Log decides on these alone ([vivoMakerLogCapable], VivoMakerLogProtocol
+     * writes a key only when its name is here) — capability by enumeration, never a model string.
+     * PMA110's QTI HAL may list some QTI names; nothing on an OPPO route reads them. Defaulted so
+     * every fixture reads "none advertised".
+     */
+    val vendorSessionKeyNames: Set<String> = emptySet(),
+    val vendorRequestKeyNames: Set<String> = emptySet(),
 ) {
     /** The calibration of [physicalId]'s sensor when known, else this camera's own. */
     internal fun colorCalibrationFor(physicalId: String?): ColorCalibration? =
@@ -616,6 +626,15 @@ data class CameraCaps(
                 },
                 awbPresetModesHonoured = awbPresetModesHonoured,
                 facePrioritySceneKeepsManualWb = facePrioritySceneKeepsManualWb,
+                // Names only, filtered at the read. Both getters may return null (no session keys on
+                // an old HAL) and a vendor-tag hiccup must degrade to "none advertised", never a
+                // failed capability read. In-process metadata, no extra Binder call.
+                vendorSessionKeyNames = runCatching {
+                    makerLogVendorKeyNames(chars.availableSessionKeys.orEmpty().map { it.name })
+                }.getOrDefault(emptySet()),
+                vendorRequestKeyNames = runCatching {
+                    makerLogVendorKeyNames(chars.availableCaptureRequestKeys.orEmpty().map { it.name })
+                }.getOrDefault(emptySet()),
             )
         }
     }

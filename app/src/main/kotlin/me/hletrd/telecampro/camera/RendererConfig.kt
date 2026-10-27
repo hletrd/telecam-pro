@@ -36,6 +36,12 @@ internal data class RendererConfig(
     val sourceLog: Boolean = false,
     val sourceMaker: Boolean = false,
     /**
+     * Which maker curve the monitor path inverts for that source (gl/MakerLogSource.kt `curveFor`):
+     * O-Log2 by default, "as delivered" for the experimental vivo session. Replayed with [sourceMaker]:
+     * a fresh GL generation defaulting to O-Log2 would run a vivo source through OPPO's inverse.
+     */
+    val sourceMakerCurve: Int = me.hletrd.telecampro.gl.MakerLogSource.CURVE_OLOG2,
+    /**
      * The ACHIEVED Log EI offset factor k (≥ 1) of the native-log repeating request: the scene-linear
      * ceiling of the GL native decode the log encode branches read (NativeLogCurve.kt). 1 = no
      * offset, which takes the historical decode path exactly. Replayed with [sourceLog] for the

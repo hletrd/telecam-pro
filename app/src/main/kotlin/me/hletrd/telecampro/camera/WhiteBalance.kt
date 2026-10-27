@@ -419,8 +419,12 @@ internal fun wbAppOwned(c: ManualControls, cap: WbCapability): Boolean = when (c
         !(cap.presetsHonoured && exactAdvertisedMode(c.wbMode.awbMetadata, cap.awbModes) != null)
 }
 
-/** The session shape a route's colour transform belongs to: each renders its own gamut. */
-internal enum class WbSessionShape { SDR, HLG10, VENDOR_TC, MAKER_LOG, RAW_LOG }
+/**
+ * The session shape a route's colour transform belongs to: each renders its own gamut. MAKER_LOG is
+ * OPPO's measured maker session; VIVO_MAKER_LOG the experimental, unmeasured vivo one — its own key,
+ * so a transform learned under vivo's (unknown) Log gamut never replays on another shape, or back.
+ */
+internal enum class WbSessionShape { SDR, HLG10, VENDOR_TC, MAKER_LOG, RAW_LOG, VIVO_MAKER_LOG }
 
 /**
  * Identity of one route's colour transform: the camera opened, the session shape, and — on a logical

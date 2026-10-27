@@ -1,5 +1,251 @@
 package me.hletrd.telecampro.camera
 
+/**
+ * Whose OWN log pipeline the rear logical route rides (the vendor seam, 2026-10-28). Everything
+ * below this enum used to be OPPO-only with no seam; the second vendor exists so a vivo owner with a
+ * ZEISS kit can try vivo's own Log through the same TC route.
+ *
+ *  - [OPPO]: the MEASURED PRO VIDEO / O-Log2 protocol ([MakerLogProtocol]), gated by
+ *    [DeviceProfile.makerLogPipeline] — FIELD_CHECKS A20–A26.
+ *  - [VIVO]: EXPERIMENTAL and UNMEASURED ([VivoMakerLogProtocol]). No vivo device has ever run it;
+ *    it is gated by an opt-in Setup toggle (default OFF) plus the vendor key NAMES the camera
+ *    advertises ([vivoMakerLogCapable]) — never a model string, and never a [DeviceProfile], which is
+ *    reserved for measured quirks. FIELD_CHECKS A29 lists what the first device run must establish.
+ */
+enum class MakerLogVendor { OPPO, VIVO }
+
+/**
+ * The vendor the rear logical route offers, if any. OPPO wins wherever its measured profile applies
+ * (PMA110 / CPH2841 / PMA120 stay byte-identical whatever the toggle says); vivo only with the
+ * experimental toggle on AND the capability enumerated on the back logical camera.
+ */
+fun resolveMakerLogVendor(
+    oppoPipeline: Boolean,
+    vivoExperimentalEnabled: Boolean,
+    vivoCapable: Boolean,
+): MakerLogVendor? = when {
+    oppoPipeline -> MakerLogVendor.OPPO
+    vivoExperimentalEnabled && vivoCapable -> MakerLogVendor.VIVO
+    else -> null
+}
+
+/**
+ * The vivo capability of the back logical camera, enumerated once on setupExecutor (CameraEngine
+ * `publishLensInventoryOnce`): whether the camera advertises the vivo Log session keys at all, and
+ * the TC wire ceiling ([vivoMakerTeleWireCeiling]) — null when TC + vivo maker Log is not offered.
+ * Device-static, like the lens inventory it is published beside.
+ */
+data class VivoMakerLogCapability(val capable: Boolean, val teleWireCeiling: Float?) {
+    companion object {
+        val NONE = VivoMakerLogCapability(capable = false, teleWireCeiling = null)
+    }
+}
+
+/**
+ * Whether the resolved [vendor] may ride the TC route: OPPO where its profile MEASURED a TC span
+ * ([DeviceProfile.makerLogTeleMaxWireZoom]), vivo where [vivoMakerTeleWireCeiling] found nothing
+ * longer than the host tele to hand over to.
+ */
+fun makerLogTeleAvailable(
+    vendor: MakerLogVendor?,
+    oppoTeleMeasured: Boolean,
+    vivo: VivoMakerLogCapability,
+): Boolean = when (vendor) {
+    MakerLogVendor.OPPO -> oppoTeleMeasured
+    MakerLogVendor.VIVO -> vivo.teleWireCeiling != null
+    null -> false
+}
+
+/**
+ * The advertised vendor key names worth keeping in [CameraCaps]: vivo's own namespaces and the QTI
+ * session parameters its Log protocol writes. Anything else — every other vendor's names — is dropped
+ * at the read, so a capability snapshot never carries a name nothing here decides on.
+ */
+internal fun makerLogVendorKeyNames(names: Iterable<String>): Set<String> =
+    names.filterTo(sortedSetOf()) { name -> VivoMakerLogProtocol.ADVERTISED_NAME_PREFIXES.any(name::startsWith) }
+
+/**
+ * The vivo capability predicate, over the advertised SESSION key names: the Log switch AND the UI
+ * module key (under either of the two names stock vivo builds use). Necessary, not sufficient — no
+ * advertised name proves the HAL will honour the protocol, which is why the vivo path stays behind
+ * the experimental toggle and records an unconfirmed session (FIELD_CHECKS A29).
+ */
+internal fun vivoMakerLogCapable(sessionKeyNames: Set<String>): Boolean =
+    VivoMakerLogProtocol.UI_SWITCH_STATE in sessionKeyNames &&
+        (VivoMakerLogProtocol.UI_MODULE in sessionKeyNames || VivoMakerLogProtocol.UI_MODULE_LEGACY in sessionKeyNames)
+
+/**
+ * Two readings of the SAME lens — its standalone id and its logical member — may differ by rounding
+ * in the equivalent focal; a lens counts as longer than the host only beyond this ratio. No handset
+ * carries two back lenses within 2 % of each other.
+ */
+internal const val VIVO_MAKER_TELE_SAME_LENS_RATIO = 1.02f
+
+/**
+ * The vivo TC route's wire ceiling, or null when TC + vivo maker Log is not offered. OPPO's ceiling
+ * is MEASURED (9.8: at 10.0 the HAL handed the frame to the periscope); vivo has no measurement, so
+ * the only ceiling that cannot hand over is one with nowhere to hand over TO: the host tele
+ * ([hostPhysicalId], the logical member resolved by enumerated focal, [CameraSelector2.pickPhysicalMember])
+ * must be the LONGEST back lens by enumerated focal among [candidates] (every back lens, standalone
+ * ids and logical members — conservative: a lens the logical camera cannot reach still withholds it).
+ * The ceiling is then the logical camera's own advertised maximum ([logicalMaxZoom]); beyond the
+ * host's optical field it is digital crop on the host. A low-light hand-DOWN to a brighter, wider
+ * lens remains possible and is what the lens guard ([makerTeleLensOffHost]) exists for.
+ */
+internal fun vivoMakerTeleWireCeiling(
+    candidates: List<TeleSelection>,
+    logicalId: String,
+    hostPhysicalId: String?,
+    logicalMaxZoom: Float?,
+): Float? {
+    val host = hostPhysicalId ?: return null
+    val ceiling = logicalMaxZoom?.takeIf { it.isFinite() && it > 0f } ?: return null
+    val hostFocal = candidates.firstOrNull { it.logicalId == logicalId && it.physicalId == host }
+        ?.equivFocalMm?.takeIf { it > 0f } ?: return null
+    val longer = candidates.any { it.equivFocalMm > hostFocal * VIVO_MAKER_TELE_SAME_LENS_RATIO }
+    return if (longer) null else ceiling
+}
+
+/** One vendor request key by NAME with its value; the controller writes it with the matching type. */
+internal sealed interface VendorParameter {
+    val name: String
+}
+
+internal data class IntParameter(override val name: String, val value: Int) : VendorParameter
+internal data class FloatParameter(override val name: String, val value: Float) : VendorParameter
+// A List, not an IntArray, so two parameter lists compare by content in tests and diagnostics.
+internal data class IntArrayParameter(override val name: String, val values: List<Int>) : VendorParameter
+
+/**
+ * vivo "Pro video" Log v2 — EXPERIMENTAL, UNMEASURED. Reconstructed by STATIC ANALYSIS ONLY of the
+ * stock vivo Camera 13.0.50.32 APK (overseas vos 7.0 build, decompiled 2026-10-28; its configs cover
+ * the X200 Ultra, PD2454, `getAdvanceLogVersion() = 2`, QCOM branch `v3/g.java`). No vivo device has
+ * run any of this, the X300 / X500 flagships are NOT in that APK, and vivo publishes no Log curve, so:
+ *  - nothing here may claim the file is vivo Log (the session is accepted unconfirmed);
+ *  - GL applies NO inverse curve to a vivo source (`MakerLogSource.CURVE_AS_DELIVERED`);
+ *  - every key is written ONLY when the camera advertises its name, and every write is by NAME
+ *    (numeric vendor tag ids move between firmware builds — OPPO measured 168 of 455 move once).
+ *
+ * Mapping notes (what the static reading supports, and where it guessed): stock writes the UI module
+ * and the Log bit of its UI switch word as session state; Log v2 then selects 2-exposure staggered
+ * HDR with auto-HDR off and, where the sensor has DCG, the DCG HDR preference. Stock also sets an
+ * internal session flag (`p.k0(advanceLogMode > 0)`) whose wire key was not traced; the UI switch
+ * word is this app's best reading of it. MTK (Dimensity) models take a different stock branch that
+ * is not implemented at all — their cameras advertise none of the QTI names and get only the vivo
+ * ones, which may well mean "not honoured".
+ */
+internal object VivoMakerLogProtocol {
+    const val UI_MODULE = "vivo.current_ui_module"
+    const val UI_MODULE_LEGACY = "com.vivo.current_ui_module"
+    const val UI_SWITCH_STATE = "vivo.control.session.uiSwitch_state"
+    const val UI_SWITCH_STATE_PREVIEW = "vivo.control.uiSwitch_state_preview"
+    const val INIT_RATIO = "vcf.parameter.initRatio"
+    const val QCOM_SESSION = "org.codeaurora.qcamera3.sessionParameters."
+    const val NUM_HDR_EXPOSURE = QCOM_SESSION + "numHDRexposure"
+    const val ENABLE_AUTO_HDR = QCOM_SESSION + "EnableAutoHDR"
+    const val ENABLE_SHDR = QCOM_SESSION + "EnableSHDR"
+    const val ENABLE_HDR_DCG_MODE = QCOM_SESSION + "EnableHDRDCGMode"
+    const val HDR_MODE_PREFERENCE = QCOM_SESSION + "HDRModePreference"
+    const val HDR_MODE = QCOM_SESSION + "HDRMode"
+    const val SEAMLESS_CONTROL = "vivo.control.session.seamlesscontrol"
+    const val USE_AEC_10 = "vivo.parameter.use_aec_10"
+    const val ENABLE_DCG_HDR = "vivo.control.EnableDCGHDR"
+    /** Result names the first device run must report (names only; debug build). */
+    const val FEEDBACK_PREFIX = "vivo.feedback."
+
+    /** Stock UI modules: ordinary video 3, `video_advanced` (Pro video, the Log home) 51. */
+    const val UI_MODULE_VIDEO = 3
+    const val UI_MODULE_VIDEO_ADVANCED = 51
+    /**
+     * Stock `external_tele_video` (the ZEISS extender module) is 78. NEVER sent: stock offers Log only
+     * in `video_advanced` and never pairs it with its extender mode, and this app's TC is its own
+     * afocal flip + declaration on the logical camera, exactly like the OPPO TC maker route.
+     */
+    const val UI_MODULE_EXTERNAL_TELE_VIDEO = 78
+    /** UI switch word: bit 0x20 = Log on. */
+    const val UI_SWITCH_LOG = 0x20
+    /**
+     * Bit 0x80 = the HAL's own Log-LUT preview. NOT set: the app owns the monitor (Gamma Display
+     * Assist), and a HAL-normalized preview stream would also be the stream the encoder records.
+     */
+    const val UI_SWITCH_LOG_LUT_PREVIEW = 0x80
+    const val HDR_EXPOSURES = 2
+    const val HDR_DCG_MODE_LOG_V2 = 2
+    const val HDR_MODE_PREFERENCE_DCG = 4
+    const val HDR_MODE_PREFERENCE_STAGGERED = 1
+
+    val ADVERTISED_NAME_PREFIXES: List<String> = listOf("vivo.", "com.vivo.", "vcf.", QCOM_SESSION)
+
+    /**
+     * The session parameters, in stock's order, filtered to [advertisedSessionKeys]. [initialWireZoom]
+     * is the logical wire zoom the session opens at (TC: the host tele scale × the TC-local zoom);
+     * omitted unless positive and finite.
+     */
+    fun sessionParameters(advertisedSessionKeys: Set<String>, initialWireZoom: Float): List<VendorParameter> {
+        val dcg = ENABLE_DCG_HDR in advertisedSessionKeys
+        val uiModuleKey = when {
+            UI_MODULE in advertisedSessionKeys -> UI_MODULE
+            UI_MODULE_LEGACY in advertisedSessionKeys -> UI_MODULE_LEGACY
+            else -> null
+        }
+        val wanted = buildList {
+            uiModuleKey?.let { add(IntParameter(it, UI_MODULE_VIDEO_ADVANCED)) }
+            add(IntParameter(UI_SWITCH_STATE, UI_SWITCH_LOG))
+            if (initialWireZoom.isFinite() && initialWireZoom > 0f) add(FloatParameter(INIT_RATIO, initialWireZoom))
+            add(IntParameter(NUM_HDR_EXPOSURE, HDR_EXPOSURES))
+            add(IntParameter(ENABLE_AUTO_HDR, 0))
+            add(IntParameter(ENABLE_SHDR, 1))
+            add(IntParameter(ENABLE_HDR_DCG_MODE, HDR_DCG_MODE_LOG_V2))
+            add(IntParameter(SEAMLESS_CONTROL, HDR_EXPOSURES))
+            add(IntParameter(USE_AEC_10, 1))
+            if (dcg) {
+                add(IntParameter(ENABLE_DCG_HDR, 1))
+                add(IntArrayParameter(HDR_MODE_PREFERENCE, listOf(HDR_MODE_PREFERENCE_DCG)))
+                add(IntParameter(HDR_MODE, 0))
+            } else {
+                add(IntArrayParameter(HDR_MODE_PREFERENCE, listOf(HDR_MODE_PREFERENCE_STAGGERED)))
+                add(IntParameter(HDR_MODE, 1))
+            }
+        }
+        return wanted.filter { it.name in advertisedSessionKeys }
+    }
+
+    /** The repeating request's vivo keys, filtered to [advertisedRequestKeys]: the preview Log bit. */
+    fun repeatingParameters(advertisedRequestKeys: Set<String>): List<VendorParameter> =
+        listOf(IntParameter(UI_SWITCH_STATE_PREVIEW, UI_SWITCH_LOG)).filter { it.name in advertisedRequestKeys }
+}
+
+/**
+ * DEBUG evidence for the first vivo device run: whether results echo the preview Log bit and which
+ * `vivo.feedback.*` result names exist. Reading every result key name allocates, so at most
+ * [SAMPLE_FRAMES].size reads per session, and a row only when the observation CHANGED (ColorOS-style
+ * 300-row quotas exist on other skins too); the caller still spends the recurring budget per row.
+ */
+internal class VivoMakerLogEchoProbe {
+    private var frames = 0
+    private var lastRow: String? = null
+
+    /** Counts one repeating result; true on the few frames worth reading. */
+    fun sampleThisFrame(): Boolean = ++frames in SAMPLE_FRAMES
+
+    /** The row to log for this observation, or null when it repeats the previous one. */
+    fun row(echoPresent: Boolean, echoValue: Int?, feedbackNames: Collection<String>): String? {
+        val echo = if (!echoPresent) "absent" else echoValue?.let { "0x${it.toString(16)}" } ?: "unreadable"
+        val row = "VivoLog: frame=$frames echo(${VivoMakerLogProtocol.UI_SWITCH_STATE_PREVIEW})=$echo " +
+            "feedback=${feedbackNames.sorted()}"
+        // Change-gated on the observation, not the frame number.
+        val observation = row.substringAfter(' ').substringAfter(' ')
+        if (observation == lastRow) return null
+        lastRow = observation
+        return row
+    }
+
+    companion object {
+        /** 2nd frame (the first may predate the session state), ~1 s, ~5 s at 30 fps. */
+        val SAMPLE_FRAMES: Set<Int> = setOf(2, 30, 150)
+    }
+}
+
 /** Measured OPPO PRO VIDEO protocol. These are names, never firmware-specific numeric tag IDs. */
 internal object MakerLogProtocol {
     const val SESSION_TYPE = 0x830b
@@ -46,6 +292,9 @@ internal const val MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110 = 9.8f
  * an SDR-like gamma under `pro_video_log_mode`, so TC + maker Log keeps the converter's GL/readout
  * world and only moves the SESSION onto the logical camera's measured maker protocol, zoomed onto
  * the host tele ([MakerTeleRoute]). Losing 0x80b4 costs nothing demonstrated (FIELD_CHECKS C3).
+ *
+ * Vendor-neutral since the vivo seam (2026-10-28): [profileAllows] is "a [MakerLogVendor] resolved"
+ * ([resolveMakerLogVendor]) and [teleconverterRouteMeasured] is [makerLogTeleAvailable] for it.
  */
 fun makerLogOffered(
     profileAllows: Boolean,
@@ -84,7 +333,8 @@ internal fun makerLogSourceConfirmed(operationMode: Int?, logMode: Int?, gamma: 
  * [wireZoomScale] is the host tele's position on the logical camera's unified scale (the value the
  * 3× chip applies, [makerTeleWireZoomScale]); the controller multiplies every CONTROL_ZOOM_RATIO it
  * writes by it and divides every one it reads back, so engine, GL compensation and UI keep seeing
- * TC-local values. [wireZoomCeiling] is the measured [DeviceProfile.makerLogTeleMaxWireZoom].
+ * TC-local values. [wireZoomCeiling] is the measured [DeviceProfile.makerLogTeleMaxWireZoom] on OPPO,
+ * the unmeasured longest-lens ceiling ([vivoMakerTeleWireCeiling]) on vivo.
  * [hostPhysicalId] is the logical camera's physical member under the converter, resolved by
  * enumerated focal ([CameraSelector2.pickPhysicalMember]) — never a literal id — or null when the
  * enumeration could not name it (the lens guard then cannot prove anything and stays quiet).

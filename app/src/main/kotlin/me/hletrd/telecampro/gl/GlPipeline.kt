@@ -666,6 +666,9 @@ class GlPipeline(
 
     fun setSourceMaker(enabled: Boolean) = post { renderer.setSourceMaker(enabled) }
 
+    /** Which maker curve the monitor path inverts; replayed through RendererAssists like the rest. */
+    fun setSourceMakerCurve(curve: Int) = post { renderer.setSourceMakerCurve(curve) }
+
     /** Log EI offset: the native decode's scene-linear ceiling for the log encode branches. */
     fun setSourceLogHeadroom(factor: Float) = post { renderer.setSourceLogHeadroom(factor) }
 

@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.gl
 
+import me.hletrd.telecampro.camera.MakerLogVendor
 import kotlin.math.pow
 
 /**
@@ -15,4 +16,18 @@ internal object MakerLogSource {
     const val DELTA = 0.693
 
     fun decode(code: Double): Double = 2.0.pow((code - DELTA) / GAMMA) - BETA
+
+    /**
+     * `uSourceMakerCurve`: which inverse the MONITOR path may apply to an accepted maker source.
+     * [CURVE_OLOG2] (the renderer default, so every OPPO draw is unchanged) is the official inverse
+     * above. [CURVE_AS_DELIVERED] is vivo: vivo publishes no Log formula, and this app will not invent
+     * one, so the display path shows the source codes as delivered — Gamma Display Assist cannot
+     * normalize a vivo source. Recording is the code-9 passthrough for both.
+     */
+    const val CURVE_OLOG2 = 0
+    const val CURVE_AS_DELIVERED = 1
+
+    /** The curve for an accepted session's vendor; null (no maker session) keeps the default. */
+    fun curveFor(vendor: MakerLogVendor?): Int =
+        if (vendor == MakerLogVendor.VIVO) CURVE_AS_DELIVERED else CURVE_OLOG2
 }

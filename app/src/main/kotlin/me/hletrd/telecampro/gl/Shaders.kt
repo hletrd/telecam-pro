@@ -11,6 +11,7 @@ internal object ShaderBindings {
     const val U_SOURCE_HLG = "uSourceHlg"
     const val U_SOURCE_LOG = "uSourceLog"
     const val U_SOURCE_MAKER = "uSourceMaker"
+    const val U_SOURCE_MAKER_CURVE = "uSourceMakerCurve"
     const val U_SOURCE_LOG_HEADROOM = "uSourceLogHeadroom"
     const val U_SOURCE_WIDE = "uSourceWide"
     const val U_PEAKING = "uPeaking"
@@ -31,6 +32,7 @@ internal object ShaderBindings {
         U_SOURCE_HLG,
         U_SOURCE_LOG,
         U_SOURCE_MAKER,
+        U_SOURCE_MAKER_CURVE,
         U_SOURCE_LOG_HEADROOM,
         U_SOURCE_WIDE,
         U_PEAKING,
@@ -110,6 +112,10 @@ object Shaders {
         uniform int ${ShaderBindings.U_SOURCE_LOG};
         // Confirmed factory O-Log2, BT.2020. Independent from the programmed S-Log3 transport.
         uniform int ${ShaderBindings.U_SOURCE_MAKER};
+        // Which maker curve the MONITOR path inverts (MakerLogSource.curveFor): 0 = OPPO O-Log2, 1 =
+        // as delivered (vivo, experimental: no published curve, so none is invented). Files never
+        // read it — code 9 passes the source codes through for every vendor.
+        uniform int ${ShaderBindings.U_SOURCE_MAKER_CURVE};
         // Log EI offset (NativeLogCurve.kt): the ACHIEVED underexposure factor k >= 1 the ISP curve
         // lifted back (slog3(k * x)). The decode slog3Inverse(code) is already scene-linear k * x —
         // the inverse needs no k — so k is the ceiling of that decode's domain [0, k]. 1 = no offset.
@@ -196,7 +202,7 @@ object Shaders {
 
         vec3 sampleSource(vec2 uv) {
             vec3 c = texture2D(uTexture, uv).rgb;
-            if (uSourceMaker == 1) return makerDisplaySample(c);
+            if (uSourceMaker == 1) return uSourceMakerCurve == ${MakerLogSource.CURVE_AS_DELIVERED} ? c : makerDisplaySample(c);
             if (uSourceLog == 0) return c;
             if (uSourceWide == 1) return wideDisplaySample(c);
             vec3 lin = clamp(slog3Inverse(c) * uSourceLogHeadroom, 0.0, 1.0);

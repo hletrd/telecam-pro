@@ -137,8 +137,8 @@ enum class ColorTransfer(val isLog: Boolean = false) {
  *  - [RAW_LOG]: EXPERIMENTAL, the log developed in-app from the RAW stream (camera/RawLog.kt); its
  *    chip carries the caution tint so the row itself says so.
  *  - [MAKER_LOG]: the phone maker's OWN log pipeline ("OEM Log"), offered only where a device's maker
- *    pipeline is reachable and integrated (PMA110's O-Log2 route, camera/MakerLog.kt) — never a
- *    curve this app imitates.
+ *    pipeline is reachable and integrated (PMA110's O-Log2 route, camera/MakerLog.kt; vivo's only
+ *    behind the experimental, unmeasured opt-in, [MakerLogVendor]) — never a curve this app imitates.
  */
 enum class VideoColorMode { SDR, HLG, LOG, RAW_LOG, MAKER_LOG }
 
@@ -1729,6 +1729,13 @@ data class PhotoSessionOutputs(
     val rawLog: Boolean = false,
     /** The factory Log source was confirmed by capture metadata before Ready was published. */
     val makerLog: Boolean = false,
+    /**
+     * WHOSE maker session was accepted (MakerLog.kt vendor seam), null when [makerLog] is false.
+     * [MakerLogVendor.OPPO] means confirmed by its Log LUT; [MakerLogVendor.VIVO] means accepted on
+     * configure success alone — vivo publishes no confirmation signal the app knows (A29), so
+     * readouts name it "experimental, unverified" and GL applies no inverse curve to it.
+     */
+    val makerLogVendor: MakerLogVendor? = null,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }
@@ -2219,6 +2226,14 @@ data class CameraUiState(
     /** [DeviceProfile.makerLogTeleMaxWireZoom] non-null: Log (maker) is also offered with TC on. */
     val makerLogTeleSupported: Boolean = false,
     /**
+     * The persisted Setup opt-in for the EXPERIMENTAL vivo maker Log (default OFF) and the back
+     * logical camera's enumerated vivo capability (engine-published with the lens inventory). OPPO
+     * profiles ignore both ([resolveMakerLogVendor]); the Setup row shows only where [vivoMakerLog]
+     * is capable, so a non-vivo owner never sees it.
+     */
+    val vivoMakerLogExperimental: Boolean = false,
+    val vivoMakerLog: VivoMakerLogCapability = VivoMakerLogCapability.NONE,
+    /**
      * Maker TC lens guard ([makerTeleLensOffHost], controller-published, false on every new
      * controller): the logical camera is provably recording through a lens other than the
      * converter's host. Displayed only through [teleconverterLensSwitchedTagVisible].
@@ -2298,8 +2313,20 @@ data class CameraUiState(
             makerLogOffered && !(mode == CaptureMode.VIDEO && cameraReady &&
                 transfer == ColorTransfer.MAKER_LOG && !photoSessionOutputs.makerLog))
 
+    /** The maker vendor this device offers now ([resolveMakerLogVendor]); null = no OEM Log. */
+    val makerLogVendor: MakerLogVendor?
+        get() = resolveMakerLogVendor(makerLogSupported, vivoMakerLogExperimental, vivoMakerLog.capable)
+
+    /** Whether that vendor may ride the TC route ([makerLogTeleAvailable]). */
+    val makerLogTeleAvailable: Boolean
+        get() = makerLogTeleAvailable(makerLogVendor, makerLogTeleSupported, vivoMakerLog)
+
+    /** The Setup row for the vivo opt-in: only on a vivo-capable, non-OPPO camera. */
+    val vivoMakerLogSettingVisible: Boolean
+        get() = !makerLogSupported && vivoMakerLog.capable
+
     val makerLogOffered: Boolean
-        get() = makerLogOffered(makerLogSupported, makerLogTeleSupported, activeCameraRoute, teleconverterMode,
+        get() = makerLogOffered(makerLogVendor != null, makerLogTeleAvailable, activeCameraRoute, teleconverterMode,
             cameraOverrideId, videoFrameRate.encoderRate, openGate)
 
     /**

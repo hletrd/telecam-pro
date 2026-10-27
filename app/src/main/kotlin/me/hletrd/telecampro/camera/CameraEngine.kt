@@ -450,6 +450,18 @@ class CameraEngine internal constructor(
     // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
     @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
     @Volatile private var makerLogRefused = false
+    // EXPERIMENTAL vivo maker Log (MakerLog.kt vendor seam): the persisted Setup opt-in (default OFF)
+    // and the back logical camera's capability. Both are ROUTE inputs — they can flip makerLogWanted,
+    // i.e. the camera, the zoom scale and the session — so each changes only through its own door
+    // ([setVivoMakerLogExperimental], [applyVivoMakerLogCapability]), which remaps and reopens like
+    // Open Gate, called on main beside the ViewModel's own remap. The ENUMERATED value is kept apart
+    // from the APPLIED one so enumeration (setupExecutor) can never flip the route answer silently,
+    // without the remap. On an OPPO profile none of this can change the answer.
+    @Volatile private var vivoMakerLogExperimental = false
+    @Volatile private var vivoMakerLogCapability: VivoMakerLogCapability = VivoMakerLogCapability.NONE
+    /** Enumerated with the lens inventory (device-static); the ViewModel applies it on main. */
+    @Volatile var enumeratedVivoMakerLog: VivoMakerLogCapability = VivoMakerLogCapability.NONE
+        private set
     @Volatile private var transfer = ColorTransfer.SDR
     /** Operator's next-Video curve; Photo keeps this while its active GL/Camera2 transfer is SDR. */
     @Volatile private var requestedVideoTransfer = ColorTransfer.SDR
@@ -938,6 +950,11 @@ class CameraEngine internal constructor(
             // follow the same accepted truth.
             rendererAssists.setSourceLog(expectedController.nativeLogConfigured || expectedController.rawLogConfigured)
             rendererAssists.setSourceMaker(expectedController.makerLogConfigured)
+            // WHICH maker curve the monitor path may invert: O-Log2 for an accepted OPPO session,
+            // none for vivo (no published curve). OPPO's value is the renderer default, unchanged.
+            rendererAssists.setSourceMakerCurve(
+                me.hletrd.telecampro.gl.MakerLogSource.curveFor(expectedController.makerLogConfiguredVendor),
+            )
             rendererAssists.setSourceWide(
                 expectedController.rawLogConfigured,
                 me.hletrd.telecampro.gl.SourceTransformEmulation.rearTransformFor(caps?.sensorOrientation ?: 0),
@@ -1611,6 +1628,16 @@ class CameraEngine internal constructor(
         // The home camera's own equivalent is what its zoomRatio 1.0 means — the LOGICAL route's
         // display factor divides it by the declared maker's 1× (logicalZoomDisplayFactor).
         val inventory = lensInventoryOf(equivalents, range, homeCaps?.equivalentFocalMm)
+        // The vivo maker capability rides the same one-shot enumeration: the home camera IS the back
+        // logical camera whose advertised key names decide it, and [candidates] are every back lens
+        // the TC ceiling compares against. Pure over facts already read — PMA110 (no vivo names)
+        // resolves NONE, the default. Only RECORDED here; the ViewModel's inventory fold applies it
+        // on main through [applyVivoMakerLogCapability], beside its own zoom remap.
+        enumeratedVivoMakerLog = if (cameraRouteInventory.back && homeCaps != null) {
+            vivoMakerLogCapabilityOf(homeCaps, candidates)
+        } else {
+            VivoMakerLogCapability.NONE
+        }
         acceptedOpticalPresets = inventory.optical
         acceptedMainEquivMm = inventory.presetEquivMm[LensChoice.MAIN]
         acceptedHomeEquivMm = inventory.homeEquivMm.takeIf { it > 0f }
@@ -2905,7 +2932,7 @@ class CameraEngine internal constructor(
                 tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
-                makerLog = makerLogWanted() && !makerLogRefused,
+                makerLogVendor = makerLogVendorNow().takeIf { makerLogWanted() && !makerLogRefused },
                 // Re-derived from the installed selection: [caps] already carry this route's span.
                 makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
@@ -3942,6 +3969,43 @@ class CameraEngine internal constructor(
         val targetSize = chooseVideoSize(sel)
         if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
         else applyVideoSize(targetSize)
+    }
+
+    /**
+     * The EXPERIMENTAL vivo maker Log opt-in (Setup toggle, default OFF, MakerLog.kt). A route input:
+     * where it flips [makerLogWanted] the camera, zoom scale and session move with it, through the
+     * same bare remap-and-reopen door as Open Gate. Refused while recording. Turning it ON forgets a
+     * latched maker refusal — the operator asking to try again, as selecting OEM Log does.
+     */
+    fun setVivoMakerLogExperimental(enabled: Boolean) {
+        if (vivoMakerLogExperimental == enabled) return
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        applyMakerVendorInput {
+            vivoMakerLogExperimental = enabled
+            if (enabled) makerLogRefused = false
+        }
+    }
+
+    /**
+     * Applies the enumerated vivo capability ([enumeratedVivoMakerLog]); called on main by the
+     * ViewModel's inventory fold together with its own zoom remap (the onTransfer pattern). It lands
+     * AFTER the first open by design (enumeration never delays the camera), so a restored vivo OEM Log
+     * opens the ordinary S-Log3 route first and moves here, once, through the same door as the toggle
+     * — never silently inside [makerLogWanted], which would put the standalone zoom scale on the
+     * logical wire. Device-static: a repeat is a no-op.
+     */
+    fun applyVivoMakerLogCapability(capability: VivoMakerLogCapability) {
+        if (vivoMakerLogCapability == capability) return
+        applyMakerVendorInput { vivoMakerLogCapability = capability }
+    }
+
+    /** One maker-vendor input write: remap the zoom scale and reopen only when the route answer moved. */
+    private fun applyMakerVendorInput(write: () -> Unit) {
+        val makerBefore = makerLogWanted()
+        write()
+        val makerAfter = makerLogWanted()
+        synchronized(this) { remapMakerRouteBoundary(makerBefore, makerAfter) }
+        if (makerBefore != makerAfter) reopenForSession()
     }
 
     /**
@@ -5028,7 +5092,7 @@ class CameraEngine internal constructor(
                     tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
-                    makerLog = makerLogWanted() && !makerLogRefused,
+                    makerLogVendor = makerLogVendorNow().takeIf { makerLogWanted() && !makerLogRefused },
                     makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     highSpeedFps = desiredHighSpeedFps(),
@@ -8661,6 +8725,13 @@ class CameraEngine internal constructor(
         }
     }
 
+    /**
+     * The maker vendor this device offers now ([resolveMakerLogVendor]): OPPO on its measured profile
+     * whatever else holds, vivo only with the opt-in on and the capability enumerated.
+     */
+    private fun makerLogVendorNow(): MakerLogVendor? =
+        resolveMakerLogVendor(deviceProfile.makerLogPipeline, vivoMakerLogExperimental, vivoMakerLogCapability.capable)
+
     /** Desired OEM topology; source acceptance is confirmed separately by the controller. */
     private fun makerLogWanted(
         mode: Boolean = videoMode,
@@ -8669,9 +8740,34 @@ class CameraEngine internal constructor(
         route: CameraRoute = activeCameraRoute,
         fps: Double = videoFrameRate.encoderRate,
         gate: Boolean = openGate,
-    ): Boolean = makerLogSessionWanted(mode, t, makerLogOffered(
-        deviceProfile.makerLogPipeline, deviceProfile.makerLogTeleMaxWireZoom != null, route, tc, userCameraPin, fps, gate,
-    ))
+    ): Boolean {
+        val vendor = makerLogVendorNow()
+        return makerLogSessionWanted(mode, t, makerLogOffered(
+            vendor != null,
+            makerLogTeleAvailable(vendor, deviceProfile.makerLogTeleMaxWireZoom != null, vivoMakerLogCapability),
+            route, tc, userCameraPin, fps, gate,
+        ))
+    }
+
+    /**
+     * The vivo capability of the back logical camera [home] (MakerLog.kt): its advertised session-key
+     * names, the logical/rear/plain-open shape the maker route needs, and — only when capable — the TC
+     * ceiling over every back lens [candidates] by enumerated focal ([vivoMakerTeleWireCeiling]).
+     */
+    private fun vivoMakerLogCapabilityOf(home: CameraCaps, candidates: List<TeleSelection>): VivoMakerLogCapability {
+        val capable = home.isLogicalMultiCamera && home.physicalId == null && !home.lensFacingFront &&
+            vivoMakerLogCapable(home.vendorSessionKeyNames)
+        if (!capable) return VivoMakerLogCapability.NONE
+        return VivoMakerLogCapability(
+            capable = true,
+            teleWireCeiling = vivoMakerTeleWireCeiling(
+                candidates = candidates,
+                logicalId = home.logicalId,
+                hostPhysicalId = cachedMakerTeleHost(home.logicalId),
+                logicalMaxZoom = home.zoomRatioRange?.upper,
+            ),
+        )
+    }
 
     /**
      * Whether TELE opens the LOGICAL camera for the maker pipeline instead of the standalone host
@@ -8692,7 +8788,12 @@ class CameraEngine internal constructor(
     private fun makerTeleRouteFor(sel: TeleSelection): MakerTeleRoute? {
         if (!teleconverterMode || activeCameraRoute != CameraRoute.BACK) return null
         if (sel.physicalId != null || sel.logicalId != cachedLogicalBack()) return null
-        val ceiling = deviceProfile.makerLogTeleMaxWireZoom ?: return null
+        // OPPO's MEASURED ceiling (9.8), or vivo's unmeasured longest-lens one; none = no maker TC route.
+        val ceiling = when (makerLogVendorNow()) {
+            MakerLogVendor.OPPO -> deviceProfile.makerLogTeleMaxWireZoom
+            MakerLogVendor.VIVO -> vivoMakerLogCapability.teleWireCeiling
+            null -> null
+        } ?: return null
         return MakerTeleRoute(
             wireZoomScale = makerTeleWireZoomScale(acceptedOpticalPresets, zoomPresets),
             wireZoomCeiling = ceiling,

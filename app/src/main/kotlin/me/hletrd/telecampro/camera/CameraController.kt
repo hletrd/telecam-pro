@@ -165,9 +165,20 @@ class CameraController internal constructor(
     private var makerLogRequested = false
     private var makerLogRefused = false
     private var makerLogAttempt = false
+    // WHOSE maker pipeline this open requested (MakerLog.kt vendor seam), null when none. Written once
+    // per open() on setupExecutor, read on the camera thread and by the engine's Ready commit.
+    @Volatile private var makerLogVendor: MakerLogVendor? = null
     private var pendingMakerConfirmation: ((CameraCaptureSession, TotalCaptureResult) -> Unit)? = null
+    // Camera-thread confined: the DEBUG evidence probe of an accepted vivo session, null elsewhere.
+    private var vivoEchoProbe: VivoMakerLogEchoProbe? = null
     @Volatile var makerLogConfigured = false
         private set
+    /**
+     * The vendor of the ACCEPTED maker session, null when none: OPPO only after its Log LUT confirmed,
+     * vivo on configure success alone (no confirmation signal is known — FIELD_CHECKS A29).
+     */
+    val makerLogConfiguredVendor: MakerLogVendor?
+        get() = makerLogVendor.takeIf { makerLogConfigured }
     @Volatile var makerLogFailed = false
         private set
     // The maker TC route (MakerLog.kt): non-null when this controller opened the LOGICAL camera
@@ -431,7 +442,9 @@ class CameraController internal constructor(
         // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
-        makerLog: Boolean = false,
+        // The resolved maker vendor ([resolveMakerLogVendor]) when this open wants the maker pipeline,
+        // else null. Re-checked below against THIS camera's caps and profile.
+        makerLogVendor: MakerLogVendor? = null,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
         // its TC-local zoom on the logical wire — the main lens, not the tele the converter is on.
@@ -483,8 +496,16 @@ class CameraController internal constructor(
                 if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
             )
         }
-        this.makerLogRequested = makerLog && deviceProfile.makerLogPipeline && caps.isLogicalMultiCamera &&
+        // Each vendor re-checked against its own gate: OPPO's measured profile, vivo's enumerated key
+        // names — and vivo never on an OPPO profile, whose measured protocol owns that camera.
+        val vendorGate = when (makerLogVendor) {
+            MakerLogVendor.OPPO -> deviceProfile.makerLogPipeline
+            MakerLogVendor.VIVO -> !deviceProfile.makerLogPipeline && vivoMakerLogCapable(caps.vendorSessionKeyNames)
+            null -> false
+        }
+        this.makerLogRequested = vendorGate && caps.isLogicalMultiCamera &&
             selection.physicalId == null && !caps.lensFacingFront
+        this.makerLogVendor = makerLogVendor.takeIf { this.makerLogRequested }
         this.makerLogRefused = false
         this.makerLogConfigured = false
         this.makerLogFailed = false
@@ -742,6 +763,30 @@ class CameraController internal constructor(
         }
     }
 
+    /**
+     * Vendor keys by NAME (the experimental vivo protocol, MakerLog.kt). Unguarded per key on purpose
+     * for the SESSION parameters: one rejected key means the protocol as reconstructed is not what
+     * this HAL takes, so the whole set fails into the ordinary maker refusal rather than configuring
+     * half of it. The repeating request guards its single key itself.
+     */
+    private fun CaptureRequest.Builder.applyVendorParameters(parameters: List<VendorParameter>) {
+        for (p in parameters) when (p) {
+            is IntParameter -> set(CaptureRequest.Key(p.name, Int::class.javaObjectType), p.value)
+            is FloatParameter -> set(CaptureRequest.Key(p.name, Float::class.javaObjectType), p.value)
+            is IntArrayParameter -> set(CaptureRequest.Key(p.name, IntArray::class.java), p.values.toIntArray())
+        }
+    }
+
+    /**
+     * The logical WIRE zoom a maker session opens at, the vivo `vcf.parameter.initRatio`: the same
+     * clamp-then-carry order as applyZoom (TC-local window on the maker TC route, then the host scale).
+     */
+    private fun makerInitialWireZoom(): Float {
+        val ratio = controls.zoomRatio
+        val local = caps.zoomRatioRange?.let { clampToOrderedBounds(ratio, it.lower, it.upper) } ?: ratio
+        return makerTeleRoute?.let { route -> makerTeleWireZoom(local, route) } ?: local
+    }
+
     /** OEM session protocol; every key is repeated on the recording request. */
     private fun CaptureRequest.Builder.applyMakerLogParameters() {
         set(CaptureRequest.Key(MakerLogProtocol.SDK_PACKAGE, ByteArray::class.java), byteArrayOf(1))
@@ -970,9 +1015,13 @@ class CameraController internal constructor(
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
         pendingMakerConfirmation = null
+        vivoEchoProbe = null
         makerLogConfigured = false
         val useMakerLog = makerLogRequested && !makerLogRefused
         makerLogAttempt = useMakerLog
+        // Non-null exactly on a maker attempt. Every vendor difference below keys on THIS, so an
+        // OPPO attempt takes the measured path byte for byte and a non-maker attempt neither.
+        val makerVendor = makerLogVendor.takeIf { useMakerLog }
         // The maker TC route never falls back IN PLACE. Every maker refusal below (configure failure,
         // session-parameter rejection, a source that never confirms) re-enters here with the maker
         // half refused; the non-TC route then rebuilds an ordinary session on this same logical
@@ -1046,6 +1095,7 @@ class CameraController internal constructor(
         // shape renders its own gamut, so a transform learned in one is never replayed in another.
         // Set before the session parameters below, which already carry the WB keys.
         wbShape = when {
+            makerVendor == MakerLogVendor.VIVO -> WbSessionShape.VIVO_MAKER_LOG
             useMakerLog -> WbSessionShape.MAKER_LOG
             rawBridge != null -> WbSessionShape.RAW_LOG
             sessionHlg -> WbSessionShape.HLG10
@@ -1147,7 +1197,7 @@ class CameraController internal constructor(
             // EIS; device-measured 2026-10-26, RAW-only on camera 4 under 0x80b4 failed configure
             // with -38 and left the camera device in its ERROR state.
             vendorOperationMode = plan.useVendorOperationMode && rawBridge == null,
-            makerLogOperationMode = useMakerLog,
+            makerVendor = makerVendor,
             outputs = configs,
             callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
@@ -1157,7 +1207,15 @@ class CameraController internal constructor(
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = sessionHlg
                     nativeLogConfigured = nativeLogCurve && !useMakerLog
-                    tenBitNativeLogConfigured = p010Bridge != null || useMakerLog
+                    // OPPO's maker stream is MEASURED ten-bit (the HAL overrides it to TP10). vivo's is
+                    // unmeasured through this PRIVATE stream, so no caption may claim ten bits for it.
+                    tenBitNativeLogConfigured = p010Bridge != null || makerVendor == MakerLogVendor.OPPO
+                    // No vivo confirmation signal is known: its session is ACCEPTED on configure
+                    // success and recorded as vivo, unconfirmed (A29). OPPO still waits for its LUT.
+                    if (makerVendor == MakerLogVendor.VIVO) {
+                        makerLogConfigured = true
+                        if (BuildConfig.DEBUG) vivoEchoProbe = VivoMakerLogEchoProbe()
+                    }
                     rawLogConfigured = rawLogBridge != null
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                         android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$sessionHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, rawLog=${rawLogBridge != null}, makerLog=$useMakerLog, jpeg=${jpegReader != null}, raw=${rawReader != null}, hiRes=$hiResReaderActive)")
@@ -1187,9 +1245,10 @@ class CameraController internal constructor(
                             p010BridgePresent = p010Bridge != null,
                             rawLogPresent = rawLogBridge != null,
                             makerLogPresent = makerLogConfigured,
+                            makerLogVendor = makerVendor.takeIf { makerLogConfigured },
                         ))
                     }
-                    if (useMakerLog) {
+                    if (makerVendor == MakerLogVendor.OPPO) {
                         var frames = 0
                         pendingMakerConfirmation = confirmation@{ callbackSession, result ->
                             if (closed || callbackSession !== s) return@confirmation
@@ -1213,7 +1272,7 @@ class CameraController internal constructor(
                         }
                     }
                     when (sessionStartDelivery(startPreview())) {
-                        SessionStartDelivery.READY -> if (!useMakerLog) deliverReady()
+                        SessionStartDelivery.READY -> if (makerVendor != MakerLogVendor.OPPO) deliverReady()
                         SessionStartDelivery.ERROR -> {
                             pendingMakerConfirmation = null
                             onError.onError(IllegalStateException("repeating preview request failed"))
@@ -1276,7 +1335,9 @@ class CameraController internal constructor(
         // Fully defensive — a session-parameter failure falls back to a plain session, not a dead camera.
         runCatching {
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-            if (useMakerLog) {
+            // The warm-start seed is MEASURED on OPPO only; the vivo session keeps the ordinary
+            // session-parameter request plus its own keys (nothing measured says it wants more).
+            if (makerVendor == MakerLogVendor.OPPO) {
                 // Seed the factory warm-start with this take's exposure/FPS, rather than a previous
                 // camera client's potentially multi-second low-light exposure. The WB keys are the
                 // repeating request's own (wbWireFor), so the warm-start seeds the WB the per-frame
@@ -1288,7 +1349,13 @@ class CameraController internal constructor(
             }
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
-            if (useMakerLog) sp.applyMakerLogParameters()
+            when (makerVendor) {
+                MakerLogVendor.OPPO -> sp.applyMakerLogParameters()
+                MakerLogVendor.VIVO -> sp.applyVendorParameters(
+                    VivoMakerLogProtocol.sessionParameters(caps.vendorSessionKeyNames, makerInitialWireZoom()),
+                )
+                null -> Unit
+            }
             sessionConfig.setSessionParameters(sp.build())
         }.onFailure {
             if (useMakerLog) {
@@ -1396,11 +1463,11 @@ class CameraController internal constructor(
     @android.annotation.SuppressLint("WrongConstant")
     private fun regularOrVendorSessionConfiguration(
         vendorOperationMode: Boolean,
-        makerLogOperationMode: Boolean,
+        makerVendor: MakerLogVendor?,
         outputs: List<OutputConfiguration>,
         callback: CameraCaptureSession.StateCallback,
     ): SessionConfiguration = SessionConfiguration(
-        if (makerLogOperationMode) MakerLogProtocol.SESSION_TYPE else if (vendorOperationMode) VENDOR_TC_SESSION_TYPE else SessionConfiguration.SESSION_REGULAR,
+        captureSessionType(makerVendor, vendorOperationMode),
         outputs,
         executor,
         callback,
@@ -1610,7 +1677,14 @@ class CameraController internal constructor(
                 // The curve is ALWAYS the plain S-Log3: GL applies the EI lift after decoding (a
                 // k-scaled curve was measured not to lift on PMA110, see Shaders.nativeSceneLinear).
                 applyNativeLogToneCurve(1.0)
-                if (makerLogAttempt) {
+                if (makerLogAttempt && makerLogVendor == MakerLogVendor.VIVO) {
+                    // The preview Log bit, where advertised. A preview-only hint: a HAL refusing its
+                    // type must not turn into a repeating-request failure (a camera error, then a
+                    // recovery cycle) for a key nothing confirms anyway; the debug probe reports it.
+                    runCatching {
+                        applyVendorParameters(VivoMakerLogProtocol.repeatingParameters(caps.vendorRequestKeyNames))
+                    }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vivo preview Log bit rejected: ${it.message}") }
+                } else if (makerLogAttempt) {
                     applyMakerLogParameters()
                     // Without this OEM request policy, the same Log LUT runs with equal long/short
                     // gains (Feature 2 = ThirdAPK). Keep configure-time and ordinary requests clean.
@@ -1637,6 +1711,7 @@ class CameraController internal constructor(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
                     pendingMakerConfirmation?.invoke(session, result)
+                    vivoEchoProbe?.let { probe -> observeVivoEcho(probe, result) }
                     // Pair this repeating result with its ring frame (EXIF/admission truth for the
                     // pseudo-ZSL serve path). Same camera thread as the reader listener.
                     if (zslTargetAttached && !zslStreamingBroken) zslRingAttachResult(result)
@@ -2755,6 +2830,25 @@ class CameraController internal constructor(
     }
 
     /**
+     * DEBUG evidence of an accepted vivo maker session ([VivoMakerLogEchoProbe]): on three sampled
+     * frames, whether the result echoes the preview Log bit and which `vivo.feedback.*` names exist.
+     * Rows are change-gated by the probe and each spends the recurring budget once.
+     */
+    private fun observeVivoEcho(probe: VivoMakerLogEchoProbe, result: TotalCaptureResult) {
+        if (!probe.sampleThisFrame()) return
+        val names = runCatching { result.keys.map { it.name } }.getOrDefault(emptyList())
+        val echoPresent = VivoMakerLogProtocol.UI_SWITCH_STATE_PREVIEW in names
+        // Read as Int only when present: an unknown name throws, and the tag's real type is unknown.
+        val echo = if (!echoPresent) null else runCatching {
+            result.get(CaptureResult.Key(VivoMakerLogProtocol.UI_SWITCH_STATE_PREVIEW, Int::class.javaObjectType))
+        }.getOrNull()
+        val row = probe.row(echoPresent, echo, names.filter { it.startsWith(VivoMakerLogProtocol.FEEDBACK_PREFIX) })
+        if (row != null && recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i(TAG, row)
+        }
+    }
+
+    /**
      * Lens guard for the maker TC route (camera thread): reads which physical lens the logical camera
      * used for this frame, at most every [MAKER_TELE_LENS_READ_INTERVAL_MS] (a String allocation per
      * read in the hottest callback), and publishes [makerTeleLensOffHost] only on a change. The debug
@@ -3523,8 +3617,6 @@ class CameraController internal constructor(
         // native acquisition; it is never interpreted as permission to reopen over the old graph.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
-        // The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type.
-        const val VENDOR_TC_SESSION_TYPE = 0x80b4
         // White-balance observation pacing (observeWhiteBalance): the route transform is a slow
         // fact, read once a second; while priming, 10 Hz so the AUTO detour ends within a frame
         // or three of AWB converging. A route that never converges stops priming after 3 s.
@@ -3659,6 +3751,24 @@ internal fun customWbResultBelongsToRequest(
     gainsAvailable
 
 /**
+ * The SessionConfiguration session type of one attempt: OPPO's measured maker operation mode 0x830b,
+ * else the TC vendor operation mode 0x80b4 where the plan asked for it, else REGULAR. A vivo maker
+ * attempt is ALWAYS REGULAR (0): stock Pro video configures an ordinary session and selects Log
+ * through session parameters alone (static analysis, MakerLog.kt), and both vendor types are OPPO's
+ * measured values — neither may reach a vivo HAL (a GENERIC profile never plans 0x80b4 anyway).
+ */
+internal fun captureSessionType(makerVendor: MakerLogVendor?, vendorOperationMode: Boolean): Int = when {
+    makerVendor == MakerLogVendor.OPPO -> MakerLogProtocol.SESSION_TYPE
+    makerVendor == MakerLogVendor.VIVO -> SessionConfiguration.SESSION_REGULAR
+    vendorOperationMode -> VENDOR_TC_SESSION_TYPE
+    else -> SessionConfiguration.SESSION_REGULAR
+}
+
+// The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type. File-level
+// (it lived in the controller's private companion) so [captureSessionType] stays host-testable.
+internal const val VENDOR_TC_SESSION_TYPE = 0x80b4
+
+/**
  * Accepted-output truth comes from created readers, not the fallback plan that requested them —
  * except the HLG fact, which IS the configured rung's: [plan] is the attempt that configured, never
  * the request (AGG3-17). Built from the plan itself, with no defaults, so neither the controller nor
@@ -3672,13 +3782,18 @@ internal fun acceptedPhotoSessionOutputs(
     p010BridgePresent: Boolean = false,
     rawLogPresent: Boolean = false,
     makerLogPresent: Boolean = false,
+    // The accepted maker session's vendor. Null with [makerLogPresent] reads as OPPO, the only maker
+    // pipeline that existed before the vendor seam, so every older caller keeps its meaning.
+    makerLogVendor: MakerLogVendor? = null,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
     // A RAW log session never carries the HLG10 profile, whatever the plan asked for.
     hlg = plan.useHlg && !rawLogPresent && !makerLogPresent,
-    tenBitNativeLog = p010BridgePresent || makerLogPresent,
+    // Ten bits only where MEASURED: OPPO's maker stream; vivo's is unmeasured (FIELD_CHECKS A29).
+    tenBitNativeLog = p010BridgePresent || (makerLogPresent && makerLogVendor != MakerLogVendor.VIVO),
     makerLog = makerLogPresent,
+    makerLogVendor = if (makerLogPresent) makerLogVendor ?: MakerLogVendor.OPPO else null,
     rawLog = rawLogPresent,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).

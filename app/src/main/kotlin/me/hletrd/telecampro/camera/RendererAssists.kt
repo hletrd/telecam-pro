@@ -197,6 +197,12 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setSourceMaker(enabled)
     }
 
+    /** Which maker curve the accepted session's monitor path inverts (gl/MakerLogSource.kt). */
+    fun setSourceMakerCurve(curve: Int) {
+        config.update { it.copy(sourceMakerCurve = curve) }
+        currentGl().setSourceMakerCurve(curve)
+    }
+
     fun setSourceLog(enabled: Boolean) {
         config.update { it.copy(sourceLog = enabled) }
         currentGl().setSourceLog(enabled)
@@ -284,6 +290,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setSourceLog(snapshot.sourceLog)
         gl.setSourceMaker(snapshot.sourceMaker)
+        gl.setSourceMakerCurve(snapshot.sourceMakerCurve)
         gl.setSourceLogHeadroom(snapshot.sourceLogHeadroom)
         gl.setSourceWide(snapshot.sourceWide)
         gl.setSourceTransformEmulation(snapshot.sourceTransformEmulation)
