@@ -24,7 +24,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A20** has its measured DCG/DRC gap closed by A26; it still needs a rear 1× native-Log soak, wider gamut/lighting coverage and ColorOS 16 validation,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
 **A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the POCO still checks (needs "USB debugging (Security settings)") and its calibration-vs-preset gain mismatch, and AUTO under a second light on the PMA110,
-**A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer, a ten-minute Flip6 SurfaceTexture-path take and the S20, S23 Ultra and PMA110 runs,
+**A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
@@ -1617,10 +1617,19 @@ and the clip at the size the menu names. Thermal status is recorded with the min
   the spacer is not the cause. At **1080p** the same tablet places 733 and fills 13 (98 % real) at
   full size: there, 2688×1512 is strictly worse than 1080p.
 
+**Immutable debug `eaf749f9f31d-809517c5` (SHA-256 `077364e9…`), 2026-10-28:**
+
+- **Galaxy Z Flip6, native Log S-Log3.Cine (the SurfaceTexture path: `nativeLog=true p010=false`),
+  4K 29.97, Active, audio — PASS, thermal CRITICAL late.** 17 999 frames / 600.58 s, every interval
+  33.367 ms, AAC 600.53 s, decode clean; `EncoderClock` placed 17 974, dropped 0, filled 25
+  (0.14 %). Mean CPU app 62 % (half of RAW Log's), Samsung camera HAL 118 %, codec 38 %; GPU busy
+  31–32 % throughout. Thermal status 3 at 7 min and 4 at 9.5 min: AP 38.5 → 57.9 °C, skin 35.0 →
+  47.3 °C. The SurfaceTexture path itself holds cadence on this handset, so the POCO and TB331FC
+  losses above are those devices' own.
+
 Open: the POCO root cause (needs a trace from a fresh process — the soak's process had spent its
 diagnostic row budget, so the follow-up take logged no `EncoderClock`), whether TB331FC should
-offer 2688×1512 at all, a ten-minute Flip6 take on the SurfaceTexture path (Log or Rec. 709), and
-the S20, S23 Ultra and PMA110.
+offer 2688×1512 at all, and the S20, S23 Ultra and PMA110.
 
 ### A28. RAW still latency and throughput — ◐ HALF DONE 2026-10-27
 
