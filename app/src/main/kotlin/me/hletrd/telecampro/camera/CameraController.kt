@@ -210,6 +210,9 @@ class CameraController internal constructor(
     private var wbSweeping = false
     private var wbSweepStepStartedMs = 0L
     private var wbSweepMatches = 0
+    // Read by REC admission off the camera thread ([wbSweepBusy]): true from a sweep's first step
+    // until the camera reports a frame whose request is back on AWB OFF or AUTO.
+    @Volatile private var wbSweepInFlight = false
     // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
     // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
     // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
@@ -1910,6 +1913,7 @@ class CameraController internal constructor(
         if (!wbSweepWanted(c, cap, calibrated, wbReferences.isSwept(key), transformRequired)) return null
         wbSweepKey = key
         wbSweepQueue.addAll(wbSweepPresets(cap))
+        wbSweepInFlight = true
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
             android.util.Log.i(TAG, "WhiteBalance: sweep ${key.encode()} presets=${wbSweepQueue.toList()}")
         }
@@ -1943,7 +1947,7 @@ class CameraController internal constructor(
      */
     private fun observeWhiteBalance(request: CaptureRequest, result: TotalCaptureResult) {
         val now = android.os.SystemClock.uptimeMillis()
-        val interval = if (wbPriming || wbSweeping) WB_PRIME_OBSERVE_INTERVAL_MS else WB_OBSERVE_INTERVAL_MS
+        val interval = if (wbPriming || wbSweeping || wbSweepInFlight) WB_PRIME_OBSERVE_INTERVAL_MS else WB_OBSERVE_INTERVAL_MS
         if (now - lastWbObserveMs < interval) return
         lastWbObserveMs = now
         val physical = if (caps.isLogicalMultiCamera) {
@@ -1952,6 +1956,13 @@ class CameraController internal constructor(
             null
         }
         val requestAwb = request.get(CaptureRequest.CONTROL_AWB_MODE)
+        if (wbSweepInFlight && wbSweepKey == null &&
+            (requestAwb == CameraMetadata.CONTROL_AWB_MODE_OFF || requestAwb == CameraMetadata.CONTROL_AWB_MODE_AUTO)
+        ) {
+            // The sweep finished or was abandoned and the camera now delivers the matrix (or AUTO,
+            // priming): a take waiting in admission may start.
+            wbSweepInFlight = false
+        }
         if (wbSweeping) {
             observeWbSweep(result, requestAwb, now)
             return
@@ -2054,6 +2065,14 @@ class CameraController internal constructor(
         }
         postToCamera { if (!closed) startPreview() }
     }
+
+    /**
+     * Whether a preset sweep may still put preset-coloured frames on the stream: REC admission waits
+     * (bounded) for this to clear, because the take hold only abandons the sweep and the HAL then
+     * needs a few frames to apply the matrix — measured on the Flip6, 7 frames (0.23 s) of the
+     * Daylight step opened a take admitted mid-sweep before admission waited.
+     */
+    internal fun wbSweepBusy(): Boolean = !closed && wbSweepInFlight
 
     /** The white point a result's own gains balance for on [key]'s sensor ([wbFrameKelvin]). */
     private fun wbResultKelvin(key: WbRouteKey, result: CaptureResult): Double? {

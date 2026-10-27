@@ -6773,6 +6773,7 @@ class CameraEngine internal constructor(
         }
         val accepted = runCatching {
             recorderExecutor.execute {
+                awaitWbSweepSettled()
                 val pending = runCatching {
                     beginRecordingAllocation(recordAudio, topologyLease, completeAttempt)
                 }.getOrDefault(false)
@@ -6781,6 +6782,22 @@ class CameraEngine internal constructor(
         }.isSuccess
         if (!accepted) {
             completeAttempt(false)
+        }
+    }
+
+    /**
+     * A take admitted while a white-balance preset sweep runs (WhiteBalance.kt) waits here, before
+     * any allocation or encoder exists, until the camera is back on the matrix: the in-flight
+     * admission already holds the sweep, which abandons it and swaps once. Bounded, so a camera that
+     * never reports the swap only delays REC by [WB_SWEEP_REC_SETTLE_MAX_MS]; nothing to wait for in
+     * every other take.
+     */
+    private fun awaitWbSweepSettled() {
+        val ctrl = controller ?: return
+        if (!ctrl.wbSweepBusy()) return
+        val deadline = android.os.SystemClock.uptimeMillis() + WB_SWEEP_REC_SETTLE_MAX_MS
+        while (ctrl.wbSweepBusy() && android.os.SystemClock.uptimeMillis() < deadline) {
+            runCatching { Thread.sleep(WB_SWEEP_REC_SETTLE_POLL_MS) }
         }
     }
 
@@ -9120,6 +9137,9 @@ class CameraEngine internal constructor(
         // How often a KNOWN route's drifting WB transform may be re-mirrored to storage (a new route
         // persists immediately). AUTO refreshes it at 1 Hz; the file only needs a recent one.
         private const val WB_REFERENCE_PERSIST_INTERVAL_MS = 60_000L
+        // REC admission's bound on waiting out a white-balance preset sweep (awaitWbSweepSettled).
+        private const val WB_SWEEP_REC_SETTLE_MAX_MS = 800L
+        private const val WB_SWEEP_REC_SETTLE_POLL_MS = 20L
 
         // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
         // took over the gesture exposure trade; it was unreferenced and its comment still asserted
