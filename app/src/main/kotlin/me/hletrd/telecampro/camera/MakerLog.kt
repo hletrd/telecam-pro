@@ -216,17 +216,24 @@ internal object VivoMakerLogProtocol {
 }
 
 /**
+ * The probe's sampled repeating results: the 2nd frame (the first may predate the session state),
+ * then ~1 s and ~5 s at 30 fps. File-level, not a companion, so the class stays fully host-covered.
+ */
+internal val VIVO_ECHO_SAMPLE_FRAMES: Set<Int> = setOf(2, 30, 150)
+
+/**
  * DEBUG evidence for the first vivo device run: whether results echo the preview Log bit and which
  * `vivo.feedback.*` result names exist. Reading every result key name allocates, so at most
- * [SAMPLE_FRAMES].size reads per session, and a row only when the observation CHANGED (ColorOS-style
- * 300-row quotas exist on other skins too); the caller still spends the recurring budget per row.
+ * [VIVO_ECHO_SAMPLE_FRAMES].size reads per session, and a row only when the observation CHANGED
+ * (ColorOS-style 300-row quotas exist on other skins too); the caller still spends the recurring
+ * budget per row.
  */
 internal class VivoMakerLogEchoProbe {
     private var frames = 0
     private var lastRow: String? = null
 
     /** Counts one repeating result; true on the few frames worth reading. */
-    fun sampleThisFrame(): Boolean = ++frames in SAMPLE_FRAMES
+    fun sampleThisFrame(): Boolean = ++frames in VIVO_ECHO_SAMPLE_FRAMES
 
     /** The row to log for this observation, or null when it repeats the previous one. */
     fun row(echoPresent: Boolean, echoValue: Int?, feedbackNames: Collection<String>): String? {
@@ -238,11 +245,6 @@ internal class VivoMakerLogEchoProbe {
         if (observation == lastRow) return null
         lastRow = observation
         return row
-    }
-
-    companion object {
-        /** 2nd frame (the first may predate the session state), ~1 s, ~5 s at 30 fps. */
-        val SAMPLE_FRAMES: Set<Int> = setOf(2, 30, 150)
     }
 }
 
