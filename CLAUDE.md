@@ -611,7 +611,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   matrix; else CCT mode; else uncalibrated matrix. The maker route's forced-AUTO stopgap
   (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement.
   **The transform moves with the illuminant, so a route keeps one per white point (2026-10-27,
-  A23).** The Galaxy Z Flip6's own transform blue row is −0.20 / −1.27 / +2.47 at Incandescent,
+  A23; every matrix route — maker Log's Kelvin and presets ride AWBCCT instead, A25).** The Galaxy Z Flip6's own transform blue row is −0.20 / −1.27 / +2.47 at Incandescent,
   +0.04 / −0.75 / +1.71 at Daylight; replaying the one learned in a warm room under 5000 K gains
   drove blue to the floor (grey 127 / 81 / 7 against the Daylight preset's 125 / 89 / 23 at nearly
   the same gains). `WbReferenceStore` now tags each learned transform with the white point its own
