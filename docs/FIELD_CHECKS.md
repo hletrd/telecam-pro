@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance and still framing checked on the HLG10, RAW log and front routes, an owner decision on the lost 4 s manual-WB still in Active, and two owner decisions from the Flip6 in-app run (stills 1.24× wider than a Standard finder; manual Kelvin taking the priming light's colour transform),
+**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, and two owner decisions from the Flip6 in-app run (stills 1.24× wider than a Standard finder; manual Kelvin taking the priming light's colour transform),
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1178,12 +1178,34 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   (a real capture followed); in an OFF session it passed the framing term and refused on the dim
   exposure mismatch (preview 66.7 ms against an intended 100 ms), as designed.
 
-**Remaining:** (1) the HLG10 video session, the RAW log session (its developer takes the result
-gains) and the FRONT route were not run (FRONT framing too); (2) two owner decisions from the
-Flip6 run: whether GENERIC stills should carry the session's stabilization mode (needs a Flip6
-measurement of an ON still: completes, framed like the finder, same colour), and where a GENERIC
-manual Kelvin should get its transform when the HAL's CCM moves with the illuminant (for example
-the HAL's preset CCMs interpolated by Kelvin, or the sensor calibration); (3) the 4 s
+**HLG10 and RAW log sessions, PMA110 in-app (2026-10-27).** Same build fingerprint as above,
+immutable debug `2f83c64c3945-e1fd4149` (code identical to `c87497de`), rear 1× Video, 4K 29.97,
+one 6 s take per setting in the same warm room (HAL AUTO reports 2807 K, R 1.75 / B 2.96, ISO 9052
+at 1/40 s). The phone's own APK (`3c8bd2b3`, SHA-256 `4960b466…`), settings and learned references
+were restored afterwards. Evidence: `.context/a23-pma110-logroutes-2026-10-27/`.
+- **Wire.** Both sessions configure at fallback 0 (HLG10 on standalone 2; RAW log RAW-only). MANUAL
+  goes out as AWB OFF + TRANSFORM_MATRIX with the calibrated gains (3000 K R 1.52 / B 2.49, 5000 K
+  2.13 / 1.64, 7000 K 2.48 / 1.37), and the result echoes them, which is what the RAW log developer
+  takes. The learned HLG10 reference (`2|HLG10|-`) equals the SDR one for camera 2; the RAW log
+  reference is identity, which the developer never reads.
+- **Recorded pixels (linear grey-patch ratios, mid and light grey; within a route only).** HLG10:
+  R/G 1.28 → 3.05 → 4.35 and B/G 0.22 → 0.008 → 0.002 for 3000 / 5000 / 7000 K, so blue reaches
+  the floor from 5000 K up (mid-grey blue 13 and 7.5 of 1023). RAW log: R/G 1.09 → 1.46 → 1.63,
+  B/G 0.38 → 0.22 → 0.18, monotonic and unclipped (its developer uses the sensor calibration into
+  S-Gamut3, not the HAL's CCM). AUTO sits on the cool side of 3000 K on both (B/G 0.54 and 0.49),
+  consistent with AUTO's larger blue gain. The SDR photo route floored blue the same way in the
+  earlier runs here (Daylight / 5600 K / 7500 K stills at 1.7–3.5 of 255), while the maker route
+  kept it. So the HLG10 floor is the transform question raised by the Flip6, not an HLG10 fault.
+  File against finder was not compared on these routes (log and HLG encodings).
+
+**Remaining:** (1) the FRONT route (white balance and framing) was not run: its camera faces away
+from the chart, so it needs an operator; (2) two owner decisions from the Flip6 run: whether
+GENERIC stills should carry the session's stabilization mode (needs a Flip6 measurement of an ON
+still: completes, framed like the finder, same colour), and where a manual Kelvin should get its
+transform when the HAL's CCM moves with the illuminant (for example the HAL's preset CCMs
+interpolated by Kelvin, or the sensor calibration). The Flip6 proves the CCM moves there. PMA110
+floors blue at daylight Kelvins in this warm room on its SDR and HLG10 routes as well, but whether
+its AUTO CCM moves with the illuminant needs AUTO under a second light; (3) the 4 s
 TRANSFORM_MATRIX still in Active above (owner decision); (4) no attached device takes the CCT path
 (CCT advertised without a ColorMatrix calibration). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
 decision 2026-10-27: device-to-device variation makes it meaningless); the relative checks above —
