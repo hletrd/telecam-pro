@@ -203,6 +203,8 @@ interface CameraActions {
     fun onToggleRememberSettings(enabled: Boolean)
     fun onTogglePreserveLensSelection(enabled: Boolean)
     fun onTogglePreserveTeleconverter(enabled: Boolean)
+    /** EXPERIMENTAL vivo maker Log opt-in (Setup, default OFF; camera/MakerLog.kt). */
+    fun onToggleVivoMakerLogExperimental(enabled: Boolean)
     fun onSetPhotoFnSlots(slots: List<FnSlot>)
     fun onSetVideoFnSlots(slots: List<FnSlot>)
     fun onSetMyMenuSlots(slots: List<FnSlot>)

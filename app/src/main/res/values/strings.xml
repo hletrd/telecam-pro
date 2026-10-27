@@ -659,4 +659,8 @@
     <string name="gamma_mode_maker_log">OEM Log</string>
     <string name="caption_maker_log">O-Log2 · 10-bit · stills off</string>
     <string name="caption_maker_log_8bit">O-Log2 · 8-bit output · stills off</string>
+    <!-- EXPERIMENTAL vivo OEM Log (camera/MakerLog.kt): unmeasured on any vivo device. -->
+    <string name="label_vivo_maker_log">vivo OEM Log (Experimental)</string>
+    <string name="hint_vivo_maker_log">Unverified. The phone may ignore it and record an ordinary non-Log file. No stills.</string>
+    <string name="caption_maker_log_vivo">vivo Log · experimental, unverified · stills off</string>
 </resources>

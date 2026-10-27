@@ -615,4 +615,8 @@
     <string name="gamma_mode_maker_log">OEM 로그</string>
     <string name="caption_maker_log">O-Log2 · 10비트 · 사진 촬영 불가</string>
     <string name="caption_maker_log_8bit">O-Log2 · 8비트 출력 · 사진 촬영 불가</string>
+    <!-- 실험적 vivo OEM 로그(camera/MakerLog.kt): vivo 기기에서 측정한 적 없음. -->
+    <string name="label_vivo_maker_log">vivo OEM 로그 (실험적)</string>
+    <string name="hint_vivo_maker_log">검증되지 않은 기능입니다. 휴대폰이 무시하면 로그가 아닌 일반 영상으로 녹화될 수 있고, 사진은 찍을 수 없습니다.</string>
+    <string name="caption_maker_log_vivo">vivo 로그 · 실험적 기능, 검증 안 됨 · 사진 촬영 불가</string>
 </resources>

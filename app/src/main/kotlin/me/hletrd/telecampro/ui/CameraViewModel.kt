@@ -979,6 +979,9 @@ class CameraViewModel private constructor(
             // (this callback arrives on the setup thread; the seed path calls the same setter from
             // main, and one setter must not be entered from two threads).
             mainHandler.post {
+                // The vivo maker capability enumerated with this inventory, applied on main with the
+                // matching zoom remap (a no-op on every non-vivo camera, PMA110 included).
+                applyVivoMakerLogCapability(engine.enumeratedVivoMakerLog)
                 val current = _state.value
                 engine.setTeleconverterDeclaration(
                     teleconverterDeclaration(
@@ -1631,6 +1634,13 @@ class CameraViewModel private constructor(
 
     /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
     private fun restoreSettingsIfEnabled() {
+        // The experimental vivo opt-in is an app preference like "Remember settings" itself, kept
+        // outside the remembered blob and the MR banks (a recall must never switch an experiment on),
+        // so it restores whatever that toggle says. Pushed before start; the capability it needs
+        // arrives with the lens inventory, so nothing can move the route yet.
+        val vivoOptIn = settingsStore.vivoMakerLogExperimental
+        _state.update { it.copy(vivoMakerLogExperimental = vivoOptIn) }
+        engine.setVivoMakerLogExperimental(vivoOptIn)
         if (!settingsStore.rememberEnabled) {
             _state.update { it.copy(rememberSettings = false) }
             return
@@ -1697,8 +1707,11 @@ class CameraViewModel private constructor(
         // Whether the restored packet asks for the maker pipeline. With TC it moves the CAMERA (the
         // logical maker camera instead of the standalone host) but never the TC-local zoom scale, so
         // the scale question below excludes it, exactly as before TC could ride maker Log.
+        // Vendor-resolved from state (MakerLog.kt): OPPO's profile, or the vivo opt-in + capability —
+        // the same inputs the engine resolves, so both sides agree on the restored route.
         val restoredMakerLog = e.mode == CaptureMode.VIDEO && safeTransfer == ColorTransfer.MAKER_LOG &&
-            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, engine.makerLogTeleSupported,
+            me.hletrd.telecampro.camera.makerLogOffered(_state.value.makerLogVendor != null,
+                _state.value.makerLogTeleAvailable,
                 CameraRoute.BACK, requestedTeleconverter, null, e.videoFrameRate.encoderRate, e.openGate)
         val restoredRouteStandalone = standaloneRouteWanted(
             e.mode == CaptureMode.VIDEO,
@@ -3717,8 +3730,10 @@ class CameraViewModel private constructor(
         videoMode: Boolean = state.mode == CaptureMode.VIDEO,
     ): Boolean = standaloneRouteWanted(videoMode, state.photoFormats.dngRaw, engine.rawForcesStandalone,
         // TC false: this is the non-TC route's scale question (a TC session keeps TC-local zoom).
+        // Vendor-resolved from [state] itself, so a hypothetical `after` copy (the vivo opt-in or
+        // capability doors) answers for ITS vendor inputs, not the engine's current ones.
         makerLog = videoMode && state.transfer == ColorTransfer.MAKER_LOG &&
-            me.hletrd.telecampro.camera.makerLogOffered(engine.makerLogSupported, engine.makerLogTeleSupported,
+            me.hletrd.telecampro.camera.makerLogOffered(state.makerLogVendor != null, state.makerLogTeleAvailable,
                 CameraRoute.BACK, false, state.cameraOverrideId, state.videoFrameRate.encoderRate, state.openGate))
 
     /** Converts the canonical rear snapshot into the route a save/recall will actually restore. */
@@ -4467,6 +4482,37 @@ class CameraViewModel private constructor(
     override fun onTogglePreserveTeleconverter(enabled: Boolean) {
         _state.update { it.copy(preserveTeleconverter = enabled, activeMemorySlot = null) }
         saveSettingsIfEnabled()
+    }
+
+    /**
+     * The EXPERIMENTAL vivo maker Log opt-in (Setup, default OFF; MakerLog.kt). A route input: with
+     * OEM Log selected it moves the rear route between the standalone video lens and the logical maker
+     * camera, so it takes the same remap door as a transfer change — VM remap, engine door, one state
+     * write. Persisted at once in its own key (not the remembered blob, not the MR banks).
+     */
+    override fun onToggleVivoMakerLogExperimental(enabled: Boolean) {
+        if (rejectIfRecording()) return
+        val before = _state.value
+        if (before.vivoMakerLogExperimental == enabled) return
+        settingsStore.vivoMakerLogExperimental = enabled
+        val routeOptics = makerRouteOptics(before, before.copy(vivoMakerLogExperimental = enabled))
+        engine.setVivoMakerLogExperimental(enabled)
+        _state.update {
+            it.copy(vivoMakerLogExperimental = enabled,
+                lens = routeOptics?.lens ?: it.lens, controls = routeOptics?.controls ?: it.controls)
+        }
+    }
+
+    /** Main-thread fold of the enumerated vivo capability, paired with the engine door like the toggle. */
+    private fun applyVivoMakerLogCapability(capability: me.hletrd.telecampro.camera.VivoMakerLogCapability) {
+        val before = _state.value
+        if (before.vivoMakerLog == capability) return
+        val routeOptics = makerRouteOptics(before, before.copy(vivoMakerLog = capability))
+        engine.applyVivoMakerLogCapability(capability)
+        _state.update {
+            it.copy(vivoMakerLog = capability,
+                lens = routeOptics?.lens ?: it.lens, controls = routeOptics?.controls ?: it.controls)
+        }
     }
 
     override fun onSetPhotoFnSlots(slots: List<FnSlot>) {

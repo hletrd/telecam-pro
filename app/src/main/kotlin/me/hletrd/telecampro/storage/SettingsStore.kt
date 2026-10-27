@@ -192,6 +192,17 @@ class SettingsStore(
         // does not trigger save(), so apply() here could resurrect the old true value after a kill.
         set(value) { commitEdit("remember") { putBoolean(K_REMEMBER, value) } }
 
+    /**
+     * The EXPERIMENTAL vivo maker Log opt-in (camera/MakerLog.kt). Default OFF, and a missing key —
+     * every install before it existed — reads OFF. Kept beside [rememberEnabled], OUTSIDE the
+     * remembered blob and the MR banks: it is an app preference that opts into an unmeasured route,
+     * so neither a bank recall nor "Remember settings" may ever switch it on behind the operator's
+     * back. Committed synchronously for the same swipe-kill reason as every save here.
+     */
+    var vivoMakerLogExperimental: Boolean
+        get() = prefs.getBoolean(K_VIVO_MAKER_LOG, false)
+        set(value) { commitEdit("vivoMakerLog") { putBoolean(K_VIVO_MAKER_LOG, value) } }
+
     /** True when the commit was durable (AGG-32); callers that cannot act on it may ignore it. */
     fun save(c: ManualControls, e: ExtraSettings): Boolean {
         // commit (synchronous), NOT apply: saves fire on user actions (e.g. a mode switch) and the
@@ -553,6 +564,7 @@ class SettingsStore(
 
     private companion object {
         const val K_REMEMBER = "rememberSettings"
+        const val K_VIVO_MAKER_LOG = "vivoMakerLogExperimental"
         const val K_HAS = "hasSaved"
         const val MIN_PERSISTED_FOCUS_DIOPTERS = 0f
         const val MAX_PERSISTED_FOCUS_DIOPTERS = 100f

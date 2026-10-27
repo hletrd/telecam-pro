@@ -145,6 +145,7 @@ class PerformQuickFnTest {
         override fun onToggleRememberSettings(enabled: Boolean) = hit("onToggleRememberSettings")
         override fun onTogglePreserveLensSelection(enabled: Boolean) = hit("onTogglePreserveLensSelection")
         override fun onTogglePreserveTeleconverter(enabled: Boolean) = hit("onTogglePreserveTeleconverter")
+        override fun onToggleVivoMakerLogExperimental(enabled: Boolean) = hit("onToggleVivoMakerLogExperimental")
         override fun onSetPhotoFnSlots(slots: List<FnSlot>) = hit("onSetPhotoFnSlots")
         override fun onSetVideoFnSlots(slots: List<FnSlot>) = hit("onSetVideoFnSlots")
         override fun onSetMyMenuSlots(slots: List<FnSlot>) = hit("onSetMyMenuSlots")

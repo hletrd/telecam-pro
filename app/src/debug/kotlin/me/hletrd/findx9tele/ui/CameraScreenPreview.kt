@@ -137,6 +137,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
     override fun onTogglePreserveLensSelection(enabled: Boolean) = Unit
     override fun onTogglePreserveTeleconverter(enabled: Boolean) = Unit
+    override fun onToggleVivoMakerLogExperimental(enabled: Boolean) = Unit
     override fun onSetPhotoFnSlots(slots: List<me.hletrd.telecampro.camera.FnSlot>) = Unit
     override fun onSetVideoFnSlots(slots: List<me.hletrd.telecampro.camera.FnSlot>) = Unit
     override fun onSetMyMenuSlots(slots: List<me.hletrd.telecampro.camera.FnSlot>) = Unit

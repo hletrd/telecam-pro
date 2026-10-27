@@ -491,8 +491,21 @@ internal fun formatShutterSpeed(ns: Long): String {
 // The metre formatter was deleted 2026-07-26 with its test; it had no main-source callers and the
 // repo was pinning a formatter it had deliberately stopped shipping.)
 
+/**
+ * The OEM Log name for the resolved maker [vendor] (camera/MakerLog.kt). OPPO's is the measured
+ * O-Log2 and stays the answer for null (every caller before the vendor seam). vivo publishes its
+ * Log under no curve name this app could vouch for, so the label names only the maker — and the
+ * row's caption says "experimental, unverified". Company names stay Latin in Korean too (CLAUDE.md
+ * trademark rule), which is why these are literals, not resources.
+ */
+internal fun makerLogLabel(vendor: me.hletrd.telecampro.camera.MakerLogVendor?): String =
+    if (vendor == me.hletrd.telecampro.camera.MakerLogVendor.VIVO) "vivo Log" else "O-Log2"
+
 /** Transfer-function display label: what the footage IS, not just the enum name. */
-internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
+internal fun transferLabel(
+    transfer: ColorTransfer,
+    makerVendor: me.hletrd.telecampro.camera.MakerLogVendor? = null,
+): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
     // The log profiles are GL-baked standard curves applied after source-aware decode of the
     // accepted display-referred standard/HLG stream. The native HAL log key is INERT
@@ -501,7 +514,7 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
-    ColorTransfer.MAKER_LOG -> "O-Log2"
+    ColorTransfer.MAKER_LOG -> makerLogLabel(makerVendor)
     // The standard SDR video gamma by name (owner request 2026-10-27), like the curves above it.
     ColorTransfer.SDR -> "Rec. 709"
 }
@@ -519,8 +532,12 @@ internal fun videoColorModeLabel(mode: VideoColorMode): Int = when (mode) {
  * A video setup's look as one name — "S-Log3", or "RAW S-Log3" when the RAW log intent rides a log
  * transfer — for the MR bank's generated name and summary.
  */
-internal fun videoLookLabel(transfer: ColorTransfer, rawLog: Boolean): String =
-    if (rawLog && rawLogTransfer(transfer)) "RAW ${transferLabel(transfer)}" else transferLabel(transfer)
+internal fun videoLookLabel(
+    transfer: ColorTransfer,
+    rawLog: Boolean,
+    makerVendor: me.hletrd.telecampro.camera.MakerLogVendor? = null,
+): String =
+    if (rawLog && rawLogTransfer(transfer)) "RAW ${transferLabel(transfer)}" else transferLabel(transfer, makerVendor)
 
 /**
  * The Gamma Fn chip / dial value for a mode: "Rec. 709" for the SDR mode (the chip cycles MODES, and
@@ -528,13 +545,17 @@ internal fun videoLookLabel(transfer: ColorTransfer, rawLog: Boolean): String =
  * log modes, with RAW Log carrying the same " RAW" suffix the OSD tag shows for an accepted RAW log
  * session.
  */
-internal fun videoColorModeChipValue(mode: VideoColorMode, transfer: ColorTransfer): String =
+internal fun videoColorModeChipValue(
+    mode: VideoColorMode,
+    transfer: ColorTransfer,
+    makerVendor: me.hletrd.telecampro.camera.MakerLogVendor? = null,
+): String =
     when (mode) {
         VideoColorMode.SDR -> transferLabel(ColorTransfer.SDR)
         VideoColorMode.HLG -> transferLabelShort(ColorTransfer.HLG)
         VideoColorMode.LOG -> transferLabelShort(me.hletrd.telecampro.camera.effectiveRecordingTransfer(transfer, false))
         VideoColorMode.RAW_LOG -> transferLabelShort(transfer) + " RAW"
-        VideoColorMode.MAKER_LOG -> "O-Log2"
+        VideoColorMode.MAKER_LOG -> makerLogLabel(makerVendor)
     }
 
 /** Log EI offset value label: "0", "+1 EV", "+2 EV", "+3 EV" (EV stays Latin, like the EV ruler). */
@@ -548,12 +569,15 @@ internal fun logEiOsdSuffix(transfer: ColorTransfer, nativeLogCurveSupported: Bo
     if (logEiOffsetSettingVisible(transfer, nativeLogCurveSupported) && stops > 0) " +$stops" else ""
 
 /** Compact transfer name for the video-mode quick chip and the OSD. */
-internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfer) {
+internal fun transferLabelShort(
+    transfer: ColorTransfer,
+    makerVendor: me.hletrd.telecampro.camera.MakerLogVendor? = null,
+): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
     ColorTransfer.SLOG3 -> "SLOG3"
     // SG3C = the community-standard shorthand for S-Gamut3.Cine (the full name won't fit the OSD).
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
-    ColorTransfer.MAKER_LOG -> "O-Log2"
+    ColorTransfer.MAKER_LOG -> makerLogLabel(makerVendor)
     ColorTransfer.SDR -> "709"
 }

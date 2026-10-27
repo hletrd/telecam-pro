@@ -764,7 +764,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
         val generatedName = presentation?.let {
             when (it.mode) {
                 CaptureMode.PHOTO -> stringResource(R.string.mr_default_photo_name, focal)
-                CaptureMode.VIDEO -> stringResource(R.string.mr_default_video_name, videoLookLabel(it.transfer, it.rawLog))
+                CaptureMode.VIDEO -> stringResource(R.string.mr_default_video_name, videoLookLabel(it.transfer, it.rawLog, state.makerLogVendor))
             }
         }.orEmpty()
         val generatedSummary = presentation?.let {
@@ -773,7 +773,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
                     "$focal · ${exposureModeLetter(it.exposureMode)} · ${photoFormatLabel(it.photoFormats)}"
                 CaptureMode.VIDEO ->
                     "$focal · ${videoResolutionLabelFor(it.videoWidth, it.videoHeight)} " +
-                        "${videoFrameRateLabel(it.videoFrameRate)}p · ${videoLookLabel(it.transfer, it.rawLog)} · " +
+                        "${videoFrameRateLabel(it.videoFrameRate)}p · ${videoLookLabel(it.transfer, it.rawLog, state.makerLogVendor)} · " +
                         labelContext.localizedLabel(it.bitrateLevel)
             }
         }.orEmpty()
@@ -1645,7 +1645,12 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     } else {
         null
     }
-    val makerCaption = if (colorMode == VideoColorMode.MAKER_LOG && state.cameraReady) {
+    // vivo (camera/MakerLog.kt) is EXPERIMENTAL and unmeasured: its caption names it so whatever the
+    // session says, and claims no bit depth, since nothing has measured what that stream carries.
+    val vivoMaker = state.makerLogVendor == me.hletrd.telecampro.camera.MakerLogVendor.VIVO
+    val makerCaption = if (colorMode == VideoColorMode.MAKER_LOG && vivoMaker) {
+        stringResource(R.string.caption_maker_log_vivo)
+    } else if (colorMode == VideoColorMode.MAKER_LOG && state.cameraReady) {
         stringResource(if (state.glTenBitOutput) R.string.caption_maker_log else R.string.caption_maker_log_8bit)
     } else null
     Captioned(makerCaption ?: rawModeCaption) {
@@ -1664,7 +1669,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             hint = if (state.videoColorModes.size > 1) stringResource(R.string.hint_gamma) else null,
             // RAW Log is EXPERIMENTAL (A19): its chip carries the caution tint (owner request
             // 2026-10-27) so the row says so before the caption does.
-            cautionFor = { it == VideoColorMode.RAW_LOG },
+            // The vivo OEM Log chip too: same EXPERIMENTAL status, never measured on a device.
+            cautionFor = { it == VideoColorMode.RAW_LOG || (it == VideoColorMode.MAKER_LOG && vivoMaker) },
         )
     }
     // One short highlighted line (owner direction 2026-10-26: visible, not wordy) where Log rides a
@@ -2005,6 +2011,17 @@ private fun AdvancedTab(
         onCheckedChange = actions::onTogglePreserveTeleconverter,
         enabled = state.rememberSettings,
     )
+    // EXPERIMENTAL vivo OEM Log opt-in (camera/MakerLog.kt): only where the back logical camera
+    // advertises the vivo Log keys, so nobody else ever sees it. Locked while recording (route input).
+    if (state.vivoMakerLogSettingVisible) {
+        ToggleRow(
+            label = stringResource(R.string.label_vivo_maker_log),
+            hint = stringResource(R.string.hint_vivo_maker_log),
+            checked = state.vivoMakerLogExperimental,
+            onCheckedChange = actions::onToggleVivoMakerLogExperimental,
+            enabled = !state.isRecording,
+        )
+    }
     SectionHeader(stringResource(R.string.section_photo_fn))
     // Each shooting list only offers slots that can act in ITS mode (fnSlotAppliesTo). My Menu is a
     // settings surface, not a shooting one, so it keeps the full set.

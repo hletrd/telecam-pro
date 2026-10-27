@@ -1045,7 +1045,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // colour channel, not a UI accent.)
                 // A Log EI offset rides the SAME tag as a compact "+N" ("SLOG3 +2") — no new chrome.
                 Text(
-                    transferLabelShort(state.effectiveVideoTransfer) + logEiOsdSuffix(
+                    transferLabelShort(state.effectiveVideoTransfer, state.makerLogVendor) + logEiOsdSuffix(
                         state.transfer,
                         state.nativeLogEiSupported &&
                             me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
