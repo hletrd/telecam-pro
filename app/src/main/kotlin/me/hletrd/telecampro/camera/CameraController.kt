@@ -685,14 +685,13 @@ class CameraController internal constructor(
         }
 
     /**
-     * The mode a STILL request writes (null = the still template's own value): the session's on a
-     * profile whose stills follow the preview framing, ON for a HAL-white-balanced still too long
-     * for PREVIEW_STABILIZATION (StillFraming.kt). [c] is the still's own packet and [wbAppOwned]
-     * whether its white balance rides AWB OFF + TRANSFORM_MATRIX ([WbWire.awbOff]).
+     * The mode a STILL request writes: the session's, so the still is framed like the preview, or ON
+     * for a HAL-white-balanced still too long for the profile's PREVIEW_STABILIZATION limit
+     * (StillFraming.kt). [c] is the still's own packet and [wbAppOwned] whether its white balance
+     * rides AWB OFF + TRANSFORM_MATRIX ([WbWire.awbOff]).
      */
-    private fun stillVideoStabMode(c: ManualControls, wbAppOwned: Boolean): Int? =
+    private fun stillVideoStabMode(c: ManualControls, wbAppOwned: Boolean): Int =
         stillVideoStabilizationMode(
-            keepsSessionStabilization = deviceProfile.stillKeepsSessionStabilization,
             sessionMode = sessionVideoStabMode(),
             stillExposureNs = stillSensorExposureNs(c),
             previewStabilizedStillMaxExposureNs = deviceProfile.previewStabilizedStillMaxExposureNs,
@@ -2314,8 +2313,8 @@ class CameraController internal constructor(
             zoomRatio = c.zoomRatio,
             gestureActive = smoothPreviewBoost,
             // The ring frame carries the repeating request's mode; the real still would carry
-            // stillVideoStabMode(c, …). Equal on PMA110 for every servable (sub-1/15 s) still; a
-            // stabilized spec session refuses.
+            // stillVideoStabMode(c, …). Equal for every servable (sub-1/15 s) still on every profile;
+            // only a long PMA110 still in an Active session differs, and the ring never serves one.
             framedLikeRing = zslStillFramingMatches(
                 stillVideoStabMode(c, wbAppOwned = wbWireFor(c).awbOff),
                 sessionVideoStabMode(),
@@ -2926,15 +2925,15 @@ class CameraController internal constructor(
                         wb = stillWb,
                     )
                     // EVERY still — any WB mode, single, burst/AEB/timelapse step or in-REC snapshot
-                    // — rides the session's stabilization mode on a profile whose stills follow the
-                    // preview framing (DeviceProfile.stillKeepsSessionStabilization, StillFraming.kt):
-                    // at the template's OFF the HAL hands a processed still the full field, ~16 %
-                    // wider than the stabilized finder and than a ZSL-served still, and on PMA110 a
-                    // matrix-WB still at OFF also renders the wrong white balance. A HAL-AWB still
-                    // longer than the profile's PREVIEW_STABILIZATION limit rides ON (framed alike;
-                    // PREVIEW_STABILIZATION loses it). Null = the spec path, nothing written. RAW
-                    // targets on this request are never cropped by it.
-                    stillVideoStabMode(requestControls, wbAppOwned = stillWb.awbOff)?.let { applyVideoStab(it) }
+                    // — rides the session's stabilization mode (StillFraming.kt): at the template's
+                    // OFF the HAL hands a processed still the full field, wider than the stabilized
+                    // finder and than a ZSL-served still (~16 % on PMA110, 24 % on the Flip6), on
+                    // PMA110 a matrix-WB still at OFF also renders the wrong white balance, and the
+                    // Flip6 took 1.5–1.9 s to deliver a Standard-session still at OFF against ~0.55 s
+                    // at the session's mode. A HAL-AWB still longer than the profile's
+                    // PREVIEW_STABILIZATION limit rides ON (framed alike; PREVIEW_STABILIZATION loses
+                    // it). RAW targets on this request are never cropped by it.
+                    applyVideoStab(stillVideoStabMode(requestControls, wbAppOwned = stillWb.awbOff))
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
                     // Null — no key written — in every other session, so the photo path is unchanged.

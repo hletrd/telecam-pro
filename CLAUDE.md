@@ -260,8 +260,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   "fix" the dark path by widening the tolerance** — that silently trades the user's exposure for
   latency. FRAMING obeys the same rule (2026-10-27): a ring frame is a repeating frame, framed by the
   session's stabilization mode, so it serves only when the real still would carry that mode
-  (`framedLikeRing`; always on PMA110, where every still rides the session's mode — see "Stills are
-  framed like the PREVIEW"). SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
+  (`framedLikeRing`; always for a servable still, since every still rides the session's mode — see
+  "Stills are framed like the PREVIEW"). SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
   TELE/rear-standalone/video/burst/AEB are untouched and keep the legacy blind-adopt path
   byte-for-byte. FRONT takes deep YUV on its full rung, degrades to shallow YUV, then returns to its
   proven HAL-JPEG path before preview-only; PMA110's mandatory-YUV quirk remains LOGICAL-only. The
@@ -612,9 +612,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`makerLogWbControls`, 2026-10-26) is GONE — it rested on a FAST-only measurement. **Two PMA110
   STILL traps, both profile-gated and both invisible in the preview:** (1) a matrix still at the
   template's stabilization OFF inside a stabilized session renders some other WB (orange came out
-  blue), so on `stillKeepsSessionStabilization` EVERY still rides the session's mode and is framed
-  like the preview (the "Stills are framed like the PREVIEW" bullet; a 4 s matrix still in Active
-  has no working mode); (2) Face
+  blue), so EVERY still rides the session's mode and is framed like the preview (the "Stills are
+  framed like the PREVIEW" bullet; a 4 s matrix still in Active has no working mode); (2) Face
   Priority's FACE_PRIORITY scene (CONTROL_MODE USE_SCENE_MODE) overrides an app-owned WB on stills —
   the result echoes the gains, the pixels carry the fixed blue cast
   (`facePrioritySceneOverridesManualWb`: the scene half stands down while WB is app-owned, detection
@@ -1470,16 +1469,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   orientation, but there is no user-facing `GYRO` mode. The Explorer-specific `com.oplus.ois.*` /
   `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
 - **Stills are framed like the PREVIEW (owner decision 2026-10-27, "Auto and manual stills must
-  match"; `StillFraming.kt`, `docs/FIELD_CHECKS.md` A23).** Under Standard or Active the HAL crops
-  its EIS margin out of every processed stream of a request that carries the mode; a still at the
-  still template's OFF gets the full field. Until this fix only a TRANSFORM_MATRIX (manual / preset
+  match"; `StillFraming.kt`, `docs/FIELD_CHECKS.md` A23).** Under Active (PREVIEW_STABILIZATION)
+  the HAL crops its EIS margin out of every processed stream of a request that carries the mode,
+  and PMA110's HAL does the same under Standard (ON); a still at the still template's OFF gets the
+  full field. Until this fix only a TRANSFORM_MATRIX (manual / preset
   / custom WB) still rode the session's mode — for its colour, the WB trap above — so on PMA110's
   logical 1× an AUTO still came out 15.6–16.7 % WIDER than the finder (bright frame, NCC / SIFT;
   Standard and Active alike), while a pseudo-ZSL-served AUTO still (a repeating
   frame) and every manual / preset still matched the finder: one bright press and one dim press of
-  the same scene framed differently. Now, on `DeviceProfile.stillKeepsSessionStabilization`, EVERY
-  still — any WB mode, SINGLE / BURST / AEB / timelapse, the in-REC snapshot — carries the
-  session's mode. Measured after, HEAD `3c8bd2b3`, lit room: on the logical 1× and 3× under
+  the same scene framed differently. Now EVERY still on EVERY profile — any WB mode, SINGLE /
+  BURST / AEB / timelapse, the in-REC snapshot — carries the session's mode (GENERIC since the
+  Flip6 measurement below; the `stillKeepsSessionStabilization` flag that gated it to PMA110 is
+  gone). Measured after, HEAD `3c8bd2b3`, lit room: on the logical 1× and 3× under
   Standard and Active every AUTO / preset / manual still, every burst frame and every ZSL-served
   frame reads 0.856–0.864 of the unstabilized field and 1.000–1.004 of the finder (HEIF = JPEG);
   TELE (standalone 4 + 0x80b4) is cropped by neither mode at all — finder and stills 1.000. The
@@ -1498,8 +1499,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   1.165 × the JPEG's; TELE 1.000, nothing is cropped there); that is the sensor-native file, not a
   framing bug. Pseudo-ZSL gained a framing term (`ZslStillIntent.framedLikeRing` ←
   `zslStillFramingMatches`): a ring frame serves only when the real still would carry the ring's
-  mode — always, on PMA110, for a servable sub-1/15 s still; GENERIC keeps the template's own value,
-  so a stabilized GENERIC session real-captures (unmeasured on a spec device). Verify with
+  mode — always for a servable sub-1/15 s still. **The spec path, Galaxy Z Flip6 (2026-10-27):** its
+  still template also carries OFF, so stills used to come out 1.24× wider than a Standard or Active
+  finder (the finder is 0.807 of the field in both) and ZSL refused every stabilized press. Riding
+  the session's mode (measured on experiment build `e8be6c6c`): Active stills read 1.000 of the
+  finder (AUTO, 3000 K, 5000 K, Daylight, a 150 ms M still — its exposure ceiling), colour equal to
+  an OFF session's, and a Standard-session still reaches the file in 0.51–0.57 s instead of the
+  1.5–1.9 s it took to drop to OFF. Its Standard stills STILL read 1.24× the finder: that HAL crops
+  only the preview under ON, which Camera2 allows (only PREVIEW_STABILIZATION promises one FoV
+  across processed streams) — so Active is the WYSIWYG mode on a spec device. The long-still loss
+  under PREVIEW_STABILIZATION is a PMA110 measurement; GENERIC has no limit and no device has shown
+  one (the Flip6 tops out at 150 ms). Verify with
   `cmd media.camera watch` (the still frame's REQ `videoStabilizationMode`) AND the pixels — and
   check the installed APK hash first: on 2026-10-27 another session reinstalled its own debug app
   mid-batch (twice) and force-stopped / relaunched it with its own settings, and twenty minutes of

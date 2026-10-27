@@ -75,15 +75,21 @@ class ZslAdmissionTest {
     fun `framing term follows the still-stabilization law end to end`() {
         val off = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
         val on = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
-        // PMA110: every still carries the session's mode, so a stabilized session still serves.
-        val pma110 = zslStillFramingMatches(stillVideoStabilizationMode(true, on, 8_000_000L, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, false), on)
+        val preview = android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION
+        // Every still carries the session's mode, so a stabilized session serves on PMA110 and,
+        // since the Flip6 measurement (2026-10-27), on the spec path too.
+        val pma110 = zslStillFramingMatches(stillVideoStabilizationMode(on, 8_000_000L, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, false), on)
         assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = pma110), nowNs))
-        // GENERIC under a stabilized session: the still keeps the template's OFF → real capture.
-        val generic = zslStillFramingMatches(stillVideoStabilizationMode(false, on, 8_000_000L, null, false), on)
-        assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = generic), nowNs))
-        // GENERIC with stabilization off: both sides OFF → serves exactly as before.
-        val genericOff = zslStillFramingMatches(stillVideoStabilizationMode(false, off, 8_000_000L, null, false), off)
+        val generic = zslStillFramingMatches(stillVideoStabilizationMode(on, 8_000_000L, null, false), on)
+        assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = generic), nowNs))
+        val genericOff = zslStillFramingMatches(stillVideoStabilizationMode(off, 8_000_000L, null, false), off)
         assertTrue(zslFrameAdmissible(frame(), intent(framedLikeRing = genericOff), nowNs))
+        // PMA110's long HAL-AWB Active still rides ON: framed unlike the ring, so a real capture.
+        val longActive = zslStillFramingMatches(
+            stillVideoStabilizationMode(preview, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS + 1, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, false),
+            preview,
+        )
+        assertFalse(zslFrameAdmissible(frame(), intent(framedLikeRing = longActive), nowNs))
     }
 
     // ---- the honest gate: actual vs intended sensor values ----

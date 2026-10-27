@@ -24,11 +24,9 @@ class DeviceProfileTest {
             assertTrue(model, p.rawRequiresStandalone)
             assertEquals(model, HAL_SAFE_MAX_STILL_EXPOSURE_NS, p.stillExposureCeilingNs)
             assertTrue(model, p.videoMinFrameDurationsUnderstated)
-            // White balance, measured 2026-10-27 (WhiteBalance.kt): presets ignored by the HAL, and a
-            // TRANSFORM_MATRIX still must ride the session's stabilization mode — so EVERY still does
-            // (owner decision 2026-10-27: stills follow the preview framing, StillFraming.kt).
+            // White balance, measured 2026-10-27 (WhiteBalance.kt): presets ignored by the HAL; and a
+            // still longer than 3.2 s is lost carrying PREVIEW_STABILIZATION (StillFraming.kt).
             assertTrue(model, p.awbPresetModesIgnored)
-            assertTrue(model, p.stillKeepsSessionStabilization)
             assertEquals(model, PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS, p.previewStabilizedStillMaxExposureNs)
             // ...and the FACE_PRIORITY scene must stand down while WB is app-owned.
             assertTrue(model, p.facePrioritySceneOverridesManualWb)
@@ -54,7 +52,6 @@ class DeviceProfileTest {
             assertNull("$model", p.stillExposureCeilingNs)
             assertFalse("$model", p.videoMinFrameDurationsUnderstated)
             assertFalse("$model", p.awbPresetModesIgnored)
-            assertFalse("$model", p.stillKeepsSessionStabilization)
             assertNull("$model", p.previewStabilizedStillMaxExposureNs)
             assertFalse("$model", p.facePrioritySceneOverridesManualWb)
         }

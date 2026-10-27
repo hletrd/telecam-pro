@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, and two owner decisions from the Flip6 in-app run (stills 1.24× wider than a Standard finder; manual Kelvin taking the priming light's colour transform),
+**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, and one from the Flip6 in-app run (manual Kelvin taking the priming light's colour transform),
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1176,7 +1176,20 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   In an OFF session finder and still match (0.9999). This is the mismatch PMA110 had before
   `64e0535c`, larger here. Pseudo-ZSL refused every Standard-session press on `framing=false`
   (a real capture followed); in an OFF session it passed the framing term and refused on the dim
-  exposure mismatch (preview 66.7 ms against an intended 100 ms), as designed.
+  exposure mismatch (preview 66.7 ms against an intended 100 ms), as designed. The Standard-session
+  stills also took 1.52–1.94 s from press to image against 0.50–0.56 s in an OFF session.
+- **Stills follow the session on GENERIC too (decided and measured 2026-10-27).** Experiment build
+  `e8be6c6ce835-f04192fb` (GENERIC stills carry the session's mode; SHA-256 `50f586bb…`), same room,
+  OFF-session controls in the same batch. `cmd media.camera watch` shows no stabilization change
+  around any still (before: `[OFF]` then `[ON]` on every press). Active stills read 1.000 of their
+  finder (NCC; SIFT 0.9997–1.0014) for AUTO, 3000 K, 5000 K, Daylight and a 150 ms M still (the
+  Flip6's exposure ceiling), 0.808 of the OFF control. Standard stills carry ON and still read
+  1.24× their finder (1.004 of the OFF control): this HAL crops only the preview under ON. Colour
+  matches the OFF controls (AUTO R/G 1.122 / B/G 0.875 vs 1.132 / 0.842; 3000 K 0.975 / 0.668 vs
+  0.991 / 0.683; Daylight 1.403 / 0.274 vs 1.398 / 0.241; 5000 K on the same blue floor). Every
+  press delivered (a 5-frame burst included), press to image 0.51–0.59 s in Standard and Active
+  alike. ZSL now passes the framing term in stabilized sessions and refused only on the dim
+  exposure mismatch. Shipped as one law for every profile; the profile flag is removed.
 
 **HLG10 and RAW log sessions, PMA110 in-app (2026-10-27).** Same build fingerprint as above,
 immutable debug `2f83c64c3945-e1fd4149` (code identical to `c87497de`), rear 1× Video, 4K 29.97,
@@ -1199,11 +1212,10 @@ were restored afterwards. Evidence: `.context/a23-pma110-logroutes-2026-10-27/`.
   File against finder was not compared on these routes (log and HLG encodings).
 
 **Remaining:** (1) the FRONT route (white balance and framing) was not run: its camera faces away
-from the chart, so it needs an operator; (2) two owner decisions from the Flip6 run: whether
-GENERIC stills should carry the session's stabilization mode (needs a Flip6 measurement of an ON
-still: completes, framed like the finder, same colour), and where a manual Kelvin should get its
-transform when the HAL's CCM moves with the illuminant (for example the HAL's preset CCMs
-interpolated by Kelvin, or the sensor calibration). The Flip6 proves the CCM moves there. PMA110
+from the chart, so it needs an operator; (2) an owner decision from the Flip6 run: where a manual
+Kelvin should get its transform when the HAL's CCM moves with the illuminant (for example the
+HAL's preset CCMs interpolated by Kelvin, or the sensor calibration). The Flip6 proves the CCM
+moves there; its Standard stills keep the full field (ON crops only that HAL's preview). PMA110
 floors blue at daylight Kelvins in this warm room on its SDR and HLG10 routes as well, but whether
 its AUTO CCM moves with the illuminant needs AUTO under a second light; (3) the 4 s
 TRANSFORM_MATRIX still in Active above (owner decision); (4) no attached device takes the CCT path
