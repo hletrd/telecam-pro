@@ -18,7 +18,9 @@ import android.os.Bundle
  * whose shell cannot inject input (MIUI refuses `input` without its "USB debugging (Security
  * settings)" switch, measured on the POCO X3 GT 2026-10-27), and a wanted STATE rather than a toggle
  * keeps a repeated or late command from inverting the take. `--ez debug_shutter true` presses the
- * Photo shutter once, for the same devices' still profiling.
+ * Photo shutter once, for the same devices' still profiling. On a debug PMA110 OEM-Log route,
+ * `--ez debug_oem_8k true` explicitly selects the probe-only 7680×4320 candidate; release and other
+ * profiles never project that size.
  */
 class DebugCameraControlActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,11 +47,14 @@ internal fun debugCameraControlCommand(intent: Intent?): DebugCameraControlComma
     val record = intent.takeIf { it.hasExtra(EXTRA_DEBUG_RECORD) }
         ?.getBooleanExtra(EXTRA_DEBUG_RECORD, false)
     val shutterPresses = if (intent.getBooleanExtra(EXTRA_DEBUG_SHUTTER, false)) 1 else 0
+    val oem8kProbe = intent.takeIf { it.hasExtra(EXTRA_DEBUG_OEM_8K) }
+        ?.getBooleanExtra(EXTRA_DEBUG_OEM_8K, false)
     return DebugCameraControlCommand(
         zslSpike = zslSpike,
         zoomRatio = zoom,
         record = record,
         shutterPresses = shutterPresses,
+        oem8kProbe = oem8kProbe,
     )
 }
 
@@ -57,3 +62,4 @@ internal const val EXTRA_ZSL_SPIKE = "zsl_spike"
 internal const val EXTRA_DEBUG_ZOOM = "debug_zoom"
 internal const val EXTRA_DEBUG_RECORD = "debug_record"
 internal const val EXTRA_DEBUG_SHUTTER = "debug_shutter"
+internal const val EXTRA_DEBUG_OEM_8K = "debug_oem_8k"

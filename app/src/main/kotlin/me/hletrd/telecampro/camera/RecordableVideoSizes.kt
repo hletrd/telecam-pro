@@ -23,6 +23,31 @@ internal val VideoFrameRate.recordableCapabilityRate: Double
  * Legacy sizes never need a probe. An extended size needs a supported rate and, for RAW Log, a RAW
  * source at least as large; otherwise it is removed rather than offered and refused at session time.
  */
+internal val DEBUG_OEM_8K_PROBE_SIZE = Size(7680, 4320)
+
+/**
+ * Adds the unadvertised PMA110 OEM-session raster only to a DEBUG OEM-route probe projection.
+ * The camera cache remains untouched, and the ordinary projection still requires exact encoder
+ * size/rate proof. Release, GENERIC, non-OEM routes and Open Gate never receive the candidate.
+ */
+internal fun projectDebugOem8kCandidate(
+    raw: CameraCaps,
+    candidates: List<EncoderSelection>,
+    rawLog: Boolean = false,
+    debugBuild: Boolean,
+    probeRequested: Boolean,
+    oemLogRoute: Boolean,
+    profile: DeviceProfile,
+): CameraCaps {
+    val admitted = debugBuild && probeRequested && oemLogRoute && profile == DeviceProfile.PMA110
+    val probeRaw = if (admitted) {
+        raw.copy(availableVideoSizes = (listOf(DEBUG_OEM_8K_PROBE_SIZE) + raw.availableVideoSizes).distinct())
+    } else {
+        raw
+    }
+    return projectRecordableVideoSizes(probeRaw, candidates, rawLog = rawLog)
+}
+
 fun projectRecordableVideoSizes(
     raw: CameraCaps,
     candidates: List<EncoderSelection>,

@@ -58,6 +58,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.DEBUG_OEM_8K_PROBE_SIZE
 import me.hletrd.telecampro.camera.HardwareKeyDiagnosticLogGate
 import me.hletrd.telecampro.camera.processDiagnosticLogBudget
 import me.hletrd.telecampro.ui.CameraActions
@@ -330,6 +331,7 @@ class MainActivity : ComponentActivity() {
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
         command.zoomRatio?.let(vm::debugApplyZoom)
+        if (command.oem8kProbe == true) vm.onVideoResolution(DEBUG_OEM_8K_PROBE_SIZE)
         command.record?.let(vm::debugSetRecording)
         repeat(command.shutterPresses) { vm.debugPressShutter() }
     }

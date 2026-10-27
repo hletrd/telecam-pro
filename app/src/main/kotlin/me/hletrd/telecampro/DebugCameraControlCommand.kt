@@ -10,8 +10,11 @@ internal data class DebugCameraControlCommand(
     val record: Boolean? = null,
     /** Photo shutter presses still to deliver. A COUNT, so presses merged before consumption all fire. */
     val shutterPresses: Int = 0,
+    /** Wanted state of the active-route OEM 8K probe; null leaves the candidate unchanged. */
+    val oem8kProbe: Boolean? = null,
 ) {
-    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0
+    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null &&
+        oem8kProbe == null && shutterPresses == 0
 
     fun mergedWith(newer: DebugCameraControlCommand): DebugCameraControlCommand =
         DebugCameraControlCommand(
@@ -19,6 +22,7 @@ internal data class DebugCameraControlCommand(
             zoomRatio = newer.zoomRatio ?: zoomRatio,
             record = newer.record ?: record,
             shutterPresses = shutterPresses + newer.shutterPresses,
+            oem8kProbe = newer.oem8kProbe ?: oem8kProbe,
         )
 }
 
