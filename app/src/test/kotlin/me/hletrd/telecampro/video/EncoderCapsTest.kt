@@ -117,14 +117,43 @@ class EncoderCapsTest {
             supportedTypes = setOf("video/hevc"),
             hardwareAccelerated = true,
             hevcProfiles = setOf(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
-            sizeRateSupport = EncoderSizeRateSupport { w, h, fps ->
-                w == 7680 && h == 4320 && fps == 30.0
-            },
+            sizeRateSupport = mapOf(
+                VideoCodec.HEVC to EncoderSizeRateSupport { w, h, fps ->
+                    w == 7680 && h == 4320 && fps == 30.0
+                },
+            ),
         )
         val selected = buildCodecInventory(listOf(component)).selectionFor(VideoCodec.HEVC)!!
         val probe = selected.sizeRateSupport!!
         assertTrue(probe.supports(7680, 4320, 30.0))
         assertFalse(probe.supports(3840, 2160, 60.0))
+    }
+
+    @Test
+    fun `dual-codec component retains independent size-rate probes`() {
+        val component = CodecComponent(
+            name = "c2.test.dual",
+            encoder = true,
+            supportedTypes = setOf("video/hevc", "video/avc"),
+            hardwareAccelerated = true,
+            hevcProfiles = emptySet(),
+            sizeRateSupport = mapOf(
+                VideoCodec.HEVC to EncoderSizeRateSupport { w, h, fps ->
+                    w == 7680 && h == 4320 && fps == 30.0
+                },
+                VideoCodec.AVC to EncoderSizeRateSupport { w, h, fps ->
+                    w == 3840 && h == 2160 && fps == 60.0
+                },
+            ),
+        )
+        val inventory = buildCodecInventory(listOf(component))
+        val hevc = inventory.selectionFor(VideoCodec.HEVC)!!.sizeRateSupport!!
+        val avc = inventory.selectionFor(VideoCodec.AVC)!!.sizeRateSupport!!
+
+        assertTrue(hevc.supports(7680, 4320, 30.0))
+        assertFalse(hevc.supports(3840, 2160, 60.0))
+        assertFalse(avc.supports(7680, 4320, 30.0))
+        assertTrue(avc.supports(3840, 2160, 60.0))
     }
 
     @Test
