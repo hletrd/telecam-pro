@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** reopens the DCG/DRC highlight gap at the owner’s request (2026-10-27; prior negative probes do not prove SDK-only access); it also needs further TC operation-mode research and a rear 1× native-Log soak,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance and still framing checked on the HLG10, RAW log and front routes and on a spec device in-app, and an owner decision on the lost 4 s manual-WB still in Active,
+**A23** needs white balance and still framing checked on the HLG10, RAW log and front routes, an owner decision on the lost 4 s manual-WB still in Active, and two owner decisions from the Flip6 in-app run (stills 1.24× wider than a Standard finder; manual Kelvin taking the priming light's colour transform),
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1145,13 +1145,47 @@ stabilization key; an instrumented build then showed the app writing the session
 AUTO stills and the camera service receiving it unchanged. Every final run is checked for the
 installed APK hash before and after, a single app process and the expected files.
 
+**Spec device in-app: Galaxy Z Flip6, GENERIC profile (2026-10-27).** SM-F741N
+(`samsung/b6qksx/b6q:17/CP2A.260605.016/F741NKSU4EZIH`), immutable debug `2f83c64c3945-e1fd4149`
+(APK SHA-256 `96843b16…`, code identical to `c87497de`; hash unchanged across every run). Photo 1×
+(camera 0), JPEG only, the same dim warm room and ColorChecker (AUTO gains R 1.45 / B 3.04). Grey
+patch values are sRGB codes, still and finder (the Standard finder mapped through its 0.807 crop).
+Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, `wb-summary.json`).
+- **Wire as designed.** Presets go out on CONTROL_AWB_MODE (INCANDESCENT / DAYLIGHT /
+  CLOUDY_DAYLIGHT, colour correction FAST), HAL result gains R 1.16 / B 2.69, 1.87 / 1.68,
+  2.21 / 1.57. MANUAL goes out as AWB OFF + TRANSFORM_MATRIX with calibrated gains 3000 K
+  R 1.24 / B 2.70, 5000 K 1.89 / 1.77, 7000 K 2.22 / 1.46: within ~5 % of the preset nearest in
+  Kelvin, so the calibration law holds on a second sensor. Each still carries its preview's WB keys.
+- **No still-WB trap.** A manual still at the template's OFF inside a Standard session matches one
+  from an OFF session (R/G 1.574 vs 1.588 at 5000 K, 0.981 vs 0.978 at 3000 K), and every still
+  matches its finder within ~4 % in R/G.
+- **FAILED: manual Kelvin away from the priming light takes the wrong transform.** The route
+  reference learned from AUTO (`0|SDR|5`) is this room's CCM, blue row −0.10 / −1.13 / +2.23. The
+  Flip6's own CCM moves with the illuminant: Incandescent −0.20 / −1.27 / +2.47, Daylight
+  +0.04 / −0.75 / +1.71. Under 5000 K gains the warm-light CCM drives blue to the floor: grey patches
+  127 / 81 / 7 against 125 / 89 / 23 for the Daylight preset at nearly the same gains, and 7000 K
+  (142 / 77 / 7) sits on the same floor. Beside the priming light, 3000 K and Incandescent agree
+  (91 / 93 / 62 vs 87 / 94 / 61). R/G still rises with the Kelvin (0.98 → 1.57 → 1.85), but blue
+  clips from 5000 K up and manual stops matching the preset of the same Kelvin. PMA110 is not
+  affected in the same way (its ignored presets ride the matrix, so preset and manual share one
+  transform); whether PMA110's AUTO CCM also moves with the illuminant was not measured.
+- **Still framing does not match a stabilized finder.** The Flip6 still template carries
+  videoStabilizationMode OFF (REQ, every still) and the Standard session's repeating request ON. The
+  Standard finder is 0.807 of the unstabilized field (NCC 0.807, SIFT 0.804), so every
+  Standard-session still, AUTO and manual alike, is 1.239× wider than what was framed (SIFT 1.244).
+  In an OFF session finder and still match (0.9999). This is the mismatch PMA110 had before
+  `64e0535c`, larger here. Pseudo-ZSL refused every Standard-session press on `framing=false`
+  (a real capture followed); in an OFF session it passed the framing term and refused on the dim
+  exposure mismatch (preview 66.7 ms against an intended 100 ms), as designed.
+
 **Remaining:** (1) the HLG10 video session, the RAW log session (its developer takes the result
-gains) and the FRONT route were not run (FRONT framing too); (2) the Flip6 spec path (presets on
-CONTROL_AWB_MODE, manual on the matrix) is probe-verified only — the in-app run did not open the
-camera in that session — and neither the GENERIC still path nor the GENERIC pseudo-ZSL framing
-refusal has run on a spec device; (3) the 4 s TRANSFORM_MATRIX still in Active above (owner
-decision); (4) no attached device takes the CCT path (CCT advertised without a ColorMatrix
-calibration). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
+gains) and the FRONT route were not run (FRONT framing too); (2) two owner decisions from the
+Flip6 run: whether GENERIC stills should carry the session's stabilization mode (needs a Flip6
+measurement of an ON still: completes, framed like the finder, same colour), and where a GENERIC
+manual Kelvin should get its transform when the HAL's CCM moves with the illuminant (for example
+the HAL's preset CCMs interpolated by Kelvin, or the sensor calibration); (3) the 4 s
+TRANSFORM_MATRIX still in Active above (owner decision); (4) no attached device takes the CCT path
+(CCT advertised without a ColorMatrix calibration). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
 decision 2026-10-27: device-to-device variation makes it meaningless); the relative checks above —
 warmer as the Kelvin rises, file matching the finder, AUTO and manual consistent — are the checks.
 
