@@ -1467,9 +1467,10 @@ enum class VideoFrameRate(
 
         /**
          * The frame rates the [caps] camera can actually deliver at [size] with [codec], honoring:
-         *  - 8K (height ≥ 4320) is capped to ≤30 fps (encoder + thermal reality). DEFENSIVE and
-         *    currently UNREACHABLE: the shipping resolution selector caps sizes at 3840 wide, so no
-         *    offered size is 8K. It stays so lifting that cap cannot silently offer 8K60;
+         *  - extended rasters are capped to ≤30 fps (encoder + thermal reality). Automatic choices
+         *    stay at or below 3840 wide; an explicitly selected/restored VIDEO size beyond the
+         *    legacy envelope is admitted only with its exact projected rate, so 8K60 is never
+         *    offered;
          *  - sizes beyond 4096×3072 also require the exact rate in
          *    [CameraCaps.extendedVideoSizeRates], projected from the active encoder candidates;
          *  - normal (non-high-speed) rates require the camera to advertise the integer [fps] as a

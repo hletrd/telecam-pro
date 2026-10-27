@@ -853,6 +853,7 @@ class CameraEngine internal constructor(
         val previewAspect: Float,
         val punchInResolved: Boolean,
         val restoreSession: Boolean,
+        val reopenTransaction: OpticsTransaction?,
         val opticsPublication: OpticsRollbackPublication,
         val readyPublication: CameraReadyPublication,
     )
@@ -1344,7 +1345,9 @@ class CameraEngine internal constructor(
             currentSessionGeneration = cameraSessionGeneration.get(),
             preflightSessionGeneration = preflightSessionGeneration,
         )
-        val restoreSession = restoredSessionGeneration != null
+        val reprojectedRasterRequiresReopen = newerVideoPipelineSurvives &&
+            before.videoMode && videoSize != before.previewStreamSize
+        val restoreSession = restoredSessionGeneration != null && !reprojectedRasterRequiresReopen
         if (restoreSession) {
             // The remaining zoom effects execute from the frozen packet after unlock.
             zoomInteractionState = ZoomInteractionState()
@@ -1399,6 +1402,9 @@ class CameraEngine internal constructor(
                 restored.route == CameraRoute.FRONT,
             ),
             restoreSession = restoreSession,
+            // The outgoing session still owns its accepted raster. Reconfigure the surviving codec/
+            // Gamma packet before Ready or REC; never publish a UHD delivered size over an 8K stream.
+            reopenTransaction = transaction.takeIf { reprojectedRasterRequiresReopen },
             opticsPublication = opticsPublication,
             readyPublication = readyPublication,
         )
@@ -1458,6 +1464,7 @@ class CameraEngine internal constructor(
         if (!publishTerminal) return
         onCameraReadyChange?.invoke(effects.readyPublication)
         onStatus?.invoke(effects.status)
+        effects.reopenTransaction?.let { reconfigureCamera(overrideId, it) }
     }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
@@ -3202,6 +3209,10 @@ class CameraEngine internal constructor(
                 // the photo 4:3 field and the recording stream (dimensions fix at configureStreams).
                 val sel = selection ?: return@execute
                 val next = choosePreviewStreamSize(sel)
+                if (next == null) {
+                    reconfigureCamera(id, transaction)
+                    return@execute
+                }
                 if (next != previewStreamSize) {
                     previewStreamSize = next
                     emitPreviewAspect(transaction.generation)
@@ -3557,7 +3568,11 @@ class CameraEngine internal constructor(
         val routeCaps = caps ?: return
         onCapsReady?.invoke(routeCaps, opticsIntentGeneration.get())
         val sel = selection ?: return
-        val targetSize = chooseVideoSize(sel)
+        val targetSize = chooseVideoSize(sel) ?: run {
+            invalidateCameraReady()
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return
+        }
         if (targetSize != videoSize) applyVideoSize(targetSize)
     }
 
@@ -4032,7 +4047,15 @@ class CameraEngine internal constructor(
             remapMakerRouteBoundary(makerBefore, makerLogWanted())
         }
         val sel = selection ?: return
-        val targetSize = chooseVideoSize(sel)
+        val targetSize = chooseVideoSize(sel) ?: run {
+            val refusedMakerRoute = makerLogWanted()
+            synchronized(this) {
+                openGate = !enabled
+                remapMakerRouteBoundary(refusedMakerRoute, makerBefore)
+            }
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return
+        }
         if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
         else applyVideoSize(targetSize)
     }
@@ -4299,7 +4322,9 @@ class CameraEngine internal constructor(
             extendedVideoRasterRefusals.refuse(ExtendedVideoRasterRefusal(routeKey, size, transfer))
             val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
                 ?: return
-            val fallback = fallbackSize(size, offered) ?: return
+            val fallback = fallbackSize(size, offered, admissible = { candidate ->
+                !extendedVideoRasterRefusals.blocks(routeKey, candidate, transfer)
+            }) ?: return
             videoSize = fallback
             previewStreamSize = fallback
             // These callbacks only enqueue UI/GL work. Keeping their publication inside the ownership
@@ -4606,7 +4631,32 @@ class CameraEngine internal constructor(
         return true
     }
 
+    /** Nearest camera+encoder-proven rate for an extended raster; legacy rates stay byte-identical. */
+    private fun projectedExtendedVideoRate(size: Size, routeCaps: CameraCaps? = caps): VideoFrameRate? {
+        val allowed = VideoFrameRate.availableFor(routeCaps, size, videoCodec).filter { it.fps <= 30 }
+        return if (videoFrameRate in allowed) {
+            videoFrameRate
+        } else {
+            allowed.minByOrNull { kotlin.math.abs(it.fps - videoFrameRate.fps) }
+        }
+    }
+
     private fun applyVideoSize(s: Size) {
+        if (requiresExtendedVideoProof(s.width, s.height)) {
+            val targetRate = projectedExtendedVideoRate(s) ?: run {
+                onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                return
+            }
+            // Resolution, codec, Open Gate and restored-request doors all converge here BEFORE the
+            // reopen is queued. The later ViewModel reconciliation updates display/request state; it
+            // is not permission to configure Camera2 at the outgoing 50/60 fps first.
+            val makerBefore = makerLogWanted()
+            synchronized(this) {
+                videoFrameRate = targetRate
+                controls = controls.copy(fps = targetRate.fps)
+                remapMakerRouteBoundary(makerBefore, makerLogWanted())
+            }
+        }
         videoSize = s
         onVideoSizeChosen?.invoke(s, null)
         // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
@@ -5128,6 +5178,54 @@ class CameraEngine internal constructor(
                 return@execute
             }
 
+            // Resolve automatic/explicit sizes before installing the candidate. Null is a truthful
+            // preflight refusal: no advertised ≤3840 automatic stream exists, and an explicit extended
+            // VIDEO pick was unavailable. PHOTO may retain its dormant recording request for a later route.
+            val nextVideoSize = projectVideoSize(sel, c)
+            val nextPreviewStreamSize = if (videoMode) {
+                nextVideoSize
+            } else {
+                projectStreamSize(sel, fourByThree = true, routeCaps = c)
+            }
+            if (nextPreviewStreamSize == null) {
+                handlePreflightFailure(
+                    transaction,
+                    recoverColdPreflight,
+                    preflightSessionGeneration,
+                    startupTraceOwner,
+                )
+                return@execute
+            }
+            val acceptedVideoSize = nextVideoSize ?: videoSize
+            if (requiresExtendedVideoProof(nextPreviewStreamSize.width, nextPreviewStreamSize.height)) {
+                val targetRate = projectedExtendedVideoRate(nextPreviewStreamSize, c) ?: run {
+                    handlePreflightFailure(
+                        transaction,
+                        recoverColdPreflight,
+                        preflightSessionGeneration,
+                        startupTraceOwner,
+                    )
+                    return@execute
+                }
+                // Restored extended requests do not pass through applyVideoSize. Project their rate
+                // here, before controller construction/configure; if ≤30 changes the maker-TC route,
+                // re-resolve the same owned transaction instead of opening the outgoing route once.
+                val makerBefore = makerLogWanted()
+                var makerRouteChanged = false
+                synchronized(this) {
+                    if (targetRate != videoFrameRate || controls.fps != targetRate.fps) {
+                        videoFrameRate = targetRate
+                        controls = controls.copy(fps = targetRate.fps)
+                        remapMakerRouteBoundary(makerBefore, makerLogWanted())
+                        makerRouteChanged = makerBefore != makerLogWanted()
+                    }
+                }
+                if (makerRouteChanged) {
+                    reconfigureCamera(overrideId, transaction, startup, startupTraceOwner)
+                    return@execute
+                }
+            }
+
             // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
             // blackout overlapped away). The preview surface still belongs to the old session, so
             // the new session is deferred until the old controller closes. If the HAL refuses a
@@ -5166,8 +5264,8 @@ class CameraEngine internal constructor(
                     selection = sel
                     caps = c
                     reconcileControlsWithCaps(c, outgoingCaps)
-                    videoSize = chooseVideoSize(sel)
-                    previewStreamSize = choosePreviewStreamSize(sel)
+                    videoSize = acceptedVideoSize
+                    previewStreamSize = nextPreviewStreamSize
                     nextCameraReadyPublication(
                         ready = false,
                         opticsGeneration = transaction.generation,
@@ -9134,35 +9232,51 @@ class CameraEngine internal constructor(
      * The default recording size for the current lens: the largest matching-aspect SurfaceTexture
      * size the camera reports — 4:3 when [openGate] (full sensor readout), else 16:9. Automatic
      * choice stays capped at 3840 wide even when the camera offers 8K; only an explicit user/restored
-     * pick may admit a larger size present in the projected route caps. Falls back through the caps
-     * lists so it never returns an unsupported size.
+     * pick may admit a larger size present in the projected route caps. Null means no truthful
+     * automatic answer exists; callers refuse configuration instead of inventing a stream.
      */
-    private fun chooseVideoSize(sel: TeleSelection): Size {
-        val auto = chooseStreamSize(sel, fourByThree = openGate)
-        val req = requestedVideoSize ?: return auto
-        // Honor a user/restored pick only while the current caps actually offer it for the active
-        // aspect; anything else (stale persisted size, openGate flip) degrades to the auto choice.
-        val list = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
-        if (list != null && extendedVideoRasterRefusals.blocks(
+    private fun chooseVideoSize(sel: TeleSelection): Size? = projectVideoSize(sel, caps)
+
+    private fun projectVideoSize(sel: TeleSelection, routeCaps: CameraCaps?): Size? {
+        val list = routeCaps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+        val req = requestedVideoSize
+        if (req != null && list?.contains(req) == true && !extendedVideoRasterRefusals.blocks(
+                rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
+                req,
+                transfer,
+            )
+        ) {
+            return req
+        }
+        val auto = projectStreamSize(sel, fourByThree = openGate, routeCaps = routeCaps)
+        if (req == null) return auto
+        if (list != null && req in list && extendedVideoRasterRefusals.blocks(
                 rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
                 req,
                 transfer,
             )
         ) {
             // The request remains persisted for an explicit retry or a different route/Gamma. This
-            // automatic reopen must never land on the just-refused graph again (no recovery loop).
-            return fallbackSize(req, list) ?: auto
+            // automatic reopen must never land on any previously refused graph again (no recovery loop).
+            return fallbackSize(req, list, admissible = { candidate ->
+                !extendedVideoRasterRefusals.blocks(
+                    rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
+                    candidate,
+                    transfer,
+                )
+            }) ?: auto
         }
-        return list?.let { explicitStreamSizeOrAutomatic(req, it, auto) } ?: auto
+        // An unsupported retained request degrades to the capped automatic answer. An offered explicit
+        // request returned above, so automatic selection never needs to exceed 3840 on its behalf.
+        return auto
     }
 
     /**
      * The camera preview (SurfaceTexture) stream size. VIDEO mode: identical to [videoSize] — the
-     * SurfaceTexture feeds the encoder, so the two must agree. PHOTO mode: the largest 4:3 stream,
-     * so the viewfinder previews the SAME full-sensor field the still capture gets (a 16:9 stream
-     * crops the sensor vertically and mis-frames every photo).
+     * SurfaceTexture feeds the encoder, so the two must agree. PHOTO mode: the largest capped 4:3
+     * stream, so the viewfinder previews the SAME full-sensor field the still capture gets.
      */
-    private fun choosePreviewStreamSize(sel: TeleSelection): Size =
+    private fun choosePreviewStreamSize(sel: TeleSelection): Size? =
         if (videoMode) chooseVideoSize(sel) else chooseStreamSize(sel, fourByThree = true)
 
     /** Pushes the DISPLAYED preview aspect (post sensor-orientation W/H swap) to the UI. */
@@ -9182,24 +9296,36 @@ class CameraEngine internal constructor(
         }
     }
 
-    private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size {
-        val c = caps
-        if (c != null) {
-            val list = if (fourByThree) c.openGateVideoSizes else c.availableVideoSizes
-            (list.firstOrNull { it.width <= 3840 } ?: list.firstOrNull())?.let { return it }
+    private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size? =
+        projectStreamSize(sel, fourByThree, caps)
+
+    private fun projectStreamSize(
+        sel: TeleSelection,
+        fourByThree: Boolean,
+        routeCaps: CameraCaps?,
+    ): Size? {
+        if (routeCaps != null) {
+            val list = if (fourByThree) routeCaps.openGateVideoSizes else routeCaps.availableVideoSizes
+            return pickStreamSize(
+                list.map { it.width to it.height },
+                capWidth = AUTO_VIDEO_MAX_WIDTH,
+                fourByThree = fourByThree,
+            )?.let { (w, h) -> Size(w, h) }
         }
-        // Fallback: query directly (pre-caps or empty list).
+        // Fallback: query directly (pre-caps or empty list). No capped advertised answer means no
+        // automatic selection; inventing 1920×1080 would configure a stream the camera never offered.
         val chars = runCatching {
             manager.getCameraCharacteristics(sel.physicalId ?: sel.logicalId)
-        }.getOrNull() ?: return Size(1920, 1080)
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: return Size(1920, 1080)
-        val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(1920, 1080)
+        }.getOrNull() ?: return null
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+        val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return null
         // One selection rule with CameraCaps.read's lists (pickStreamSize) — the fallback used to
         // re-implement the aspect/cap/largest rule inline, so a policy change had to touch both.
-        return pickStreamSize(sizes.map { it.width to it.height }, capWidth = 3840, fourByThree = fourByThree)
-            ?.let { (w, h) -> Size(w, h) }
-            ?: Size(1920, 1080)
+        return pickStreamSize(
+            sizes.map { it.width to it.height },
+            capWidth = AUTO_VIDEO_MAX_WIDTH,
+            fourByThree = fourByThree,
+        )?.let { (w, h) -> Size(w, h) }
     }
 
     // Per-SHUTTER-PRESS counter (one id shared by every container a capture produces), so the review

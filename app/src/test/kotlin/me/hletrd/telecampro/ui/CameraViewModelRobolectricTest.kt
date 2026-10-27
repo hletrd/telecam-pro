@@ -1659,6 +1659,45 @@ class CameraViewModelRobolectricTest {
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
     }
 
+    @Test fun `extended resolution selection projects a legal rate before its reopen`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            extendedVideoSizeRates = mapOf(eightK to setOf(23.976, 24.0, 29.97, 30.0)),
+        )
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = routeCaps,
+                videoResolution = uhd,
+                videoFrameRate = VideoFrameRate.FPS_60,
+                controls = it.controls.copy(fps = 60),
+            )
+        }
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("caps").set(e, routeCaps)
+        v.onVideoFrameRate(VideoFrameRate.FPS_60)
+        var rateAtSizePublication: VideoFrameRate? = null
+        var controlsFpsAtSizePublication: Int? = null
+        e.onVideoSizeChosen = { size, _ ->
+            if (size == eightK) {
+                rateAtSizePublication = engineField("videoFrameRate").get(e) as VideoFrameRate
+                controlsFpsAtSizePublication = (engineField("controls").get(e) as ManualControls).fps
+            }
+        }
+
+        v.onVideoResolution(eightK)
+
+        assertEquals(VideoFrameRate.FPS_29_97, rateAtSizePublication)
+        assertEquals(30, controlsFpsAtSizePublication)
+    }
+
     @Test fun `codec reconciliation falls back from 8K without relabeling the request`() {
         val (v, e) = createViewModel()
         idleFor(0)

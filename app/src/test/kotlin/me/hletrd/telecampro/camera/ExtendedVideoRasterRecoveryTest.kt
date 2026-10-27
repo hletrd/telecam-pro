@@ -80,6 +80,41 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
+    fun `every refused route size and transfer stays latched until its own explicit retry`() {
+        val latch = ExtendedVideoRasterRefusalLatch()
+        val fiveK = Size(5120, 2880)
+        val otherRoute = "4//tc"
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, eightK, ColorTransfer.MAKER_LOG))
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, fiveK, ColorTransfer.MAKER_LOG))
+        latch.refuse(ExtendedVideoRasterRefusal(otherRoute, eightK, ColorTransfer.SLOG3))
+
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
+        assertTrue(latch.blocks(routeKey, fiveK, ColorTransfer.MAKER_LOG))
+        assertTrue(latch.blocks(otherRoute, eightK, ColorTransfer.SLOG3))
+
+        latch.clearForExplicitRetry(routeKey, fiveK, ColorTransfer.MAKER_LOG)
+        assertFalse(latch.blocks(routeKey, fiveK, ColorTransfer.MAKER_LOG))
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
+        assertTrue(latch.blocks(otherRoute, eightK, ColorTransfer.SLOG3))
+    }
+
+    @Test
+    fun `fallback and the next reopen skip every already refused raster`() {
+        val fiveK = Size(5120, 2880)
+        val fixture = extendedFixture(intermediateSize = fiveK)
+        val latch = field(fixture.engine, "extendedVideoRasterRefusals") as ExtendedVideoRasterRefusalLatch
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, fiveK, ColorTransfer.MAKER_LOG))
+        var published: Size? = null
+        fixture.engine.onVideoSizeChosen = { size, _ -> published = size }
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(uhd, published)
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        assertEquals(uhd, chooseVideoSize(fixture.engine))
+    }
+
+    @Test
     fun `an 8K maker Log refusal chooses 4K maker Log without overwriting the request`() {
         val fixture = extendedFixture()
         var published: Pair<Size, Long?>? = null
@@ -187,7 +222,7 @@ class ExtendedVideoRasterRecoveryTest {
     @Test
     fun `fallback effects cannot publish after Open Gate interleaves`() {
         val fixture = extendedFixture()
-        val openGateSize = Size(4096, 3072)
+        val openGateSize = Size(2560, 1920)
 
         val published = interleaveFallbackEffects(fixture) {
             fixture.engine.setOpenGate(true)
@@ -201,7 +236,7 @@ class ExtendedVideoRasterRecoveryTest {
     @Test
     fun `an old 16 by 9 callback is inert after Open Gate has already changed intent`() {
         val fixture = extendedFixture()
-        val openGateSize = Size(4096, 3072)
+        val openGateSize = Size(2560, 1920)
         fixture.engine.setOpenGate(true)
         var published = false
         fixture.engine.onVideoSizeChosen = { _, _ -> published = true }
@@ -223,6 +258,27 @@ class ExtendedVideoRasterRecoveryTest {
 
         assertEquals(uhd, published)
         assertEquals(uhd, field(fixture.engine, "videoSize"))
+    }
+
+    @Test
+    fun `automatic video selection has no answer when only extended sizes are offered`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "requestedVideoSize", null)
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK)))
+
+        assertNull(chooseVideoSize(fixture.engine))
+    }
+
+    @Test
+    fun `automatic photo selection has no answer when only an extended 4 by 3 size is offered`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "videoMode", false)
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(openGateVideoSizes = listOf(Size(7680, 5760))))
+
+        val selected = CameraEngine::class.java.declaredMethods.single { it.name == "choosePreviewStreamSize" }
+            .apply { isAccessible = true }
+            .invoke(fixture.engine, route)
+        assertNull(selected)
     }
 
     @Test
@@ -252,7 +308,9 @@ class ExtendedVideoRasterRecoveryTest {
         val engine = CameraEngine(app)
         val projected = ViewModelTestAccess.caps().copy(
             availableVideoSizes = listOfNotNull(eightK, intermediateSize, uhd, fullHd),
-            openGateVideoSizes = listOf(Size(4096, 3072)),
+            openGateVideoSizes = listOf(Size(2560, 1920), Size(4096, 3072)),
+            extendedVideoSizeRates = listOfNotNull(eightK, intermediateSize)
+                .associateWith { setOf(23.976, 24.0, 29.97, 30.0) },
         )
         setField(engine, "selection", route)
         setField(engine, "caps", projected)
@@ -316,10 +374,10 @@ class ExtendedVideoRasterRecoveryTest {
         return published
     }
 
-    private fun chooseVideoSize(engine: CameraEngine): Size =
+    private fun chooseVideoSize(engine: CameraEngine): Size? =
         CameraEngine::class.java.declaredMethods.single { it.name == "chooseVideoSize" }
             .apply { isAccessible = true }
-            .invoke(engine, route) as Size
+            .invoke(engine, route) as Size?
 
     private fun wireController(engine: CameraEngine): CameraController {
         val owners = checkNotNull(field(engine, "glOwners"))

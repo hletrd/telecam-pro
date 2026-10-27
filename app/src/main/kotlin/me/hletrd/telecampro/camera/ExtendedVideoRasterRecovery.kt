@@ -17,20 +17,20 @@ internal data class ExtendedVideoRasterRefusal(
  * route/size/transfer tuple; a different route or Gamma neither clears nor inherits the refusal.
  */
 internal class ExtendedVideoRasterRefusalLatch {
-    @Volatile private var current: ExtendedVideoRasterRefusal? = null
+    @Volatile private var refusals: Set<ExtendedVideoRasterRefusal> = emptySet()
 
     @Synchronized
     fun refuse(refusal: ExtendedVideoRasterRefusal) {
-        current = refusal
+        refusals = refusals + refusal
     }
 
     @Synchronized
     fun clearForExplicitRetry(routeKey: String, size: Size, transfer: ColorTransfer) {
-        if (current?.matches(routeKey, size, transfer) == true) current = null
+        refusals = refusals.filterNotTo(mutableSetOf()) { it.matches(routeKey, size, transfer) }
     }
 
     fun blocks(routeKey: String, size: Size, transfer: ColorTransfer): Boolean =
-        !shouldRetryRefusedRaster(current, routeKey, size, transfer)
+        refusals.any { !shouldRetryRefusedRaster(it, routeKey, size, transfer) }
 }
 
 /** Automatic choice may not reopen the refused graph; only the operator's identical retry may. */
@@ -42,13 +42,13 @@ internal fun shouldRetryRefusedRaster(
     explicitRetry: Boolean = false,
 ): Boolean = refusal?.matches(routeKey, size, transfer) != true || explicitRetry
 
-/** Largest offered raster strictly below the refused one, by area, never an upscale or a Gamma change. */
-internal fun fallbackSize(refused: Size, offered: List<Size>): Size? {
+/** Largest offered raster strictly below the refused one that is not itself refused, by area. */
+internal fun fallbackSize(refused: Size, offered: List<Size>, admissible: (Size) -> Boolean = { true }): Size? {
     val refusedArea = refused.width.toLong() * refused.height.toLong()
     return offered.asSequence()
         .filter {
             val area = it.width.toLong() * it.height.toLong()
-            it.width <= refused.width && it.height <= refused.height && area < refusedArea
+            admissible(it) && it.width <= refused.width && it.height <= refused.height && area < refusedArea
         }
         .maxByOrNull { it.width.toLong() * it.height.toLong() }
 }

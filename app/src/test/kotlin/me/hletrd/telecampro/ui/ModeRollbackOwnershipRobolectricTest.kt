@@ -27,6 +27,7 @@ import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -206,6 +207,9 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals("rollback caps are projected for that codec", listOf(uhd), (field(engine, "caps") as CameraCaps).availableVideoSizes)
         assertEquals("rollback delivered size uses the same projection", uhd, field(engine, "videoSize"))
         assertEquals("the explicit request still survives", eightK, field(engine, "requestedVideoSize"))
+        assertEquals("the actual accepted stream is retained until its reopen", eightK, field(engine, "previewStreamSize"))
+        assertFalse("the restored VIDEO session cannot be Ready at a different raster", engineReady(engine))
+        assertNull("REC admission is refused until the reprojected stream is accepted", currentAcceptedRecordingSession(engine))
         assertEquals(listOf(uhd), viewModel.state.value.caps?.availableVideoSizes)
         assertEquals(uhd, viewModel.state.value.videoResolution)
         assertEquals("raw camera truth is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
@@ -715,6 +719,11 @@ class ModeRollbackOwnershipRobolectricTest {
     private fun engineTransfer(engine: CameraEngine) = field(engine, "transfer") as ColorTransfer
     private fun standbyWanted(engine: CameraEngine) = field(engine, "standbyAudioMonitorWanted") as Boolean
     private fun engineReady(engine: CameraEngine) = field(engine, "cameraReady") as Boolean
+
+    private fun currentAcceptedRecordingSession(engine: CameraEngine): Any? =
+        CameraEngine::class.java.getDeclaredMethod("currentAcceptedRecordingSession")
+            .apply { isAccessible = true }
+            .invoke(engine)
 
     private fun field(owner: Any, name: String): Any? = owner.javaClass.getDeclaredField(name)
         .apply { isAccessible = true }
