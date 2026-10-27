@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -26,6 +26,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the POCO still checks (needs "USB debugging (Security settings)") and its calibration-vs-preset gain mismatch, and AUTO under a second light on the PMA110,
 **A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
+**A29** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1645,6 +1646,44 @@ own debug rows: `CaptureFamily: registered` (admission) → `ShutterLag: started
   window; RSS 251 → 314 MB.
 
 Open: the Flip6, S23 Ultra, S20, POCO and the PMA110 reference.
+
+### A29. vivo OEM Log (+TC) — ◯ OPEN 2026-10-28, UNVERIFIED (implemented from static analysis without a device)
+
+The vivo vendor seam (`camera/MakerLog.kt` `VivoMakerLogProtocol`) was reconstructed from a static
+reading of the stock vivo Camera 13.0.50.32 APK (X200 Ultra Pro video, Log v2, QCOM branch). That APK
+carries no X300 / X500 configuration, vivo publishes no Log curve, and no vivo device has run any of
+it. Nothing on this route may be called vivo Log until this entry passes.
+
+**Set up:** a vivo X300 Ultra or X500 Pro Max (Snapdragon; a Dimensity model takes a stock branch
+that is not implemented), the immutable debug APK, Setup → **vivo OEM Log (Experimental)** ON (the
+row exists only when the back logical camera advertises `vivo.control.session.uiSwitch_state` plus a
+`current_ui_module` key), Video, 4K ≤ 30 fps, Gamma = **OEM Log**, a lit scene with a grey card and
+a bright window. First save `adb shell dumpsys media.camera` and the stock app's own Pro video Log
+session for comparison (session parameters, stream format, dataspace).
+
+**Run, then what a pass looks like:**
+1. **Configure acceptance.** `Session configured (… makerLog=true …)` and no maker refusal; a
+   refusal must land the ordinary S-Log3 route with the Gamma row reading Log (that is the designed
+   fallback, not a pass). Record which advertised keys `VivoMakerLogProtocol.sessionParameters` sent
+   (DCG or staggered variant).
+2. **Debug echo rows.** `VivoLog: frame=… echo(vivo.control.uiSwitch_state_preview)=… feedback=[…]`
+   (at most three per session): record whether the preview Log bit echoes and every
+   `vivo.feedback.*` name. These are the only confirmation candidates; the session is currently
+   accepted on configure success alone.
+3. **Flat pixels vs Rec. 709.** Grey card and window A/B against Gamma = Rec. 709 on the same lens
+   and exposure: a pass is a visibly flat, lifted-shadow, unclipped-highlight frame in the FILE, and
+   a comparison against the stock app's Log take of the same scene. Gamma Display Assist cannot
+   normalize this source (no published inverse), and zebra/false colour/the app-side AE meter read
+   the source codes — note how far that misleads.
+4. **10-bit file.** `ffprobe` the clip: HEVC Main10, the container tags, and whether the decoded
+   codes use more than 256 levels. The caption claims no bit depth until this says so.
+5. **TC route, lens guard at the ceiling.** TC on (declared ZEISS kit), OEM Log: the TC + OEM Log
+   combination is offered only when the host tele is the longest back lens. Step the zoom to the
+   ceiling (the logical camera's advertised maximum) and confirm `MakerTele: activePhysical=…` stays
+   on the host member with no `LENS SWITCHED` tag; then the same with the converter glass mounted
+   outdoors.
+6. **Low-light hand-down.** A dim room on the TC route: the active physical id must stay on the host
+   tele, or the `LENS SWITCHED` tag must appear (the guard's job; record which).
 
 ## B. Held in hand — 3 min
 

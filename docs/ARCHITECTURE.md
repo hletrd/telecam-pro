@@ -1127,6 +1127,24 @@ ColorOS 16 shares the named configure-stage protocol but this integration is dev
 See CLAUDE.md's stock Log entry for the service/presence trap and evidence limits.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
+**Maker vendor seam — EXPERIMENTAL vivo (2026-10-28, UNMEASURED; FIELD_CHECKS A29).** The maker
+pipeline is per vendor: `resolveMakerLogVendor` answers OPPO wherever `DeviceProfile.makerLogPipeline`
+holds (PMA110 byte-identical, whatever else is set), else vivo only when the persisted Setup opt-in
+(`SettingsStore.vivoMakerLogExperimental`, default OFF, outside the remembered blob and MR banks) is
+on AND the back logical camera advertises the vivo Log session keys by NAME
+(`CameraCaps.vendorSessionKeyNames`, `vivoMakerLogCapable`) — no model string, no DeviceProfile. The
+capability is enumerated with the lens inventory and applied on main by the ViewModel through
+`CameraEngine.applyVivoMakerLogCapability`, beside its own zoom remap (like the opt-in door), so the
+route answer never flips without the remap. `VivoMakerLogProtocol` (static analysis of stock vivo
+Camera 13.0.50.32) writes only advertised keys on a REGULAR session (`captureSessionType`), the
+plain PRIVATE stream, no OPPO key; a vivo session is accepted on configure success, recorded as
+`PhotoSessionOutputs.makerLogVendor = VIVO`, never claimed ten-bit, and GL inverts no curve for it
+(`uSourceMakerCurve`, `MakerLogSource.CURVE_AS_DELIVERED`; files keep the code-9 passthrough). Its WB
+keeps the ordinary resolver under its own `WbSessionShape.VIVO_MAKER_LOG`. TC reuses `MakerTeleRoute`
+with the logical camera's advertised maximum as ceiling, offered only when the host tele is the
+longest back lens (`vivoMakerTeleWireCeiling`). Refusals take the OPPO paths unchanged. A debug-only,
+change-gated `VivoLog:` row reports the preview-bit echo and `vivo.feedback.*` result names.
+
 **Video resolution and frame rates:**
 
 Resolutions come from the selected camera's `StreamConfigurationMap`, then the shipping selector caps

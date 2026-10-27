@@ -1229,6 +1229,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   3.0 / 6.0 / 9.8 and the plain route at unified 3× all reported physical `4`, never the main lens, no
   tag. The converter was NOT mounted on any 2026-10-26 check (owner-confirmed): it is passive glass,
   so route, session, zoom and lens-choice results stand without it; light through the glass does not.
+  **vivo OEM Log (+TC) is EXPERIMENTAL and UNMEASURED (2026-10-28, `docs/FIELD_CHECKS.md` A29).** A
+  vendor seam (`MakerLogVendor`) adds a vivo protocol reconstructed by static analysis only, behind a
+  persisted Setup opt-in (default OFF) AND the vivo session-key NAMES the back logical camera
+  advertises — no model string, no DeviceProfile; OPPO's profile always wins, so PMA110 is unchanged.
+  Accepted unconfirmed, never claimed ten-bit, no inverse curve invented; refusals take the OPPO paths.
   **The phone-maker CURVES are GONE (owner decision 2026-10-26, superseding 2026-10-15's "the
   phone's own log, per phone").** O-Log2 / O-Log / Mi-Log were GL approximations of each maker's
   published curve over this app's own S-Log3 transport, offered per `Build.MODEL` through
