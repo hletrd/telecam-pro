@@ -110,6 +110,31 @@ class EncoderCapsTest {
     }
 
     @Test
+    fun `size-rate probe belongs to exact component`() {
+        val component = CodecComponent(
+            name = "c2.test.hevc",
+            encoder = true,
+            supportedTypes = setOf("video/hevc"),
+            hardwareAccelerated = true,
+            hevcProfiles = setOf(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+            sizeRateSupport = EncoderSizeRateSupport { w, h, fps ->
+                w == 7680 && h == 4320 && fps == 30.0
+            },
+        )
+        val selected = buildCodecInventory(listOf(component)).selectionFor(VideoCodec.HEVC)!!
+        val probe = selected.sizeRateSupport!!
+        assertTrue(probe.supports(7680, 4320, 30.0))
+        assertFalse(probe.supports(3840, 2160, 60.0))
+    }
+
+    @Test
+    fun `missing capability query grants no oversize support`() {
+        val componentWithoutProbe = component("c2.test.hevc", MediaFormat.MIMETYPE_VIDEO_HEVC)
+        val selected = buildCodecInventory(listOf(componentWithoutProbe)).selectionFor(VideoCodec.HEVC)!!
+        assertNull(selected.sizeRateSupport)
+    }
+
+    @Test
     fun `multi-component inventory carries exact admitted hardware identity`() {
         val inventory = buildCodecInventory(
             listOf(
