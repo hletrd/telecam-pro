@@ -231,6 +231,12 @@ data class CameraCaps(
      */
     val videoMinFrameDurationsNs: Map<Size, Long> = emptyMap(),
     /**
+     * Exact encoder-proven nominal rates for sizes beyond the legacy 4096×3072 boundary. A missing
+     * extended size admits no rate; legacy sizes deliberately ignore this map and keep the ordinary
+     * fixed-range and minimum-frame-duration gates below.
+     */
+    val extendedVideoSizeRates: Map<Size, Set<Double>> = emptyMap(),
+    /**
      * TONEMAP_AVAILABLE_TONE_MAP_MODES. Read for the native-log decision
      * ([nativeLogCurveSupported]): a caller-programmed CONTRAST_CURVE is what lets the ISP encode
      * S-Log3 itself instead of its stock tone curve. Every PMA110 camera (HAL 0–5) advertises

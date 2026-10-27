@@ -1470,6 +1470,8 @@ enum class VideoFrameRate(
          *  - 8K (height ≥ 4320) is capped to ≤30 fps (encoder + thermal reality). DEFENSIVE and
          *    currently UNREACHABLE: the shipping resolution selector caps sizes at 3840 wide, so no
          *    offered size is 8K. It stays so lifting that cap cannot silently offer 8K60;
+         *  - sizes beyond 4096×3072 also require the exact rate in
+         *    [CameraCaps.extendedVideoSizeRates], projected from the active encoder candidates;
          *  - normal (non-high-speed) rates require the camera to advertise the integer [fps] as a
          *    fixed AE target-fps range (this device exposes 24/30/60 → 25/50 are correctly dropped),
          *    so a drop-frame rate rides on its integer parent (29.97 needs 30, etc.);
@@ -1490,6 +1492,7 @@ enum class VideoFrameRate(
                 size.height,
                 codec,
                 minFrameDurationNs = caps.videoMinFrameDurationsNs[size] ?: 0L,
+                extendedSizeRates = caps.extendedVideoSizeRates[size],
             )
         }
 
@@ -1503,10 +1506,14 @@ enum class VideoFrameRate(
             // The size's advertised SurfaceTexture minimum frame duration; <= 0 = ungated (unknown,
             // or a device profile that marks the table understated, e.g. PMA110's 4K TELE).
             minFrameDurationNs: Long = 0L,
+            // Exact encoder-proven rates for an extended size; null admits none. Legacy sizes ignore it.
+            extendedSizeRates: Set<Double>? = null,
         ): List<VideoFrameRate> {
             val is8k = height >= 4320
             val out = entries.filter { r ->
                 when {
+                    requiresExtendedVideoProof(width, height) &&
+                        extendedSizeRates?.contains(r.recordableCapabilityRate) != true -> false
                     is8k && r.fps > 30 -> false
                     // Judged on the rounded parent with 0.1 % slack, so a HAL rounding 1/60 s up to
                     // 16_666_667 ns still offers 60 (and 59.94) while 33.3 ms rejects both.
