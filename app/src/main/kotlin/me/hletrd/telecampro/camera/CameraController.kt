@@ -334,6 +334,9 @@ class CameraController internal constructor(
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
     private var highSpeedFps = 0
+    // Accepted VIDEO stream raster when it exceeds the legacy envelope. Its configure rejection must
+    // preserve Gamma and reopen smaller through the Engine, never degrade the transfer in this ladder.
+    private var extendedVideoRasterSize: android.util.Size? = null
 
     @Volatile private var pending: Pending? = null
     // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
@@ -405,6 +408,10 @@ class CameraController internal constructor(
     // maker route refused and reopens the ordinary TC route (standalone host tele + 0x80b4). Camera
     // thread; identity-gated by the engine like every controller callback.
     @Volatile var onMakerLogTeleRefused: (() -> Unit)? = null
+    // Extended-raster configure refusal (ExtendedVideoRasterRecovery.kt): route, accepted stream size
+    // and the open's optics generation. The configure gate makes this exactly once per rejected open;
+    // the Engine owns identity/generation checks and the same-Gamma smaller-size reopen.
+    @Volatile var onExtendedVideoRasterRefused: ((routeKey: String, size: android.util.Size, opticsGeneration: Long) -> Unit)? = null
     // Lens guard verdict ([makerTeleLensOffHost]) on the maker TC route: true while the logical
     // camera provably records through a lens other than the converter's host. Camera thread, at most
     // MAKER_TELE_LENS_READ_INTERVAL_MS apart and only on a change.
@@ -431,6 +438,11 @@ class CameraController internal constructor(
         // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
+        // Accepted stream raster and whether it needs the extended-raster refusal door. No defaults:
+        // an open path that forgets either could turn an 8K rejection into an unintended Gamma/ladder
+        // fallback. The marker is resolved from the accepted size by the Engine, not from user intent.
+        acceptedStreamSize: android.util.Size,
+        extendedVideoRaster: Boolean,
         makerLog: Boolean = false,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
@@ -499,6 +511,7 @@ class CameraController internal constructor(
         this.p010BridgeRefused = false
         this.rawLogStream = rawLogStream
         this.rawLogRefused = false
+        this.extendedVideoRasterSize = acceptedStreamSize.takeIf { extendedVideoRaster }
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -1228,6 +1241,23 @@ class CameraController internal constructor(
                     if (closed) return
                     // The synchronous throw below already handled this attempt when it came with one.
                     if (!configureGate.claim(attemptToken)) return
+                    // An extended raster is refused BEFORE every transfer/session fallback. Smaller
+                    // output with the SAME Gamma is an Engine route decision; dropping maker/RAW/P010
+                    // here would silently turn (for example) 8K OEM Log into 8K or 4K S-Log3.
+                    val extendedRejection = classifyExtendedVideoRasterConfigureRejection(
+                        routeKey = rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode),
+                        extendedSize = extendedVideoRasterSize,
+                        opticsGeneration = diagnosticOpticsGeneration,
+                        failure = null,
+                    )
+                    if (extendedRejection is ExtendedVideoRasterConfigureRejection.Soft) {
+                        onExtendedVideoRasterRefused?.invoke(
+                            extendedRejection.routeKey,
+                            extendedRejection.size,
+                            extendedRejection.opticsGeneration,
+                        )
+                        return
+                    }
                     if (useMakerLog) {
                         makerLogRefused = true
                         runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
@@ -1309,6 +1339,32 @@ class CameraController internal constructor(
                 // Camera2 also posts onConfigureFailed for this attempt; whichever runs first owns it,
                 // and this synchronous path always runs first.
                 if (!configureGate.claim(attemptToken)) return@onFailure
+                // Same extended-raster precedence as onConfigureFailed, including a device-fatal
+                // rejection: report its exact graph for latched bounded recovery instead of walking
+                // maker/RAW/P010/ordinary fallbacks on a dead device.
+                when (
+                    val extendedRejection = classifyExtendedVideoRasterConfigureRejection(
+                        routeKey = rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode),
+                        extendedSize = extendedVideoRasterSize,
+                        opticsGeneration = diagnosticOpticsGeneration,
+                        failure = failure,
+                        deviceFatal = configureFailureIsDeviceFatal(failure),
+                    )
+                ) {
+                    is ExtendedVideoRasterConfigureRejection.Soft -> {
+                        onExtendedVideoRasterRefused?.invoke(
+                            extendedRejection.routeKey,
+                            extendedRejection.size,
+                            extendedRejection.opticsGeneration,
+                        )
+                        return@onFailure
+                    }
+                    is ExtendedVideoRasterConfigureRejection.Fatal -> {
+                        onError.onError(extendedRejection.failure)
+                        return@onFailure
+                    }
+                    null -> Unit
+                }
                 if (useMakerLog && !configureFailureIsDeviceFatal(failure)) {
                     makerLogRefused = true
                     runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }

@@ -59,6 +59,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
 | `RecordableVideoSizes.kt` | The single camera-size → recordable-size projection. Legacy sizes through 4096×3072 retain their existing admission/rate rules; an extended raster remains only when an exact active encoder candidate proves at least one standard rate ≤30 fps (and RAW Log has a large enough RAW source). `extendedVideoSizeRates` gates those extended FPS choices. CameraEngine applies this at accepted-route caps and rebuilds it from the raw cache after codec/transfer/RAW-intent changes; projected answers never become camera truth. |
+| `ExtendedVideoRasterRecovery.kt` | Gamma-preserving extended-raster configure refusal policy and ownership. A soft rejection bypasses maker-log, RAW-log, P010 and the ordinary ladders so the Engine can reopen the largest offered smaller raster with the same transfer; a device-fatal rejection carries its exact route/size into bounded recovery. The route/size/transfer latch prevents automatic retries, only an identical explicit resolution retry clears it, and per-open optics/pipeline/direct-size ownership makes older callbacks inert. |
 | `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
@@ -1147,6 +1148,13 @@ Automatic VIDEO and the PHOTO preview stay capped at 3840 wide, preserving the e
 projected list. If a later route/Gamma packet removes it, the delivered size falls back to the capped
 automatic choice without rewriting the operator's request; reprojection from raw caps can admit that
 request again. Extended sizes expose only their exactly encoder-proven standard rates ≤30 fps.
+
+If Camera2 refuses an extended raster softly, `CameraController` reports it before any maker/RAW/P010
+or ordinary fallback rung. `CameraEngine` latches that exact route/size/transfer, publishes the largest
+offered smaller size, and reopens with Gamma unchanged; the explicit request remains persisted. A
+fatal configure error applies the same latch before bounded recovery, so recovery cannot reopen the
+refused graph. Only an identical explicit resolution retry clears the refusal. Callbacks superseded by
+controller, optics-generation, pipeline, or direct-size changes cannot replace newer state.
 
 Frame rates include standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94).
 The UI deliberately excludes 120 fps because the constrained high-speed session crashes this HAL.
