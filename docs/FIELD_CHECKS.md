@@ -1464,13 +1464,13 @@ request zoom 3.0 AND physical id 4 proof before recording; mistargeted early tak
 The physical converter's attachment was not independently established. This check proves
 sensor/processing behaviour in TC mode, not an outdoor optical test through confirmed glass (A21).
 
-| Observable | Stock 3× | Prior app TC | Updated app TC |
+| Observable | Stock 3× (earlier / final) | Prior app TC | Updated app TC |
 |---|---:|---:|---:|
 | Long / short gain | 64 / 8 | 64 / 64 | 64 / 8 |
 | DRC gain | 8 | 1 | 8 |
 | Log LUT entry 255 (12-bit) | 3685 | 2843 | 3685 |
-| White-patch R (10-bit) | 763.89 | 710.91 | 761.91 |
-| White-patch G (10-bit) | 711.61 | 710.31 | 711.31 |
+| White-patch R (10-bit) | 777.73 / 763.89 | 710.91 | 761.91 |
+| White-patch G (10-bit) | 723.61 / 711.61 | 710.31 | 711.31 |
 
 All 1024 Log entries and both 257-entry IPE/preview gamma arrays are identical between stock and
 the updated app. The camera→encoder probe also reproduces this with the new key; the main-camera
@@ -1480,7 +1480,10 @@ setting invalidates a pixel comparison. It remains a probe, not a new production
 
 Compared 60 frames at 3 s, native 32×32-pixel interiors of all 24 chart patches, with orientation
 handled only by 90°/180° pixel permutations. No fitted gain, colour matrix, LUT or exposure lift.
-Mean absolute RGB differences from stock fall from **9.67 / 5.37 / 4.21** to
+The stock white changed by about 12–14 codes between pairs. Each app take is therefore
+compared with its own nearest stock control, without fitting away lighting drift. The old app
+uses `stock_tele_chart6400`; the updated app uses `stock_tc_final`. Mean absolute RGB differences
+from those paired controls fall from **15.24 / 7.18 / 9.86** to
 **1.70 / 0.60 / 1.28** ten-bit codes; maxima after the change are **3.18 / 1.58 / 4.32**.
 The restored white R above the old ~711 ceiling is recorded signal, not a changed metadata tag.
 The current installation uses the existing MAX bitrate setting (~99.4 Mb/s target at 4K29.97),
