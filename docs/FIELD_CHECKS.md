@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-28):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -1645,6 +1645,41 @@ own debug rows: `CaptureFamily: registered` (admission) → `ShutterLag: started
   window; RSS 251 → 314 MB.
 
 Open: the Flip6, S23 Ultra, S20, POCO and the PMA110 reference.
+
+### A29. PMA110 OEM Log 8K probe — ✅ MEASURED NEGATIVE 2026-10-28
+
+An explicit 7680×4320 candidate was injected only into the DEBUG PMA110 OEM-Log projection, after
+the exact HEVC component accepted that size at 29.97 and 30 fps. Release and GENERIC projections were
+host-tested unable to receive it. The device ran immutable debug `d0a6a80d274c-2cd9aa9e` (probe
+commit `d0a6a80d`, APK SHA-256
+`e17fb312bb251f1c1b6abb3ec752b9b6267d710a4cf6d0ed45f80e2904ef2cf2`; installed-path hash matched)
+on `OPPO/PMA110/OP61BDL1:17/CP2A.260605.016/B.30d6865-a9327b-aae421`.
+
+Both rates configured a real Camera2 stream, then failed before REC readiness or any encoder take:
+
+- **29.97:** `createStreamLocked : stream size is 7680 x 4320`, CamX `operation_mode: 0x830b`,
+  `setBuffersDimensions [7680, 4320]`, and `Session configured ... makerLog=true` all preceded
+  `Start camera streaming`. The OEM GME node then reported `ExecuteGeolib failed` /
+  `CDKResultExtEPRFailed`, the camera HAL raised SIGABRT, and Camera2 reported device error 4.
+- **30:** the same real 7680×4320 `0x830b` stream and accepted maker session started, then the camera
+  HAL raised SIGSEGV about 0.22 s into streaming; Camera2 again reported device error 4.
+
+No 8K frame reached recorder admission, no new video file was created, and there is no Main10 encode,
+full-decode, cadence, memory or thermal-soak evidence to claim. Bounded recovery reopened ordinary 4K
+S-Log3 (`makerLog=false`) after both failures. The debug injection was withdrawn in `768e3ca3`; no
+`DeviceProfile` additional-size admission was added, so 8K remains absent unless a camera actually
+advertises and the exact encoder accepts it.
+
+The final no-injection immutable debug `768e3ca30d36-fa485de4` (commit `768e3ca3`, APK SHA-256
+`5deb5a6a6ad3e176df1760b803a92daeb6b0e4b95bea6fb8a996542a449ee123`, installed hash matched before
+and after the take) offers 4K and no 8K row. Its 4K OEM-Log 30 fps product take fully decodes:
+2160×3840 HEVC Main10, BT.2020 full range, 626 frames / 20.866667 s with every PTS interval
+0.033333–0.033334 s, AAC 48 kHz stereo / 20.778667 s, and `EncoderClock` placed 625 / dropped 0 /
+filled 1. This validates retained 4K behavior, not an 8K capability or an 8K soak.
+
+Local evidence:
+`.context/8k-oem-2026-10-28/evidence/` (immutable build receipts, full logcat, dumpsys, UI state and
+installed-hash checks).
 
 ## B. Held in hand — 3 min
 
