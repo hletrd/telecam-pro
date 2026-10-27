@@ -1508,6 +1508,18 @@ lightweight physical characteristics, so the exposure readout correctly shows F2
 logical caps cache, focal/zoom mapping, WB and recording pipeline are unchanged. Verified in
 immutable debug `3cd90e8d0f7f-1ee4127f`; the existing JVM/lint/coverage gates passed again.
 
+**Final delivery (2026-10-27):** source `1087f723` is installed in BOTH OPPO packages:
+release `me.hletrd.telecampro` 1.0.5 (code 7, APK SHA-256 `d9ac65fb…`, immutable release
+`1087f7239724-14904b6a`) and debug 1.0.5-debug (SHA-256 `bed3c2b4…`, immutable debug
+`1087f7239724-5957dfae`). The release updates the previously installed 1.0.4 with the same
+signing certificate, preserving app data; neither product APK was rolled back. The release
+is left in TC + Log (maker), HEVC 4K29.97, MAX bitrate, with F2.3 displayed. Its own
+72.372 s / 2169-frame Main10 take fully decodes, has maximum PTS interval 33.367 ms and no
+gap above 50 ms. Its capture result retains DRC 8 / LUT endpoint 3685 under the operator's
+Steady stabilization and ISO 4202 request, independently of the debug test configuration.
+Program AE was also checked in debug: AE ON chose ISO 3197 / 13.928 ms while retaining an
+approximately 8× gain split. Final installed hashes were read back from both package paths.
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)
