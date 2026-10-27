@@ -20,8 +20,9 @@ internal val VideoFrameRate.recordableCapabilityRate: Double
 
 /**
  * Projects raw camera stream sizes through the exact encoder candidates for the active video packet.
- * Legacy sizes never need a probe. An extended size needs a supported rate and, for RAW Log, a RAW
- * source at least as large; otherwise it is removed rather than offered and refused at session time.
+ * Legacy sizes never need a probe. An extended size needs an encoder-supported rate that also
+ * survives the camera's fixed-FPS/minimum-duration gates and, for RAW Log, a large enough RAW source;
+ * otherwise it is removed rather than offered and refused at session time.
  */
 fun projectRecordableVideoSizes(
     raw: CameraCaps,
@@ -29,8 +30,9 @@ fun projectRecordableVideoSizes(
     rawLog: Boolean,
 ): CameraCaps {
     val standardRates = VideoFrameRate.entries.map { it.recordableCapabilityRate }.filter { it <= 30.0 }.toSet()
-    fun projected(sizes: List<Size>): Pair<List<Size>, Map<Size, Set<Double>>> {
-        val rateMap = sizes.filter { requiresExtendedVideoProof(it.width, it.height) }.mapNotNull { size ->
+    val codec = candidates.firstOrNull()?.codec ?: VideoCodec.HEVC
+    fun encoderRates(sizes: List<Size>): Map<Size, Set<Double>> =
+        sizes.filter { requiresExtendedVideoProof(it.width, it.height) }.mapNotNull { size ->
             if (rawLog && raw.rawSize?.let { it.width >= size.width && it.height >= size.height } != true) {
                 return@mapNotNull null
             }
@@ -39,14 +41,20 @@ fun projectRecordableVideoSizes(
             }.toSet()
             if (rates.isEmpty()) null else size to rates
         }.toMap()
-        val kept = sizes.filter { !requiresExtendedVideoProof(it.width, it.height) || it in rateMap }
-        return kept to rateMap
-    }
-    val video = projected(raw.availableVideoSizes)
-    val gate = projected(raw.openGateVideoSizes)
+    val videoRates = encoderRates(raw.availableVideoSizes)
+    val gateRates = encoderRates(raw.openGateVideoSizes)
+    val withEncoderRates = raw.copy(extendedVideoSizeRates = videoRates + gateRates)
+    fun recordable(sizes: List<Size>, rates: Map<Size, Set<Double>>): List<Size> =
+        sizes.filter {
+            !requiresExtendedVideoProof(it.width, it.height) ||
+                (it in rates && VideoFrameRate.availableFor(withEncoderRates, it, codec).isNotEmpty())
+        }
+    val video = recordable(raw.availableVideoSizes, videoRates)
+    val gate = recordable(raw.openGateVideoSizes, gateRates)
+    val admitted = video + gate
     return raw.copy(
-        availableVideoSizes = video.first,
-        openGateVideoSizes = gate.first,
-        extendedVideoSizeRates = video.second + gate.second,
+        availableVideoSizes = video,
+        openGateVideoSizes = gate,
+        extendedVideoSizeRates = (videoRates + gateRates).filterKeys { it in admitted },
     )
 }

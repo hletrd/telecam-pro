@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.camera
 
 import android.app.Application
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.util.Size
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
@@ -14,6 +16,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowCameraCharacteristics
+import org.robolectric.shadows.StreamConfigurationMapBuilder
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -279,6 +284,88 @@ class ExtendedVideoRasterRecoveryTest {
             .apply { isAccessible = true }
             .invoke(fixture.engine, route)
         assertNull(selected)
+    }
+
+    @Test
+    fun `a refusal with no admissible smaller raster enters owned failure recovery`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK)))
+        var status: CameraStatus? = null
+        fixture.engine.onStatus = { status = it }
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(CameraStatusMessage.CAMERA_ERROR_RECOVERING, status?.message)
+    }
+
+    @Test
+    fun `an explicit extended pick with no camera-supported rate is refused before storing the request`() {
+        val fixture = extendedFixture()
+        val rateLessCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            extendedVideoSizeRates = mapOf(eightK to setOf(29.97, 30.0)),
+        )
+        setField(fixture.engine, "caps", rateLessCaps)
+        setField(fixture.engine, "requestedVideoSize", null)
+        setField(fixture.engine, "videoSize", uhd)
+
+        assertFalse(fixture.engine.setVideoResolution(eightK))
+
+        assertNull(fixture.engine.currentRequestedVideoSize())
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+    }
+
+    @Test
+    fun `photo codec reprojection without a video size keeps the accepted photo session ready`() {
+        val fixture = extendedFixture()
+        val raw = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(eightK),
+            openGateVideoSizes = listOf(Size(2560, 1920)),
+            extendedVideoSizeRates = mapOf(eightK to setOf(29.97, 30.0)),
+        )
+        setField(fixture.engine, "videoMode", false)
+        setField(fixture.engine, "transfer", ColorTransfer.SDR)
+        setField(fixture.engine, "requestedVideoTransfer", ColorTransfer.SDR)
+        setField(fixture.engine, "caps", raw)
+        setField(fixture.engine, "previewStreamSize", Size(2560, 1920))
+        setField(fixture.engine, "cameraReady", true)
+        @Suppress("UNCHECKED_CAST")
+        val capsCache = field(fixture.engine, "capsCache") as MutableMap<String, CameraCaps>
+        capsCache["0:null"] = raw
+        val legacyOnly = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "legacy-hevc",
+            mime = "video/hevc",
+            hardwareAccelerated = true,
+            main10 = true,
+            sizeRateSupport = null,
+        )
+
+        fixture.engine.setVideoPipeline(listOf(legacyOnly), ColorTransfer.SDR)
+
+        assertEquals(true, field(fixture.engine, "cameraReady"))
+        assertEquals(Size(2560, 1920), field(fixture.engine, "previewStreamSize"))
+    }
+
+    @Test
+    fun `an empty capped 4 by 3 list falls back to direct camera characteristics`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "videoMode", false)
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(openGateVideoSizes = emptyList()))
+        val manager = app.getSystemService(CameraManager::class.java)
+        val characteristics = ShadowCameraCharacteristics.newCameraCharacteristics()
+        val map = StreamConfigurationMapBuilder.newBuilder()
+            .addOutputSize(fullHd)
+            .build()
+        shadowOf(characteristics).set(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP, map)
+        shadowOf(manager).addCamera("0", characteristics)
+
+        val selected = CameraEngine::class.java.declaredMethods.single { it.name == "choosePreviewStreamSize" }
+            .apply { isAccessible = true }
+            .invoke(fixture.engine, route)
+
+        assertEquals(fullHd, selected)
     }
 
     @Test

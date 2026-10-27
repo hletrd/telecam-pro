@@ -1150,7 +1150,8 @@ stream. A size beyond the legacy 4096×3072 boundary, including
 8K, can configure only through an explicit VIDEO selection (or its restored request) present in the
 projected list. If a later route/Gamma packet removes it, the delivered size falls back to the capped
 automatic choice without rewriting the operator's request; reprojection from raw caps can admit that
-request again. Extended sizes expose only their exactly encoder-proven standard rates ≤30 fps, and
+request again. Extended sizes expose only their exactly encoder-proven standard rates ≤30 fps that
+also survive the camera's fixed-FPS/minimum-duration gates, and
 every extended-size/reprojection door projects one of those rates into both the engine rate and the
 Camera2 controls before an open; a surviving-newer-pipeline rollback whose delivered raster differs
 from the accepted stream stays Not-Ready and reconfigures before Ready or REC admission.

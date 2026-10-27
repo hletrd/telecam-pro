@@ -3966,7 +3966,7 @@ class CameraViewModel private constructor(
         if (rejectIfRecording()) return
         val before = _state.value
         val routeOptics = makerRouteOptics(before, before.copy(openGate = enabled))
-        engine.setOpenGate(enabled)
+        if (!engine.setOpenGate(enabled)) return
         _state.update { it.copy(openGate = enabled, activeMemorySlot = null, lens = routeOptics?.lens ?: it.lens, controls = routeOptics?.controls ?: it.controls) }
         reconcileFrameRate()
         scheduleSettingsSave()

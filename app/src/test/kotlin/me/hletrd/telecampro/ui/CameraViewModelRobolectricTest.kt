@@ -1659,6 +1659,32 @@ class CameraViewModelRobolectricTest {
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
     }
 
+    @Test fun `Open Gate refusal does not update or persist the ViewModel request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val extended4by3 = android.util.Size(7680, 5760)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(android.util.Size(3840, 2160)),
+            openGateVideoSizes = listOf(extended4by3),
+        )
+        setState(v) { it.copy(mode = CaptureMode.VIDEO, caps = routeCaps, openGate = false) }
+        CameraEngine::class.java.getDeclaredField("videoMode").apply { isAccessible = true }.setBoolean(e, true)
+        CameraEngine::class.java.getDeclaredField("openGate").apply { isAccessible = true }.setBoolean(e, false)
+        CameraEngine::class.java.getDeclaredField("selection").apply { isAccessible = true }
+            .set(e, TeleSelection("test", null, 23f))
+        CameraEngine::class.java.getDeclaredField("caps").apply { isAccessible = true }.set(e, routeCaps)
+
+        v.onToggleOpenGate(true)
+
+        assertFalse(v.state.value.openGate)
+        assertFalse(currentExtras(v).openGate)
+        assertFalse(
+            CameraEngine::class.java.getDeclaredField("openGate")
+                .apply { isAccessible = true }
+                .getBoolean(e),
+        )
+    }
+
     @Test fun `extended resolution selection projects a legal rate before its reopen`() {
         val (v, e) = createViewModel()
         idleFor(0)

@@ -3568,9 +3568,14 @@ class CameraEngine internal constructor(
         val routeCaps = caps ?: return
         onCapsReady?.invoke(routeCaps, opticsIntentGeneration.get())
         val sel = selection ?: return
-        val targetSize = chooseVideoSize(sel) ?: run {
-            invalidateCameraReady()
-            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+        val targetSize = chooseVideoSize(sel)
+        if (targetSize == null) {
+            // PHOTO's accepted 4:3 stream is independent of a dormant 16:9 recording request. Only
+            // an active VIDEO route loses Ready when its reprojected packet has no recordable stream.
+            if (videoMode) {
+                invalidateCameraReady()
+                onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            }
             return
         }
         if (targetSize != videoSize) applyVideoSize(targetSize)
@@ -4035,10 +4040,10 @@ class CameraEngine internal constructor(
     }
 
     /** Open Gate: record the full 4:3 sensor readout. Switches [videoSize] to a 4:3 size and re-picks it. */
-    fun setOpenGate(enabled: Boolean) {
-        if (openGate == enabled) return
+    fun setOpenGate(enabled: Boolean): Boolean {
+        if (openGate == enabled) return true
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
-        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         val makerBefore = makerLogWanted()
         synchronized(this) {
             // Share the extended-refusal ownership monitor: an older fallback packet either finishes
@@ -4046,7 +4051,7 @@ class CameraEngine internal constructor(
             openGate = enabled
             remapMakerRouteBoundary(makerBefore, makerLogWanted())
         }
-        val sel = selection ?: return
+        val sel = selection ?: return true
         val targetSize = chooseVideoSize(sel) ?: run {
             val refusedMakerRoute = makerLogWanted()
             synchronized(this) {
@@ -4054,10 +4059,11 @@ class CameraEngine internal constructor(
                 remapMakerRouteBoundary(refusedMakerRoute, makerBefore)
             }
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
-            return
+            return false
         }
         if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
         else applyVideoSize(targetSize)
+        return true
     }
 
     /**
@@ -4324,7 +4330,21 @@ class CameraEngine internal constructor(
                 ?: return
             val fallback = fallbackSize(size, offered, admissible = { candidate ->
                 !extendedVideoRasterRefusals.blocks(routeKey, candidate, transfer)
-            }) ?: return
+            })
+            if (fallback == null) {
+                // The configure failure was already consumed by the extended-raster door. With no
+                // unrefused smaller graph there is no safe direct reopen; enter the same owned,
+                // bounded failure/recovery path instead of leaving a silent permanent Not-Ready.
+                handleActiveCameraFailure(
+                    refused,
+                    ExtendedVideoRasterConfigureFatalException(
+                        routeKey,
+                        size,
+                        IllegalStateException("No unrefused smaller video raster"),
+                    ),
+                )
+                return
+            }
             videoSize = fallback
             previewStreamSize = fallback
             // These callbacks only enqueue UI/GL work. Keeping their publication inside the ownership
@@ -4606,6 +4626,12 @@ class CameraEngine internal constructor(
     fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
         if (offered != null && s !in offered) {
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return false
+        }
+        if (requiresExtendedVideoProof(s.width, s.height) && projectedExtendedVideoRate(s) == null) {
+            // Encoder support alone is insufficient: fixed-FPS and min-duration camera gates must
+            // also admit a rate BEFORE the request reaches persistence or the delivered-size UI.
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
@@ -9306,11 +9332,16 @@ class CameraEngine internal constructor(
     ): Size? {
         if (routeCaps != null) {
             val list = if (fourByThree) routeCaps.openGateVideoSizes else routeCaps.availableVideoSizes
-            return pickStreamSize(
-                list.map { it.width to it.height },
-                capWidth = AUTO_VIDEO_MAX_WIDTH,
-                fourByThree = fourByThree,
-            )?.let { (w, h) -> Size(w, h) }
+            if (list.isNotEmpty()) {
+                return pickStreamSize(
+                    list.map { it.width to it.height },
+                    capWidth = AUTO_VIDEO_MAX_WIDTH,
+                    fourByThree = fourByThree,
+                )?.let { (w, h) -> Size(w, h) }
+            }
+            // An empty aspect list keeps the historical direct-map fallback: another aspect at or
+            // below the cap is still a real camera stream. A NON-empty list with no capped answer
+            // returns null instead of re-admitting its extended sizes through this fallback.
         }
         // Fallback: query directly (pre-caps or empty list). No capped advertised answer means no
         // automatic selection; inventing 1920×1080 would configure a stream the camera never offered.

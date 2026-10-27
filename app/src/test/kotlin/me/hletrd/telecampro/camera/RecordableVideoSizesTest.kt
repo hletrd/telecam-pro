@@ -71,6 +71,18 @@ class RecordableVideoSizesTest {
     }
 
     @Test
+    fun `an extended size also requires a camera-supported rate`() {
+        val raw = capsWith(sizes = listOf(eightK, uhd)).copy(
+            availableFpsRanges = arrayOf(Range(60, 60)),
+        )
+
+        val projected = projectRecordableVideoSizes(raw, candidatesWith8k30, rawLog = false)
+
+        assertEquals(listOf(uhd), projected.availableVideoSizes)
+        assertTrue(eightK !in projected.extendedVideoSizeRates)
+    }
+
+    @Test
     fun `the caps rate gate consumes the projected map without narrowing legacy rates`() {
         val projected = projectRecordableVideoSizes(
             raw = capsWith(sizes = listOf(eightK, uhd)),
