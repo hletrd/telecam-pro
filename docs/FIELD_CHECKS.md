@@ -68,7 +68,7 @@ Wireless-ADB ports and the USB host change per session and are deliberately not 
 | Samsung Galaxy S20 5G | SM-G981N | SM8250 | 13 (33) · One UI 5.1 `G981NKSS8IYC2` | 2025-03-01 | GENERIC | 2026-10-28 |
 | Xiaomi POCO X3 GT | 21061110AG | MT6891 | 13 (33) · MIUI 14 `V14.0.6.0.TKPMIXM` | 2024-04-01 | GENERIC | 2026-10-28 |
 | Lenovo Xiaoxin Pad 2024 (小新Pad 2024) | TB331FC | SM6225 | 15 (35) · ZUXOS `1.1.10.680` | 2025-11-05 | GENERIC | 2026-10-28 |
-| Lenovo tablet | TB336ZU | MediaTek | 16 (36) | — | GENERIC | 2026-09-09 |
+| Lenovo Idea Tab 5G (Tab K11 Gen 2) | TB336ZU | Dimensity 6300 | 16 (36) | — | GENERIC | 2026-09-09 |
 | Android emulator | sdk_gphone64_arm64 | — | 13 (33) | — | GENERIC | 2026-08-10 |
 
 What the app offers on each, as measured (the reason a check is or is not runnable there):
@@ -87,7 +87,8 @@ What the app offers on each, as measured (the reason a check is or is not runnab
   `debug_shutter`).
 - **TB331FC:** Rec. 709 only (no Main10); largest video 2688×1512 at 29.97 / 30, which the encoder
   refuses in portrait (A27); RAW16 33.3 ms; no video stabilization.
-- **TB336ZU:** one 26 mm rear lens, zoom 1.0–8.0; an 8-bit-only MediaTek HEVC encoder.
+- **TB336ZU** (Lenovo groups it with TB336FU / TB336ZA as Idea Tab / Tab K11 Gen 2; ZU is the 5G
+  model): one 26 mm rear lens, zoom 1.0–8.0; an 8-bit-only MediaTek HEVC encoder.
 
 ## A. Indoors, lit room, no converter — 5 min
 
