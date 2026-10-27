@@ -16,11 +16,13 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.TeleSelection
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.recordingEncoderAdmission
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoPipelineEngineOverrides
 import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.EncoderSizeRateSupport
 import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -145,6 +147,68 @@ class ModeRollbackOwnershipRobolectricTest {
         )
         assertEquals(null, admitted.failure)
         assertEquals(listOf(VideoCodec.AVC), admitted.candidates.map { it.codec })
+    }
+
+    @Test
+    fun `surviving newer codec reprojects restored route caps and delivered size`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+        val eightK = Size(7680, 4320)
+        val uhd = Size(3840, 2160)
+        val raw = rollbackCaps().copy(availableVideoSizes = listOf(eightK, uhd))
+        val hevc8k = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-hevc-8k",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            sizeRateSupport = EncoderSizeRateSupport { _, _, rate -> rate <= 30.0 },
+        )
+        val avcUhd = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc-uhd",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            sizeRateSupport = EncoderSizeRateSupport { width, _, rate -> width <= 3840 && rate <= 30.0 },
+        )
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(hevc8k),
+            VideoCodec.AVC to listOf(avcUhd),
+        )))
+        setField(engine, "selection", TeleSelection("test", null, 23f))
+        setField(engine, "caps", raw)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = field(engine, "capsCache")
+            as java.util.concurrent.ConcurrentHashMap<String, CameraCaps>
+        rawCache["test:null"] = raw
+        engine.setVideoPipeline(listOf(hevc8k), ColorTransfer.SDR)
+        viewModel.onVideoResolution(eightK)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("precondition: HEVC delivers the explicit 8K baseline", eightK, field(engine, "videoSize"))
+
+        viewModel.onModeChange(CaptureMode.PHOTO)
+        viewModel.onVideoCodec(VideoCodec.AVC)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("the newer Photo-mode command reconciles to UHD", uhd, field(engine, "videoSize"))
+
+        forceOwnedRollback(
+            engine,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+
+        assertEquals(CaptureMode.VIDEO, viewModel.state.value.mode)
+        assertEquals("the newer codec survives the older rollback", VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals("rollback caps are projected for that codec", listOf(uhd), (field(engine, "caps") as CameraCaps).availableVideoSizes)
+        assertEquals("rollback delivered size uses the same projection", uhd, field(engine, "videoSize"))
+        assertEquals("the explicit request still survives", eightK, field(engine, "requestedVideoSize"))
+        assertEquals(listOf(uhd), viewModel.state.value.caps?.availableVideoSizes)
+        assertEquals(uhd, viewModel.state.value.videoResolution)
+        assertEquals("raw camera truth is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
     }
 
     @Test

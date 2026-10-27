@@ -1244,9 +1244,9 @@ class CameraEngine internal constructor(
         // An optics failure restores only the pipeline publication it still owns. A later Photo-mode
         // codec/curve command does not need a Camera2 generation, but it is still a newer operator
         // intent and must survive this rollback in both Engine and the queued UI publication.
-        val restoredVideoPipeline = if (
-            videoPipelinePublicationGeneration.get() == currentOpticsPipelineGeneration
-        ) {
+        val newerVideoPipelineSurvives =
+            videoPipelinePublicationGeneration.get() != currentOpticsPipelineGeneration
+        val restoredVideoPipeline = if (!newerVideoPipelineSurvives) {
             publishVideoPipelineLocked(before.videoPipeline)
             before.videoPipeline
         } else {
@@ -1265,8 +1265,6 @@ class CameraEngine internal constructor(
         overrideId = restored.overrideId
         userCameraPin = restored.userPin
         selection = before.selection
-        caps = before.caps
-        videoSize = before.videoSize
         // A pick made while this door was in flight survives; only the transaction's own write
         // (a recall's recalledVideoSize) rolls back with it (AGG2-7). The VM mirrors the published
         // value below, so its request and the persisted size follow without a VM-side rule.
@@ -1299,6 +1297,16 @@ class CameraEngine internal constructor(
             baseline = before.rawLogEnabled,
             directWriteSinceBaseline = rawLogEnabledDirectWrites != before.rawLogEnabledDirectWrites,
         )
+        caps = before.caps
+        videoSize = before.videoSize
+        if (newerVideoPipelineSurvives) {
+            // The baseline ROUTE returns, but its baseline caps/size belong to the old encoder/Gamma
+            // packet. Reproject only this surviving-newer-pipeline branch, after the restored route,
+            // RAW-log intent and explicit-size request are back in place. An ordinary rollback keeps
+            // the accepted baseline packet byte-identical, including its direct-write semantics.
+            reprojectRouteCapsFromRaw()
+            videoSize = selection?.let { chooseVideoSize(it) } ?: before.videoSize
+        }
         val opticsPublication = OpticsRollbackPublication(
             mode = restored.mode,
             transfer = restoredVideoPipeline.requestedTransfer,
@@ -1376,10 +1384,10 @@ class CameraEngine internal constructor(
             controls = before.controls,
             teleconverterMagnification = restored.declaration.magnification,
             videoMode = before.videoMode,
-            caps = before.caps,
-            videoSize = before.videoSize,
+            caps = caps,
+            videoSize = videoSize,
             previewStreamSize = before.previewStreamSize,
-            previewAspect = displayedPreviewAspect(before.previewStreamSize, before.caps),
+            previewAspect = displayedPreviewAspect(before.previewStreamSize, caps),
             punchInResolved = punchInResolved(
                 rendererAssists.isPunchInIntended(),
                 restored.route == CameraRoute.FRONT,
