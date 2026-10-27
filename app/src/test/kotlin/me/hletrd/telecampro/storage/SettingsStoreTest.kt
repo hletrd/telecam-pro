@@ -384,6 +384,30 @@ class SettingsStoreTest {
         assertEquals(0, prefs.applyCount)
     }
 
+    @Test
+    fun vivoMakerLogOptInDefaultsOffRoundTripsAndStaysOutOfBlobAndBanks() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        // A missing key — every install before the experiment existed — reads OFF.
+        assertFalse(store.vivoMakerLogExperimental)
+
+        store.vivoMakerLogExperimental = true
+        assertTrue(store.vivoMakerLogExperimental)
+        assertTrue(SettingsStore(prefs).vivoMakerLogExperimental)
+        assertEquals(1, prefs.commitCount)
+        assertEquals(0, prefs.applyCount)
+
+        // Neither the remembered blob nor an MR bank carries it: saving, recalling or turning
+        // "Remember settings" off never touches the opt-in.
+        assertTrue(store.save(nonDefaultControls, nonDefaultExtras))
+        assertTrue(store.savePreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras, "n", "s"))
+        store.rememberEnabled = false
+        assertTrue(store.vivoMakerLogExperimental)
+
+        store.vivoMakerLogExperimental = false
+        assertFalse(SettingsStore(prefs).vivoMakerLogExperimental)
+    }
+
     private val nonDefaultExtras = ExtraSettings(
         transfer = ColorTransfer.LOGC3,
         heif = false,
