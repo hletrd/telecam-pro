@@ -1200,8 +1200,57 @@ The original bright stock/product clips still demonstrate the separate highlight
 O-Log2 inversion of LUT endpoints 3685 vs 2843 gives 5.3407 vs 1.0007 linear, or 2.416 stops.
 Both reported integration times were essentially equal (~33.322 ms); the meaningful distinction
 is the high/low gain split, not merely the presence of two HDR buffers. These probes do not prove
-that all Camera2 paths are impossible. A new illuminated chart/clipping comparison remains in A20.
+that all Camera2 paths are impossible. The illuminated chart comparison below covers shadows;
+a fresh illuminated clipping target remains open in A20.
 Evidence: `.context/log-gamma-review-2026-10-27/` (APK identity, official files, test logs, probes).
+
+**Illuminated chart follow-up (2026-10-27, 11:03–11:08):** after the owner added light and
+released the PMA110 from another test, recorded stock → product → lower-ISO product → product
+repeat → stock repeat. The comparison uses immutable `e191e6917bbb-34b6e502`, APK SHA-256
+`b1cdf2c0…`; the first product take saved correctly but its dump contained only a partial AF
+result, so the repeat supplies the full recording metadata. All clips are 4K Main10,
+BT.2020/full/bt2020-10, with requested 5000 K, FAST NR/edge, OIS on and EIS off. Actual shutter
+is 33,322,214 ns throughout. Stock UI ISO 3200 requests 6400 and returns 6387; the matched app
+also returns 6387, and the lower-ISO app returns 1600.
+
+| Recording | Long / short gain | DRC gain | Log LUT entry 255 |
+|---|---:|---:|---:|
+| Stock, both takes | 64 / 10.667 | 6 | 3540 |
+| Product, ISO 6400 request | 64 / 64 | 1 | 2843 |
+| Product, ISO 1600 | 16 / 16 | 1 | 2843 |
+
+The stock split is repeatable and differs from the earlier 4× dark and 8× bright controls.
+Do not equate the 6× metadata ratio with six times the recorded highlight range: this stock
+LUT endpoint decodes to about 4.006 linear, versus 1.001 for the product, and this scene has
+no strong highlight target. The maker source is accepted; stock's unequal gains remain absent.
+
+Compared 60 frames from seconds 3–5 in each clip, on native 32×32-pixel interiors of all 24
+patches. Container rotation is a pixel permutation; no geometric resampling or fitted gain
+is used. The two stock takes' six neutral mean green values agree within 0.50 of a 10-bit code.
+Against the first stock take, the product's neutral differences (black → white) are
+−14.19, −5.40, +9.89, +12.50, +12.59 and +13.60 codes. Across all 24 patches, mean absolute
+RGB differences are 4.60 / 11.72 / 20.17 codes; the largest blue difference is 53.08.
+Both 5000 K results carry nearly identical CCMs; their WB gains are stock R 2.1719/B 1.6494
+versus product R 2.1279/B 1.6436. This is a stock-matching comparison under a warm illuminant,
+not calibrated colour accuracy. Neither the shader pass nor matching metadata establishes
+end-to-end colour equality; ISP processing, OES/data-space conversion and encoder conversion
+remain to be isolated before assigning the residual to a particular stage.
+
+The earlier lower-ISO highlight workaround does **not** preserve shadows here. With the same
+official inverse → ×4 → forward transform, ISO 1600 black/neutral-3.5 patches become green
+codes 292.77/293.25, versus stock 208.99/237.38. Their original Y samples are constant 190/191
+over all 60 frames and 1024 pixels per patch: lost distinctions cannot be recovered by lifting.
+For neutral-6.5, neutral-8 and white, temporal sigma in decoded linear green is 2.15×, 2.93×
+and 2.39× stock after removing common frame brightness drift. At the same ISO it is 1.17×,
+1.11× and 1.07×. These are recorded-output measurements including ISP NR and compression
+(stock 81.5/88.5 Mb/s, product about 65.3 Mb/s), not sensor read-noise or total-DR measurements.
+Low noise in a flattened patch is not successful denoising. Keep fixed −2 EV capture out of
+the maker mode as a purported stock-equivalent fix; native gain control remains the open work.
+
+Evidence: `.context/log-lit-review-2026-10-27/exclusive-window/` contains clips, full/partial
+dumps, actual APK hashes, patch coordinates/samples, scripts, plots and cleanup verification.
+The original installed APK and scoped app preferences were restored exactly; stock ISO was
+returned to UI 400. No production capture policy changed in this comparison.
 
 ## B. Held in hand — 3 min
 
