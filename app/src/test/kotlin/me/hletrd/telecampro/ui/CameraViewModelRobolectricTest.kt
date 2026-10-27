@@ -33,6 +33,7 @@ import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.TeleSelection
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
@@ -51,6 +52,8 @@ import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.EncoderSizeRateSupport
 import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
 import java.util.ArrayDeque
@@ -1654,6 +1657,69 @@ class CameraViewModelRobolectricTest {
         assertTrue(photo.controls.programAppSide)
         // The photographer's Photo shutter survives the round trip (the hidden photo bank).
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
+    }
+
+    @Test fun `codec reconciliation falls back from 8K without relabeling the request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val raw = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK, uhd))
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("selection").set(e, TeleSelection("test", null, 23f))
+        engineField("caps").set(e, raw)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = engineField("capsCache").get(e)
+            as java.util.concurrent.ConcurrentHashMap<String, me.hletrd.telecampro.camera.CameraCaps>
+        rawCache["test:null"] = raw
+        val hevc8k = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "test.hevc.8k",
+            mime = "video/hevc",
+            hardwareAccelerated = true,
+            main10 = true,
+            sizeRateSupport = EncoderSizeRateSupport { _, _, rate -> rate <= 30.0 },
+        )
+        val avcUhd = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "test.avc.uhd",
+            mime = "video/avc",
+            hardwareAccelerated = true,
+            main10 = false,
+            sizeRateSupport = EncoderSizeRateSupport { width, _, rate -> width <= 3840 && rate <= 30.0 },
+        )
+        ViewModelTestAccess.setField(
+            v,
+            "encoderInventory",
+            CodecInventory(mapOf(VideoCodec.HEVC to listOf(hevc8k), VideoCodec.AVC to listOf(avcUhd))),
+        )
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = raw,
+                videoResolution = eightK,
+                tenBitEncodeAvailable = true,
+                availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
+            )
+        }
+        e.setVideoPipeline(listOf(hevc8k), ColorTransfer.SDR)
+        v.onVideoResolution(eightK)
+        idleFor(50)
+        assertEquals("precondition: the HEVC route admits the explicit 8K pick", eightK, v.state.value.videoResolution)
+
+        v.onVideoCodec(VideoCodec.AVC)
+        idleFor(50)
+
+        assertEquals("the published size is the accepted fallback", uhd, v.state.value.videoResolution)
+        assertEquals("the operator request is not relabeled as delivered", "7680x4320", currentExtras(v).videoResolution)
+        assertEquals("the raw camera cache is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
+
+        v.onVideoCodec(VideoCodec.HEVC)
+        idleFor(50)
+        assertEquals("reprojection from raw caps restores the supported request", eightK, v.state.value.videoResolution)
+        assertEquals("7680x4320", currentExtras(v).videoResolution)
     }
 
     // ---- The focus-ruler loupe assist must not become a persisted setting ----

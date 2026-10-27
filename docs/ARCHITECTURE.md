@@ -58,6 +58,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only (the per-phone maker-log product fact `nativeLogFlavor` was removed with those curves, 2026-10-26). `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
+| `RecordableVideoSizes.kt` | The single camera-size → recordable-size projection. Legacy sizes through 4096×3072 retain their existing admission/rate rules; an extended raster remains only when an exact active encoder candidate proves at least one standard rate ≤30 fps (and RAW Log has a large enough RAW source). `extendedVideoSizeRates` gates those extended FPS choices. CameraEngine applies this at accepted-route caps and rebuilds it from the raw cache after codec/transfer/RAW-intent changes; projected answers never become camera truth. |
 | `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
@@ -125,6 +126,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `AudioLevels.kt` | Pure PCM peak/RMS aggregation, channel projection, and software-gain math shared by standby metering and recording. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log), HEVC Main SDR, and AVC 8-bit SDR. Tags encoded-output profile, color space, range, and transfer; these tags do not describe the precision of every upstream stage. `aacFormat` carries the take's AAC object type and bitrate (48 kHz; AAC-LC 256 kb/s by default since 2026-10-26, 192 before). |
 | `EncoderCaps.kt` | Scans exact AVC/HEVC components, ranks hardware first while retaining registry-stable software fallback, and carries accepted component identity into recording. The same REGULAR_CODECS walk reads each AAC encoder's profiles, bitrate range, 48 kHz support and channel count into `CodecInventory.audioOptions`. |
+| `EncoderSizeRateSupport.kt` | Exact-component size/rate query boundary retained on each `EncoderSelection` by codec. Extended recordable sizes are admitted only from this probe, never inferred from a MIME or another encoder. |
 | `AudioEncoding.kt` | The soundtrack formats a take can carry: AAC-LC / HE-AAC / HE-AAC v2 / xHE-AAC, each offered only when a regular encoder advertises it at 48 kHz (MediaMuxer's MP4 writer takes AAC and AMR only; AMR is speech-band, Opus/FLAC cannot be muxed). Pure and host-tested: inventory selection (platform `c2.android.*` first), request normalization, the HE-AAC v2 mono fallback, and the measured priming table (`c2.android.aac.encoder` LC 2048 / HE 4096 / HE v2 6144 samples, `c2.android.xheaac.encoder` 0). `AudioChannelMode` (Mono / Stereo, persisted) is a CAP on the device's own channel count (`cappedAudioChannelCount`): a mono route stays mono under Stereo. |
 | `EncoderSizeLadder.kt` | Same-aspect, even-dimension component/size configure-attempt ladder used when an advertised encoder rejects the requested portrait raster. |
 | **storage/** | |
@@ -993,7 +995,9 @@ roll uses a similar confidence threshold when the phone points steeply up or dow
 **Video codec and color profiles:**
 
 Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList). Exact components are
-ranked hardware-first while registry order is preserved, with software fallback retained. Bitrate presets run Low → **Max** (`BitrateLevel`): the REQUESTED target at
+ranked hardware-first while registry order is preserved, with software fallback retained. Each
+`EncoderSelection` also carries that exact component+codec's `EncoderSizeRateSupport` probe; extended
+size/rate admission never substitutes a MIME-wide or another component's answer. Bitrate presets run Low → **Max** (`BitrateLevel`): the REQUESTED target at
 Max computes to ~99 Mbps at 4K30 (0.40 bpp), hard-clamped at 120 Mbps (`videoBitRate`). A device
 recording measured ~134 Mbps in the file — that is VBR encoder overshoot of the ~99 Mbps target (no
 KEY_BITRATE_MODE is set), not a requested ceiling. The old High (0.16 bpp) left half the HW headroom
@@ -1129,14 +1133,27 @@ Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE
 
 **Video resolution and frame rates:**
 
-Resolutions come from the selected camera's `StreamConfigurationMap`, then the shipping selector caps
-recording width at 3840. PMA110 exposes 4K UHD as the largest selected 16:9 mode. Frame rates include
-standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94). The UI deliberately
-excludes 120 fps because the constrained high-speed session crashes this HAL.
+Resolutions originate in the selected camera's `StreamConfigurationMap`, but the camera cache stays
+RAW: `CameraEngine.capsCache` never stores a packet-filtered answer. At accepted-route capability
+installation, and again after codec/transfer/RAW-intent changes before Ready, one
+`projectRecordableVideoSizes` projection filters the raw lists through the active exact encoder
+candidates and Gamma packet. Maker-TC zoom/aperture route adjustments are applied without restoring
+filtered sizes. ProSheet, frame-rate reconciliation and explicit-size admission all consume that same
+projected `availableVideoSizes` / `openGateVideoSizes`; there is no separate UI filter.
 
-Open-Gate (4:3-aspect recording; device-verified 2560×1920 on the tele — the recording surface is
-capped at 3840 wide, so this is NOT the full 4096×3072 still readout) is available alongside the
-standard 16:9 sizes.
+Automatic VIDEO and the PHOTO preview stay capped at 3840 wide, preserving the existing defaults
+(PMA110 selects 4K UHD / 2560×1920 Open Gate). A size beyond the legacy 4096×3072 boundary, including
+8K, can configure only through an explicit VIDEO selection (or its restored request) present in the
+projected list. If a later route/Gamma packet removes it, the delivered size falls back to the capped
+automatic choice without rewriting the operator's request; reprojection from raw caps can admit that
+request again. Extended sizes expose only their exactly encoder-proven standard rates ≤30 fps.
+
+Frame rates include standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94).
+The UI deliberately excludes 120 fps because the constrained high-speed session crashes this HAL.
+
+Open-Gate (4:3-aspect recording; device-verified 2560×1920 on the tele — the automatic recording
+surface is capped at 3840 wide, so this is NOT the full 4096×3072 still readout) is available alongside
+the standard 16:9 sizes.
 
 Exact bitrate is displayed in Mbps and user-selectable per codec and resolution.
 

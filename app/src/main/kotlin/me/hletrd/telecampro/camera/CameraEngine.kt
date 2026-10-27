@@ -694,6 +694,31 @@ class CameraEngine internal constructor(
         gl.setTransfer(value)
     }
 
+    /** Projects one route's RAW camera sizes through the active exact encoder/Gamma packet. */
+    private fun projectRouteCaps(sel: TeleSelection, routeRaw: CameraCaps, raw: CameraCaps): CameraCaps =
+        projectRecordableVideoSizes(
+            raw = routeRaw,
+            candidates = videoEncoderCandidates,
+            rawLog = rawLogWanted(sel, raw),
+        )
+
+    /**
+     * Reprojects the INSTALLED route after a codec/transfer packet change. [capsCache] remains the
+     * unfiltered camera answer; only maker-TC's non-video zoom/aperture adjustments carry over from
+     * the installed route caps. Every size list and extended-rate map is rebuilt from RAW camera
+     * truth, so a later packet can restore a size that an earlier one removed.
+     */
+    private fun reprojectRouteCapsFromRaw() {
+        val sel = selection ?: return
+        val raw = capsCache["${sel.logicalId}:${sel.physicalId}"] ?: return
+        val installed = caps
+        val routeRaw = raw.copy(
+            zoomRatioRange = installed?.zoomRatioRange ?: raw.zoomRatioRange,
+            lensApertureF = installed?.lensApertureF ?: raw.lensApertureF,
+        )
+        caps = projectRouteCaps(sel, routeRaw, raw)
+    }
+
     /** Publishes one complete pipeline packet while the caller owns the Engine monitor. */
     private fun publishVideoPipelineLocked(selection: VideoPipelineSelection): Long {
         if (selection != currentVideoPipelineSelection()) {
@@ -701,6 +726,7 @@ class CameraEngine internal constructor(
             videoEncoderCandidates = selection.candidates
             requestedVideoTransfer = selection.requestedTransfer
             transfer = selection.activeTransfer
+            reprojectRouteCapsFromRaw()
             videoPipelinePublicationGeneration.incrementAndGet()
         }
         return videoPipelinePublicationGeneration.get()
@@ -3462,14 +3488,34 @@ class CameraEngine internal constructor(
             if (retryMaker) overrideId = userCameraPin
             publishVideoPipelineLocked(targetPipeline)
         }
+        val pipelineGenerationBefore = videoPipelinePublicationGeneration.get()
         if ((sessionShapeChanged || retryMaker) && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
             postGlTransfer(activeTransfer)
             reopenForSession(transaction)
         } else {
             publish()
-            if (recorder == null) postGlTransfer(activeTransfer)
+            if (recorder == null) {
+                postGlTransfer(activeTransfer)
+                if (videoPipelinePublicationGeneration.get() != pipelineGenerationBefore) {
+                    publishReprojectedVideoCapabilities()
+                }
+            }
         }
+    }
+
+    /**
+     * A codec/transfer change that keeps the Camera2 session shape still changes which sizes/rates
+     * its NEXT encoder can record. Publish that one projected caps answer through the ordinary caps
+     * seam, then re-resolve the retained explicit request. A fallback changes the delivered size,
+     * never [requestedVideoSize], so a later packet can admit the request again.
+     */
+    private fun publishReprojectedVideoCapabilities() {
+        val routeCaps = caps ?: return
+        onCapsReady?.invoke(routeCaps, opticsIntentGeneration.get())
+        val sel = selection ?: return
+        val targetSize = chooseVideoSize(sel)
+        if (targetSize != videoSize) applyVideoSize(targetSize)
     }
 
     fun setPeaking(enabled: Boolean) {
@@ -4922,10 +4968,12 @@ class CameraEngine internal constructor(
                     )
                     return@execute
                 }
-            // TC + maker Log: the logical camera's caps re-expressed as the route's TC-local zoom span
-            // (makerTeleRouteCaps). Every other route installs the camera's own caps, unchanged.
+            // TC + maker Log first re-expresses the logical camera's TC-local zoom span. Projection
+            // then filters the RAW route sizes through this exact encoder/Gamma packet; the maker
+            // adjustment never reintroduces a filtered size, and capsCache keeps the raw answer.
             val makerTele = makerTeleRouteFor(sel)
-            val c = makerTele?.let { makerTeleRouteCaps(rawCaps, it) } ?: rawCaps
+            val routeRaw = makerTele?.let { makerTeleRouteCaps(rawCaps, it) } ?: rawCaps
+            val c = projectRouteCaps(sel, routeRaw, rawCaps)
             if (!ownsOpticsTransaction(transaction)) {
                 startupTraceOwnership.revoke(startupTraceOwner)
                 return@execute
@@ -8944,9 +8992,10 @@ class CameraEngine internal constructor(
 
     /**
      * The default recording size for the current lens: the largest matching-aspect SurfaceTexture
-     * size the camera reports — 4:3 when [openGate] (full sensor readout), else 16:9. Capped at 3840
-     * wide (this device's cameras top out at 4K/4096 for the recording surface; no camera exposes 8K
-     * video here). Falls back through the caps lists so it never returns an unsupported size.
+     * size the camera reports — 4:3 when [openGate] (full sensor readout), else 16:9. Automatic
+     * choice stays capped at 3840 wide even when the camera offers 8K; only an explicit user/restored
+     * pick may admit a larger size present in the projected route caps. Falls back through the caps
+     * lists so it never returns an unsupported size.
      */
     private fun chooseVideoSize(sel: TeleSelection): Size {
         val auto = chooseStreamSize(sel, fourByThree = openGate)
@@ -8954,7 +9003,7 @@ class CameraEngine internal constructor(
         // Honor a user/restored pick only while the current caps actually offer it for the active
         // aspect; anything else (stale persisted size, openGate flip) degrades to the auto choice.
         val list = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
-        return if (list != null && req in list) req else auto
+        return list?.let { explicitStreamSizeOrAutomatic(req, it, auto) } ?: auto
     }
 
     /**
@@ -9826,6 +9875,10 @@ internal fun retainedDngStatus(completionMarkerDurable: Boolean): CameraStatus =
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
     if (cameraReady) current else pendingBaseline ?: current
+
+/** An explicit size survives only while the projected route offers it; automatic choice stays capped. */
+internal fun <T> explicitStreamSizeOrAutomatic(requested: T, offered: List<T>, automatic: T): T =
+    requested.takeIf { it in offered } ?: automatic
 
 /**
  * Whether a recalled optics packet changes the Camera2 route/session contract. A non-TELE Photo
