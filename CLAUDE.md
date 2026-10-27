@@ -132,6 +132,11 @@ adb logcat -d | grep -E "CameraController|AndroidRuntime|Session configured"
 adb exec-out screencap -p > /tmp/shot.png
 ```
 
+**Leave the latest validated app installed (owner instruction, 2026-10-27).** After device
+investigation, install and retain the latest verified product build with the accumulated fixes.
+Do not restore an older product APK as cleanup. Temporary probe packages and scoped test settings
+may be cleaned up separately; verify the final installed product hash and report its build.
+
 `pm grant` for runtime permissions **fails on ColorOS** (`GRANT_RUNTIME_PERMISSIONS not allowed`) —
 the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once.
 
