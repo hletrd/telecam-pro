@@ -1213,13 +1213,20 @@ were restored afterwards. Evidence: `.context/a23-pma110-logroutes-2026-10-27/`.
 
 **Remaining:** (1) the FRONT route (white balance and framing) was not run: its camera faces away
 from the chart, so it needs an operator; (2) an owner decision from the Flip6 run: where a manual
-Kelvin should get its transform when the HAL's CCM moves with the illuminant (for example the
-HAL's preset CCMs interpolated by Kelvin, or the sensor calibration). The Flip6 proves the CCM
-moves there; its Standard stills keep the full field (ON crops only that HAL's preview). PMA110
+Kelvin should get its transform when the HAL's CCM moves with the illuminant. The Flip6 proves the
+CCM moves there; its Standard stills keep the full field (ON crops only that HAL's preview). An
+offline model that keeps the HAL's look and swaps in the sensor calibration's colorimetric matrix
+(T = T_auto · C(K_auto)⁻¹ · C(K)) gets only halfway: a grey under this room's light at Daylight
+gains renders B/G 0.44–0.48 against the HAL's own 0.25 and today's −0.04 (clipped), because the
+calibration's matrices move far less with the illuminant than the HAL's tuned ones
+(`.context/a23-flip6-generic-still-2026-10-27/kelvin-model-output.txt`). Only the HAL's own
+per-illuminant transforms reproduce it, which needs those presets run on the route. PMA110
 floors blue at daylight Kelvins in this warm room on its SDR and HLG10 routes as well, but whether
 its AUTO CCM moves with the illuminant needs AUTO under a second light; (3) the 4 s
 TRANSFORM_MATRIX still in Active above (owner decision); (4) no attached device takes the CCT path
-(CCT advertised without a ColorMatrix calibration). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
+(CCT advertised without a ColorMatrix calibration); (5) a spec device whose exposure reaches seconds:
+a long still in an Active session now carries PREVIEW_STABILIZATION there too, and PMA110 loses such
+stills past 3.2 s (GENERIC has no limit; the Flip6 tops out at 150 ms). Absolute Kelvin accuracy against a known illuminant is NOT a field check (owner
 decision 2026-10-27: device-to-device variation makes it meaningless); the relative checks above —
 warmer as the Kelvin rises, file matching the finder, AUTO and manual consistent — are the checks.
 
