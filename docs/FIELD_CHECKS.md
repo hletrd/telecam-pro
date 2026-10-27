@@ -23,7 +23,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **A20** has its measured DCG/DRC gap closed by A26; it still needs a rear 1× native-Log soak, wider gamut/lighting coverage and ColorOS 16 validation,
 **A21** needs a real Log (maker) take through the converter outdoors (distant subject, good light), with the glass confirmed in the optical path,
-**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the Kelvin-transform run on the POCO, and AUTO under a second light on the PMA110,
+**A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the POCO still checks (needs "USB debugging (Security settings)") and its calibration-vs-preset gain mismatch, and AUTO under a second light on the PMA110,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1217,8 +1217,17 @@ Evidence: `.context/a23-flip6-2026-10-27/` (driver, per-run watch/logcat/files, 
   same code (logical photo 1×, AUTO and 3200 K, Standard and OFF): every pseudo-ZSL decision read
   the frame's AWB mode and matched the still's (`awb=1/1`, `0/0`), so the new term does not block
   ZSL there; those presses refused only on the dim exposure mismatch
-  (`.context/pma110-zsl-awb-2026-10-27/`). The POCO run is
-  pending (its wireless ADB refused connections all session); PMA110 never sweeps (presets ignored),
+  (`.context/pma110-zsl-awb-2026-10-27/`). **POCO X3 GT** (21061110AG, Android 13, A/B build,
+  photo = standalone camera 0, FINDER screenshots only — MIUI refused injected taps): presets are
+  honoured and the sweep ran (Incandescent / Daylight / Cloudy / Shade in 1.95 s), but the POCO's
+  ColorMatrix calibration disagrees with its own presets — their gains read 4535 / 4920 / 5168 /
+  5822 K through it (AUTO 4092 K, out of order), and manual Kelvin at those values renders far from
+  the preset (4535 K grey R/G 1.43 B/G 0.37 against Incandescent's 0.97 / 0.89). That gain mismatch
+  dominates: mean |Δ| 7–25 codes for every strategy, light drift 5–11, so the transform strategies
+  cannot be ranked there; "warmer as the Kelvin rises" holds (R/G 1.43 → 1.92). The calibration's
+  compressed scale also merged Daylight with Cloudy (9.8 mired apart) in the store. Evidence:
+  `.context/poco-wb-2026-10-27/`. Its still checks (Standard framing, a long still in a stabilized
+  session — exposure reaches 30 s there) wait for "USB debugging (Security settings)". PMA110 never sweeps (presets ignored),
   and whether its AUTO transform moves with the illuminant still needs AUTO under a second light.
   Evidence: `.context/wb-kelvin-ab-2026-10-27/`.
 
