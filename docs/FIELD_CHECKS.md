@@ -800,19 +800,22 @@ fixed through standard Camera2 requests (A23); the gain-split question is reopen
 
 - **DCG/DRC (highlight range).** At the matched ISO 800 / 33.322 ms chart exposure stock reports
   `com.qti.stats_control.drc_gain` 8, `com.oplus.conversion.gain` 7.998 and the short frame at gain
-  1 (its two DOL exposures split 8:1 → ~3 stops of highlight headroom); the app and EVERY probe
+  1 (an 8:1 gain separation, not by itself a measured dynamic-range stop count); the app and EVERY probe
   variant report `drc_gain` 1 with both DOL frames at the same gain, so the Log curve maps a
   narrower input (LUT ends 2843 vs 3685). Bisect, all `drc_gain` 1 in this bright scene: single
   PRIVATE 4K GPU stream; single P010 reader; PRIVATE + P010/encoder (the EXACT stock stream recipe);
   the app-shape request plus every stock-only request key (`ipe.sequence`, `draw.frame.delay`,
   `salient.object.detection`, `exposure_metering_mode`, `light.sensor.lux`, `video/eis.record.state`,
   `capture/preview.hdr.support` …); `light.sensor.lux` swept 0 → 2000; AE ON and AE OFF. The ratio
-  the AEC chooses is a scene + tuning decision (`libcam.oplus.3a.v4.so` carries explicit
-  `isSystemCamera` / `isThirdPartyCamera` DCG branches, and `CameraHWConfiguration.config`
-  `[WarmDolState]`/`[StreamOnWarmStart]` gate DOL per operation-mode/camera/lux); in a very dark
+  the AEC chooses is a scene + tuning decision (`CameraHWConfiguration.config`
+  `[WarmDolState]`/`[StreamOnWarmStart]` gate DOL per operation-mode/camera/lux). The earlier
+  `isSystemCamera` / `isThirdPartyCamera` string hits were not proof of a DCG access gate:
+  recovered symbols/log context place those hits in AF/AWB code, not a demonstrated AEC branch.
+  In a very dark
   scene it does engage partially for the third-party client (night probe `drc_gain` 3.6). Stock
-  drives it through the OEM `ConfigureParameter` builder (`com.oplus.configure.custom.detail.info`,
-  warm-start seeding). **The claim that only the authenticated SDK can solve this was not proven.**
+  also uses the OEM `ConfigureParameter` builder (`com.oplus.configure.custom.detail.info`,
+  warm-start seeding); its causal role in this gain difference has not been isolated.
+  **The claim that only the authenticated SDK can solve this was not proven.**
   The measured maker route carries ~2.4 stops less highlight range in that bright comparison;
   reproducing the gain split remains open. A24 adds new negative controls without broadening them
   into an impossibility claim.
@@ -1339,7 +1342,7 @@ encoder setup. On the PMA110 Adreno 840, 24 exact synthetic RGB patches read bac
 input error; decoded-video mean absolute RGB errors are 0.645 / 0.515 / 0.678 of a 10-bit code
 (maximum 2.462). Encoded YUV matches the BT.2020 full-range matrix within one code, whereas
 BT.709, BT.601 and limited-range candidates do not. Camera-buffer sampling is independently
-checked on the SAME latched frame: `GL_EXT_YUV_target` supplies unconverted YUV, ordinary OES
+checked on the SAME latched frame: [GL_EXT_YUV_target](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_YUV_target.txt) supplies unconverted YUV, ordinary OES
 supplies RGB. Across 32,400 samples the BT.2020/full inverse has RGB mean absolute error
 0.290 / 0.295 / 0.276, maximum below one code. ESSL 1 (the app's sampling language) and ESSL 3
 readbacks are pixel-identical. These checks do not certify every device or codec.
@@ -1403,10 +1406,14 @@ recording carries actual ISO 6387 / 33,322,214 ns and DRC 1. Against the brighte
 Patch interiors avoid edges; product AF settled at 2.47 diopters versus the probes' fixed 1.9,
 so this does not claim matching sharpness or noise. Product 3000/8000 K follows the measured
 OEM table. A LIVE 8000 K → AUTO switch drops the wrapper CCT request and converges to new AWB
-gains; LIVE Daylight then writes 5500 K / Tone 0. TC and ordinary SDR boundary checks are
-recorded in the accompanying product summary. Host JVM tests: 3005, no failures; debug lint
-and Partition-A coverage passed. Python host suites passed; the initial combined gate stopped
-at the newly added dashboard entry, corrected with a clean 168-check documentation pass.
+gains; LIVE Daylight then writes 5500 K / Tone 0. Product TC opens physical 4 and applies
+3000 K through FAST (R 1.4668/B 2.7422); ordinary SDR returns to camera 2, TRANSFORM_MATRIX,
+calibrated gains and no wrapper CCT request. The product recording fully decodes without errors.
+Host JVM tests: 3005, no failures; debug lint, Partition-A coverage and clean-tree release lint
+passed. Python host suites passed (204 + 21 + 195 tests); the combined gate stopped at the newly
+added dashboard entry, corrected with a clean 168-check documentation pass. Compileall and diff
+checks also passed. Both pre-test APKs and the original camera-settings bytes were restored;
+stock ISO returned to UI 400, with its original 5000 K / Tone +4 retained.
 
 ## B. Held in hand — 3 min
 
