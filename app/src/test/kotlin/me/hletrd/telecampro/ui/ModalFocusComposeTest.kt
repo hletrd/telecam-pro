@@ -49,6 +49,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.OpenReviewPresentation
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.controls.ProSheet
@@ -292,6 +293,47 @@ class ModalFocusComposeTest {
         compose.onNodeWithTag("fn-hidden-finder").assertIsNotFocused()
         close.requestFocus().performKeyInput { pressKey(Key.DirectionUp) }
         compose.onNodeWithTag("fn-hidden-finder").assertIsNotFocused()
+    }
+
+    @Test
+    fun `Fn info line mirrors the focused tile without becoming a focus stop`() {
+        var dismissals = 0
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    FnOverlay(
+                        // GRID and LEVEL are in-place cycles, live without camera caps.
+                        state = CameraUiState(photoFnSlots = listOf(FnSlot.GRID, FnSlot.LEVEL)),
+                        actions = actions,
+                        onSelectManualDial = {},
+                        onDismiss = { dismissals++ },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val gridLine = context.getString(R.string.label_grid) + " · " + context.getString(R.string.value_thirds)
+        val levelLine = context.getString(R.string.label_level) + " · " + context.getString(R.string.value_off)
+        val close = compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_function_menu))
+        // Focus still lands on the one named close action; the line already names the first tile.
+        close.assertIsFocused()
+        compose.onNodeWithText(gridLine, useUnmergedTree = true).assertExists()
+
+        compose.onNodeWithContentDescription(context.getString(R.string.label_level)).requestFocus()
+        compose.waitForIdle()
+        compose.onNodeWithText(levelLine, useUnmergedTree = true).assertExists()
+        compose.onNodeWithText(gridLine, useUnmergedTree = true).assertDoesNotExist()
+        // A decorative mirror: absent from the merged tree TalkBack reads, so the value the focused
+        // tile just announced is not repeated at a second stop.
+        assertEquals(0, compose.onAllNodes(hasText(levelLine)).fetchSemanticsNodes().size)
+
+        // Tab walks tiles and the close only — the line never takes focus — and wraps inside the modal.
+        compose.onNodeWithContentDescription(context.getString(R.string.label_level))
+            .performKeyInput { pressKey(Key.Tab) }
+        close.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        compose.waitForIdle()
+        assertEquals(1, dismissals)
     }
 
     @Test

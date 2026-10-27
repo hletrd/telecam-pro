@@ -1611,11 +1611,20 @@ exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, st
 scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
 The shooting-screen Fn overlay renders only that active mode's distinct configured slots (maximum
 eight, with its mode-specific default as the empty fallback); it never merges My Menu or Recent.
-Portrait uses a raw bottom 4x2 grid. Held 90/270 use raw 2x4 Start/End trays whose slot reordering
-produces the same physical bottom 4x2 reading order, with one-line visual ellipsis under constraint.
-The portrait panel scrolls when window/font constraints require it. Every tile merges its full label,
-value, enabled state, and click action into one accessibility node; the touch-only scrim is unnamed
-and the explicit Close target is the sole close action.
+Since 2026-10-28 it is a compact Sony-style strip on an opaque true-black plate (a translucent HUD
+plate let the focal rail underneath read as tile values), directly above the shutter cluster: one
+info line naming the selected tile's full label and value, a 4x2 grid of 64x48 dp tiles that each
+draw only the slot icon and a camera abbreviation (`fnTileReadout` in `CameraScreenPolicy.kt`: P /
+AF-C / AUTO / 1/250 / AWB / 709 / STD and so on; words resolve through EN+KO `fn_tile_*` resources,
+operator-fixed exposure, focus, and WB values draw in the manual amber, and the selected tile
+carries an Accent outline), and a 48 dp close glyph at the grid's physical end. Portrait uses a raw
+bottom 4x2 grid capped at 332 dp wide. Held 90/270 use raw 2x4 Start/End trays (148 dp deep) whose
+slot reordering produces the same physical bottom 4x2 reading order; each tile's icon and value
+rotate as one unit, the info line runs along the raw Y axis, and the close sits at the same physical
+place as in portrait. The panel scrolls when window/font constraints require it. Every tile merges
+its full label, value, enabled state, and click action into one accessibility node; the info line is
+a decorative mirror of the selected tile, the touch-only scrim is unnamed, and the explicit close
+target is the sole close action.
 The WB chip can open the preset sheet whenever more than one advertised mode exists; only MANUAL WB
 requires the Kelvin ruler. Compact view keeps a 36 dp visual Fn button inside a 48 dp hit target on
 the focal rail; `DISP` reveals the full configurable strip. In the Fn grid, numeric

@@ -162,6 +162,28 @@ class HudContrastTest {
     }
 
     @Test
+    fun `every Fn strip ink clears the text floor on its opaque plate and inside a tile`() {
+        // The strip (2026-10-28) paints an OPAQUE true-black plate, because the focal rail it sits
+        // over ghosted through the translucent HudPlate; tiles lift off it with the shared Block wash.
+        // Opaque, so no live frame can lighten either surface: measure the two slabs as drawn.
+        val plate = rgbOf(CameraColors.Background)
+        val tile = compositeOn(0xFFFFFF, CameraColors.Block.alpha, plate)
+        assertEquals("the plate is true black", 0x000000, plate)
+        val inks = mapOf(
+            "tile value / info value white" to rgbOf(CameraColors.TextPrimary),
+            "tile icon, info name, close glyph secondary" to rgbOf(CameraColors.TextSecondary),
+            "operator-fixed value amber" to rgbOf(CameraColors.ManualActive),
+            "cursor outline accent" to rgbOf(CameraColors.Accent),
+        )
+        inks.forEach { (label, rgb) ->
+            listOf("plate" to plate, "tile" to tile).forEach { (surface, base) ->
+                val ratio = contrastOnComposited(rgb, base)
+                assertTrue("$label on the $surface was $ratio", ratio >= 4.5)
+            }
+        }
+    }
+
+    @Test
     fun `HudPlate is the scrim token at the pinned alpha and nothing else`() {
         // The canonical plate is a parameterless value precisely so no call site can hand-pick an
         // alpha. Pin its composition: base = the scrim token, alpha = the shared floor. If someone

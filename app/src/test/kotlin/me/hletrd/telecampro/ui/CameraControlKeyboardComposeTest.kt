@@ -8,6 +8,8 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsFocused
@@ -16,10 +18,12 @@ import androidx.compose.ui.test.isFocusable
 import androidx.compose.ui.test.isNotFocusable
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
+import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.ui.controls.DialChip
@@ -190,6 +194,57 @@ class CameraControlKeyboardComposeTest {
                 .performClick()
         }
         assertEquals(List(8) { 1 }, activations.toList())
+    }
+
+    @Test
+    fun `Fn tile draws its abbreviation, speaks its full value, and reports keyboard focus`() {
+        var activations = 0
+        var focusReports = 0
+        compose.setContent {
+            LocalInputModeManager.current.requestInputMode(InputMode.Keyboard)
+            TeleCamProTheme {
+                Column {
+                    ChromeIconButton(
+                        onClick = {},
+                        contentDescription = "before",
+                        modifier = Modifier.testTag("before"),
+                    ) {}
+                    FnOverlayTile(
+                        slot = FnSlot.ISO,
+                        value = "Auto 3200",
+                        enabled = true,
+                        onClick = { activations++ },
+                        readout = FnTileReadout(FnTileText.Word(R.string.fn_tile_auto)),
+                        // The Sony cursor is a VISUAL outline only: it must not rename the node,
+                        // add a selected state, or change what the tile announces.
+                        selected = true,
+                        onFocused = { focusReports++ },
+                        modifier = Modifier.testTag("iso"),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("iso")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf("ISO")))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Auto 3200"))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+        // The drawn glyph is the camera abbreviation, not the spoken sentence.
+        compose.onNodeWithText("AUTO", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("Auto 3200", useUnmergedTree = true).assertDoesNotExist()
+
+        assertEquals(0, focusReports)
+        compose.onNodeWithTag("before")
+            .requestFocus()
+            .performKeyInput { pressKey(Key.Tab) }
+        compose.onNodeWithTag("iso").assertIsFocused()
+        // Keyboard focus moves the strip's cursor/info line the same way a tap does.
+        assertEquals(1, focusReports)
+        compose.onNodeWithTag("iso").performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.waitForIdle()
+        assertEquals(1, activations)
     }
 
     @Test

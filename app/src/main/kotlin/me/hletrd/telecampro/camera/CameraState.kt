@@ -309,7 +309,7 @@ enum class FnSlot {
     // NAMES, so appending here never disturbs saved lists; normalizeFnSlots drops unknowns on
     // downgrade by construction.
     FLASH,
-    // Full sheet name; the held-landscape tile shortens through fnOverlayVisualLabel like STAB.
+    // Full sheet name; the Fn strip tile draws only its icon and value (fnTileReadout).
     TIMER,
     ASPECT,
     AUDIO_INPUT;

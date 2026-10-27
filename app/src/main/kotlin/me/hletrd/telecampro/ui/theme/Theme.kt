@@ -32,7 +32,10 @@ object CameraColors {
     /** The stab OSD tag's active green — the row's one non-Manual accent, hoisted from a raw
      *  literal so the token policy the file documents actually covers it (UI review #7). */
     val StabActive = Color(0xFF4CD964)
-    /** True-black viewfinder background. */
+    /**
+     * True-black viewfinder background — and the Fn strip's opaque plate, which must hide the focal
+     * rail it sits over (a translucent HudPlate let the rail's values read as tile values).
+     */
     val Background = Color(0xFF000000)
     /**
      * Base color for translucent chrome scrims (top bar, bottom cluster gradient).
@@ -178,7 +181,7 @@ object CameraColors {
      * `pixelChipBorder`, the dial close pill, the FocalRail circle, and MediaReview's
      * ReviewActionButton) are [AffordanceEdge] now — a token of their own at 0.36, not this one at
      * 0.14. They keep their own number because active control boundaries carry a 3:1 non-text
-     * contrast contract. (The Fn overlay's own Close carries no border.)
+     * contrast contract. (The Fn strip's own × close carries no border.)
      */
     val Hairline = Color.White.copy(alpha = 0.14f)
 }
@@ -311,7 +314,8 @@ private val TeleTypography = Typography().run {
         // RulerReadout — the single numeral the photographer is actively DRAGGING — plus TabTitle.
         // Prose tracking on a live value in a pill is exactly wrong.
         titleMedium = titleMedium.camera(16.sp, 20.sp, (-0.2).sp, FontWeight.SemiBold),
-        // The Fn overlay header.
+        // No current consumer: the Fn overlay header it was tuned for became the compact strip's
+        // info line (hudGlyph) on 2026-10-28. Kept consistent for any Material component reading it.
         titleSmall = titleSmall.camera(14.sp, 20.sp, (-0.1).sp, FontWeight.SemiBold),
         // The ambient LocalTextStyle every unstyled Text merges over — which is why the 24 sp prose
         // line box was leaking into 8-16 sp chrome. Chrome no longer relies on it (see [hudGlyph]),

@@ -1,28 +1,42 @@
 package me.hletrd.telecampro.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
+import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.AutoExposure
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.VideoColorMode
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
-import me.hletrd.telecampro.ui.controls.autoIsoText
-import me.hletrd.telecampro.ui.controls.autoShutterText
-import me.hletrd.telecampro.ui.controls.fnSlotLabel
+import me.hletrd.telecampro.ui.controls.aspectRatioLabel
+import me.hletrd.telecampro.ui.controls.evCompStops
+import me.hletrd.telecampro.ui.controls.exposureModeLetter
+import me.hletrd.telecampro.ui.controls.formatEvComp
 import me.hletrd.telecampro.ui.controls.formatShutterSpeed
+import me.hletrd.telecampro.ui.controls.frameLineTypeLabel
+import me.hletrd.telecampro.ui.controls.transferLabelShort
+import me.hletrd.telecampro.ui.controls.videoColorModeChipValue
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -403,8 +417,55 @@ internal fun chromeBadgePlateClearanceDp(
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2
 internal const val FN_OVERLAY_MAX_SLOTS = 8
+
+/**
+ * The held tray's raw width, i.e. its PHYSICAL depth from the bottom edge of a sideways phone. Kept
+ * at 148 dp through the 2026-10-28 strip redesign on purpose: the device harness caps that depth at
+ * 40 % of the short edge (`FN_HELD_MAX_DEPTH_FRACTION`), which 148 dp clears on any window at least
+ * 370 dp wide. That budget is also why the close target is NOT a third 48 dp physical row in the
+ * held tray: info line + two tile rows + a 48 dp close row would need 160 dp.
+ */
 internal const val FN_OVERLAY_HELD_WIDTH_DP = 148
 internal const val FN_OVERLAY_SCRIM_ALPHA = 0.22f
+
+/**
+ * Sony-style Fn strip geometry (owner request 2026-10-28: "the Fn toggles are each far too big and
+ * don't feel like a camera UI"). The previous tile was a 56 dp-tall card carrying an icon, a grey
+ * name and a sentence-case value ("Continuous", "Auto --"); a tile is now one camera abbreviation
+ * under its icon, and the full name + value moved to the one info line above the grid.
+ *
+ * Every number is PHYSICAL (as the photographer sees the strip): a tile is [FN_TILE_LONG_DP] wide and
+ * [FN_TILE_SHORT_DP] tall in either hold. The short side is the 48 dp touch floor, never less. In the
+ * held tray the raw axes swap, so a tile is FN_TILE_SHORT_DP raw-wide and FN_TILE_LONG_DP raw-tall.
+ */
+internal const val FN_TILE_SHORT_DP = 48
+internal const val FN_TILE_LONG_DP = 64
+internal const val FN_TILE_GAP_DP = 4
+internal const val FN_PANEL_PADDING_DP = 6
+
+/** The close target: a 48 dp square at the physical end of the tile grid, in every hold. */
+internal const val FN_CLOSE_TARGET_DP = 48
+
+/**
+ * Upright portrait strip width: four tiles, the close column, and the plate's own padding (332 dp).
+ * A narrower window shrinks the tiles instead (they are weighted); a wider one never grows them.
+ */
+internal const val FN_OVERLAY_MAX_WIDTH_DP =
+    2 * FN_PANEL_PADDING_DP + FN_OVERLAY_COLUMN_COUNT * FN_TILE_LONG_DP +
+        FN_OVERLAY_COLUMN_COUNT * FN_TILE_GAP_DP + FN_CLOSE_TARGET_DP
+
+/**
+ * Held tray: what is left of [FN_OVERLAY_HELD_WIDTH_DP] for the info line once the two raw tile
+ * columns and their gaps are paid for (32 dp — a 12 sp line plus its leading even at 2x font scale).
+ */
+internal const val FN_HELD_INFO_LINE_DP =
+    FN_OVERLAY_HELD_WIDTH_DP - 2 * FN_PANEL_PADDING_DP -
+        FN_OVERLAY_HELD_COLUMN_COUNT * FN_TILE_SHORT_DP - FN_OVERLAY_HELD_COLUMN_COUNT * FN_TILE_GAP_DP
+
+/** Held tray's raw height: four raw tile rows, then the close row, each separated by one gap. */
+internal const val FN_HELD_STRIP_LENGTH_DP =
+    FN_OVERLAY_MAX_SLOTS / FN_OVERLAY_HELD_COLUMN_COUNT * (FN_TILE_LONG_DP + FN_TILE_GAP_DP) +
+        FN_CLOSE_TARGET_DP
 
 internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
 
@@ -414,12 +475,6 @@ internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
  * hold keep it at raw start. The entry and its opened tray therefore stay under the same thumb.
  */
 internal enum class FnEntryAnchor { START, END }
-
-internal enum class FnTileContentAxis {
-    PORTRAIT,
-    HELD_LANDSCAPE_LABEL_FIRST_RAW,
-    HELD_LANDSCAPE_VALUE_FIRST_RAW,
-}
 
 /** Keep the shooting Fn menu mode-specific; My Menu and Recent remain in the settings sheet. */
 internal fun fnOverlaySlots(mode: CaptureMode, activeSlots: List<FnSlot>): List<FnSlot> =
@@ -475,91 +530,221 @@ internal fun fnOverlayGridRows(slots: List<FnSlot>, deviceOrientation: Int): Lis
     }
 }
 
-internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
-    when (((deviceOrientation % 360) + 360) % 360) {
-        // Raw X becomes perceived Y in the portrait-locked landscape hold. The ordering reverses
-        // between quarter turns, so swap the raw children at 90° to keep label-above-value upright.
-        90 -> FnTileContentAxis.HELD_LANDSCAPE_VALUE_FIRST_RAW
-        270 -> FnTileContentAxis.HELD_LANDSCAPE_LABEL_FIRST_RAW
-        else -> FnTileContentAxis.PORTRAIT
-    }
+/**
+ * What one Fn tile DRAWS: a camera abbreviation or numeral, never a sentence-case word. Pure and
+ * locale-free on purpose, the same split the old held-landscape compact values used: matching
+ * localized output against English literals made every alias vanish in Korean, so this type carries
+ * only semantic identity plus any locale-neutral payload, and Compose resolves the EN/KO spelling.
+ */
+internal sealed interface FnTileText {
+    /**
+     * Printed verbatim in every locale: exposure-mode letters, AF-C / AF-S / MF, AWB, Kelvin and ISO
+     * numbers, shutter fractions, EV, zoom, aspect ratios, curve names. These are the glyphs a Korean
+     * camera body prints in Latin too, the same rule the `translatable="false"` ISO / WB / EV labels
+     * follow.
+     */
+    data class Literal(val text: String) : FnTileText
 
-/** Short visual copy for the narrow physical strip; accessibility keeps the complete slot label. */
-internal fun fnOverlayVisualLabel(
-    slot: FnSlot,
-    heldLandscape: Boolean,
-    fullLabel: String = fnSlotLabel(slot),
-    stabilizationLabel: String = "Stab",
-    openGateLabel: String = "Gate",
-): String = when {
-    // "Stab" in BOTH axes since the tiles gained icons (2026-07-31): the 14 dp glyph + 4 dp gap
-    // eats exactly the width that let "Stabilization" fit a portrait tile, and "Stabilizati…" is
-    // worse than the compression. NOT "Steady": the OSD owns STEADY for ONE value (ENHANCED), so a
-    // tile named after a state it is not in reads as a lie; "Stab" matches the OSD's STAB OFF tag.
-    slot == FnSlot.STABILIZATION -> stabilizationLabel
-    !heldLandscape -> fullLabel
-    slot == FnSlot.OPEN_GATE -> openGateLabel
-    else -> fullLabel
-}
+    /** A short WORD with an EN and a KO spelling ("AUTO" / "자동", "STD" / "표준"). */
+    data class Word(@StringRes val res: Int) : FnTileText
 
-/** Semantic identity of a value that needs shorter visual copy in the held-landscape Fn tray. */
-internal sealed interface FnOverlayCompactValue {
-    data class Auto(val value: String) : FnOverlayCompactValue
-    data object WhiteBalanceDaylight : FnOverlayCompactValue
-    data object WhiteBalanceTungsten : FnOverlayCompactValue
-    data object Standard : FnOverlayCompactValue
-    data object Timelapse : FnOverlayCompactValue
-    data object SoundFocus : FnOverlayCompactValue
-    data object SoundStage : FnOverlayCompactValue
-    data class TeleconverterFocal(val millimeters: Int) : FnOverlayCompactValue
+    /** The self-timer delay, "3s" / "3초". */
+    data class Seconds(val seconds: Int) : FnTileText
+
+    /** The converter's effective focal, "300mm" (whole millimetres, like every focal readout). */
+    data class FocalMm(val millimeters: Int) : FnTileText
 }
 
 /**
- * Resolves compact copy before localization, from typed camera state rather than rendered words.
- *
- * Production first localizes [me.hletrd.telecampro.ui.controls.fnSlotValue]. Matching that result
- * against English literals made every alias silently disappear in Korean (`자동`, `타임랩스`,
- * `사운드 포커스`, ...), exactly in the 148 dp tray the aliases exist to protect. This function owns
- * only semantic identity and any locale-neutral numeric payload; Compose resolves the actual EN/KO
- * compact resource. Accessibility continues to expose the complete localized value.
+ * One tile's visual readout. [manual] marks an operator-fixed exposure/focus/WB value (a manual ISO,
+ * shutter, MF, any non-auto white balance): the tile draws it in `CameraColors.ManualActive`, the
+ * amber the dial rulers and the manual chips already use for "the camera is not choosing this".
  */
-internal fun fnOverlayCompactValue(slot: FnSlot, state: CameraUiState): FnOverlayCompactValue? {
-    val controls = state.controls
+internal data class FnTileReadout(val text: FnTileText, val manual: Boolean = false)
+
+private fun fnTileOnOff(on: Boolean): FnTileText =
+    FnTileText.Word(if (on) R.string.fn_tile_on else R.string.fn_tile_off)
+
+private val FN_TILE_AUTO = FnTileText.Word(R.string.fn_tile_auto)
+
+/**
+ * A shutter fraction drops its unit ("1/250", as camera bodies print it); a whole or decimal second
+ * keeps it ("0.8s", "4.0s"), because "4.0" alone could be any number.
+ */
+internal fun fnTileShutter(ns: Long): String {
+    val speed = formatShutterSpeed(ns)
+    return if (speed.startsWith("1/")) speed.removeSuffix("s") else speed
+}
+
+/**
+ * The Fn strip's camera-abbreviation table, one entry per slot and value. The complete localized
+ * value stays where it was — [me.hletrd.telecampro.ui.controls.fnSlotValue] feeds every tile's
+ * accessibility state and the strip's info line — so nothing here has to be self-explanatory: a
+ * tile is read beside its icon, and the line above the grid spells the selected tile out.
+ */
+internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
+    val c = state.controls
     return when (slot) {
+        FnSlot.EXPOSURE_MODE -> FnTileReadout(FnTileText.Literal(exposureModeLetter(c.exposureMode)))
+        FnSlot.FOCUS -> when (c.focusMode) {
+            FocusMode.MANUAL -> FnTileReadout(FnTileText.Literal("MF"), manual = true)
+            // AUTO is the one-shot scan (CONTROL_AF_MODE_AUTO): what every body prints as AF-S.
+            FocusMode.AUTO -> FnTileReadout(FnTileText.Literal("AF-S"))
+            FocusMode.CONTINUOUS -> FnTileReadout(FnTileText.Literal("AF-C"))
+            FocusMode.MACRO -> FnTileReadout(FnTileText.Word(R.string.fn_tile_macro))
+        }
+        // Same branch order as fnSlotValue, so the tile and its spoken state can never disagree on
+        // whether the value is the camera's or the operator's.
         FnSlot.SHUTTER -> when {
-            controls.exposureMode == ExposureMode.PROGRAM ->
-                FnOverlayCompactValue.Auto(autoShutterText(state))
-            controls.autoShutterDriven ->
-                FnOverlayCompactValue.Auto(formatShutterSpeed(controls.exposureTimeNs))
-            else -> null
+            c.exposureMode == ExposureMode.PROGRAM || c.autoShutterDriven -> FnTileReadout(FN_TILE_AUTO)
+            c.shutterMode == ShutterMode.ANGLE ->
+                FnTileReadout(FnTileText.Literal("%.0f°".format(Locale.US, c.shutterAngle)), manual = true)
+            else -> FnTileReadout(FnTileText.Literal(fnTileShutter(c.exposureTimeNs)), manual = true)
         }
         FnSlot.ISO -> when {
-            controls.exposureMode == ExposureMode.PROGRAM ->
-                FnOverlayCompactValue.Auto(autoIsoText(state))
-            controls.autoIsoDriven -> FnOverlayCompactValue.Auto(controls.iso.toString())
-            else -> null
+            c.exposureMode == ExposureMode.PROGRAM || c.autoIsoDriven -> FnTileReadout(FN_TILE_AUTO)
+            else -> FnTileReadout(FnTileText.Literal(c.iso.toString()), manual = true)
         }
-        FnSlot.WB -> when (controls.wbMode) {
-            WbMode.DAYLIGHT -> FnOverlayCompactValue.WhiteBalanceDaylight
-            WbMode.INCANDESCENT -> FnOverlayCompactValue.WhiteBalanceTungsten
-            else -> null
+        FnSlot.WB -> when (c.wbMode) {
+            WbMode.AUTO -> FnTileReadout(FnTileText.Literal("AWB"))
+            WbMode.MANUAL -> FnTileReadout(FnTileText.Literal("${c.wbKelvin}K"), manual = true)
+            WbMode.INCANDESCENT -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_tungsten), manual = true)
+            WbMode.FLUORESCENT -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_fluorescent), manual = true)
+            WbMode.DAYLIGHT -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_daylight), manual = true)
+            WbMode.CLOUDY -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_cloudy), manual = true)
+            WbMode.SHADE -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_shade), manual = true)
+            WbMode.CUSTOM -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_custom), manual = true)
         }
-        FnSlot.STABILIZATION ->
-            FnOverlayCompactValue.Standard.takeIf { state.videoStabMode == VideoStabMode.STANDARD }
-        FnSlot.DRIVE -> FnOverlayCompactValue.Timelapse.takeIf { state.driveMode == DriveMode.TIMELAPSE }
-        FnSlot.AUDIO_SCENE -> when (state.audioScene) {
-            AudioScene.STANDARD -> FnOverlayCompactValue.Standard
-            AudioScene.SOUND_FOCUS -> FnOverlayCompactValue.SoundFocus
-            AudioScene.SOUND_STAGE -> FnOverlayCompactValue.SoundStage
-        }
-        FnSlot.TELECONVERTER -> if (state.teleconverterMode) {
-            FnOverlayCompactValue.TeleconverterFocal(kotlin.math.round(state.teleconverterFocalMm).toInt())
-        } else {
-            null
-        }
-        else -> null
+        FnSlot.EV -> FnTileReadout(FnTileText.Literal(formatEvComp(evCompStops(state))))
+        FnSlot.ZOOM -> FnTileReadout(
+            FnTileText.Literal(formatDisplayZoom(c.zoomRatio, state.mainRelativeZoomMultiplier)),
+        )
+        FnSlot.STABILIZATION -> FnTileReadout(
+            when (state.videoStabMode) {
+                VideoStabMode.OFF -> fnTileOnOff(false)
+                VideoStabMode.STANDARD -> FnTileText.Word(R.string.fn_tile_standard)
+                VideoStabMode.ENHANCED -> FnTileText.Word(R.string.fn_tile_active)
+            },
+        )
+        FnSlot.DRIVE -> FnTileReadout(
+            FnTileText.Word(
+                when (state.driveMode) {
+                    DriveMode.SINGLE -> R.string.fn_tile_drive_single
+                    DriveMode.BURST -> R.string.fn_tile_drive_burst
+                    DriveMode.AEB -> R.string.fn_tile_drive_aeb
+                    DriveMode.TIMELAPSE -> R.string.fn_tile_drive_timelapse
+                },
+            ),
+        )
+        FnSlot.METERING -> FnTileReadout(
+            FnTileText.Word(
+                when (c.meteringMode) {
+                    MeteringMode.MATRIX -> R.string.fn_tile_meter_matrix
+                    MeteringMode.CENTER -> R.string.fn_tile_center
+                    MeteringMode.SPOT -> R.string.fn_tile_meter_spot
+                },
+            ),
+        )
+        FnSlot.PEAKING -> FnTileReadout(fnTileOnOff(state.focusPeaking))
+        FnSlot.ZEBRA -> FnTileReadout(fnTileOnOff(state.zebra))
+        // "709" rather than the chip's "Rec. 709": the tile carries the curve's short name, the same
+        // vocabulary as the OSD transfer tag (transferLabelShort), with RAW Log's " RAW" suffix.
+        FnSlot.TRANSFER -> FnTileReadout(
+            FnTileText.Literal(
+                if (state.videoColorMode == VideoColorMode.SDR) {
+                    transferLabelShort(ColorTransfer.SDR)
+                } else {
+                    videoColorModeChipValue(state.videoColorMode, state.transfer)
+                },
+            ),
+        )
+        FnSlot.AUDIO_SCENE -> FnTileReadout(
+            FnTileText.Word(
+                when (state.audioScene) {
+                    AudioScene.STANDARD -> R.string.fn_tile_standard
+                    AudioScene.SOUND_FOCUS -> R.string.fn_tile_sound_focus
+                    AudioScene.SOUND_STAGE -> R.string.fn_tile_sound_stage
+                },
+            ),
+        )
+        FnSlot.GRID -> FnTileReadout(
+            when (state.grid) {
+                GridType.NONE -> fnTileOnOff(false)
+                GridType.THIRDS -> FnTileText.Literal("3×3")
+                GridType.GOLDEN -> FnTileText.Word(R.string.fn_tile_grid_golden)
+                GridType.SQUARE -> FnTileText.Word(R.string.fn_tile_grid_square)
+                GridType.CENTER -> FnTileText.Word(R.string.fn_tile_center)
+            },
+        )
+        FnSlot.LEVEL -> FnTileReadout(fnTileOnOff(state.level))
+        FnSlot.PUNCH_IN -> FnTileReadout(fnTileOnOff(state.punchIn))
+        FnSlot.TELECONVERTER -> FnTileReadout(
+            if (state.teleconverterMode) {
+                FnTileText.FocalMm(kotlin.math.round(state.teleconverterFocalMm).toInt())
+            } else {
+                fnTileOnOff(false)
+            },
+        )
+        // fnSlotValue's own pair: an engaged Open Gate is named by the 4:3 frame it records.
+        FnSlot.OPEN_GATE -> FnTileReadout(
+            if (state.openGate) FnTileText.Literal("4:3") else fnTileOnOff(false),
+        )
+        FnSlot.FRAME_LINES -> FnTileReadout(
+            if (state.frameLines == FrameLineType.OFF) {
+                fnTileOnOff(false)
+            } else {
+                FnTileText.Literal(frameLineTypeLabel(state.frameLines))
+            },
+        )
+        FnSlot.FLASH -> FnTileReadout(
+            when (c.flash) {
+                FlashMode.OFF -> fnTileOnOff(false)
+                FlashMode.AUTO -> FN_TILE_AUTO
+                FlashMode.ON -> fnTileOnOff(true)
+                FlashMode.TORCH -> FnTileText.Word(R.string.fn_tile_torch)
+            },
+        )
+        FnSlot.TIMER -> FnTileReadout(
+            if (state.timer == ShutterTimer.OFF) fnTileOnOff(false) else FnTileText.Seconds(state.timer.seconds),
+        )
+        FnSlot.ASPECT -> FnTileReadout(FnTileText.Literal(aspectRatioLabel(state.aspectRatio)))
+        FnSlot.AUDIO_INPUT -> FnTileReadout(
+            when (state.audioInputPreference) {
+                AudioInputPreference.AUTO -> FN_TILE_AUTO
+                AudioInputPreference.BUILT_IN -> FnTileText.Word(R.string.fn_tile_mic_phone)
+                AudioInputPreference.WIRED -> FnTileText.Word(R.string.fn_tile_mic_wired)
+                AudioInputPreference.USB -> FnTileText.Literal("USB")
+                AudioInputPreference.BLUETOOTH -> FnTileText.Literal("BT")
+            },
+        )
     }
 }
+
+/**
+ * The tile the info line names (Sony's title line): the last one the photographer touched or moved
+ * focus to, while it is still in the strip; otherwise the first ENABLED tile, so a strip whose first
+ * slot is dimmed does not open by describing a control that cannot be used; otherwise the first.
+ */
+internal fun fnOverlayInfoSlot(
+    slots: List<FnSlot>,
+    lastTouched: FnSlot?,
+    enabled: (FnSlot) -> Boolean,
+): FnSlot? = lastTouched?.takeIf { it in slots } ?: slots.firstOrNull(enabled) ?: slots.firstOrNull()
+
+/**
+ * Rotation of the info line, which is the one WIDE element in the strip. Tiles counter-rotate with
+ * the animated glyph angle like every compact glyph, but a wide line cannot: rotating it inside a
+ * portrait slot mid-tween balloons its reserved box (rotateLayout reserves the rotated AABB). So it
+ * snaps — 0 or 180 while the strip is docked upright, and exactly the held quarter turn once the
+ * held tray (where the line runs along the raw Y axis) is the layout.
+ */
+internal fun fnOverlayInfoRotation(deviceOrientation: Int): Float =
+    when (((deviceOrientation % 360) + 360) % 360) {
+        90 -> 90f
+        270 -> 270f
+        in 91..269 -> 180f
+        else -> 0f
+    }
 
 internal fun shouldShowExposureMeter(
     mode: ExposureMode,

@@ -464,16 +464,38 @@
     <string name="value_blue">Blue</string>
     <string name="value_yellow">Yellow</string>
     <string name="value_magenta">Magenta</string>
-    <string name="fn_short_stabilization">Stab</string>
-    <string name="fn_short_open_gate">Gate</string>
-    <string name="fn_short_auto_value">A%1$s</string>
-    <string name="fn_short_daylight">Day</string>
-    <string name="fn_short_tungsten">Tung.</string>
-    <string name="fn_short_standard">Std</string>
-    <string name="fn_short_timelapse">TL</string>
-    <string name="fn_short_sound_focus">Focus</string>
-    <string name="fn_short_sound_stage">Stage</string>
-    <string name="fn_short_focal_mm">%1$dmm</string>
+    <!-- Fn strip tile readouts (2026-10-28): camera-style abbreviations drawn under each tile's
+         icon. The full localized value stays in the tile's accessibility state and the strip's
+         info line; these only have to fit a 64 dp tile. Literal glyphs (AF-C, AWB, 1/250, 709 and the like)
+         live in CameraScreenPolicy.fnTileReadout and are printed alike in every locale. -->
+    <string name="fn_tile_auto">AUTO</string>
+    <string name="fn_tile_on">ON</string>
+    <string name="fn_tile_off">OFF</string>
+    <string name="fn_tile_standard">STD</string>
+    <string name="fn_tile_active">ACT</string>
+    <string name="fn_tile_macro">MACRO</string>
+    <string name="fn_tile_wb_tungsten">TUNG</string>
+    <string name="fn_tile_wb_fluorescent">FLUOR</string>
+    <string name="fn_tile_wb_daylight">DAY</string>
+    <string name="fn_tile_wb_cloudy">CLOUD</string>
+    <string name="fn_tile_wb_shade">SHADE</string>
+    <string name="fn_tile_wb_custom">CUSTOM</string>
+    <string name="fn_tile_drive_single">SINGLE</string>
+    <string name="fn_tile_drive_burst">BURST</string>
+    <string name="fn_tile_drive_aeb">AEB</string>
+    <string name="fn_tile_drive_timelapse">TL</string>
+    <string name="fn_tile_meter_matrix">MATRIX</string>
+    <string name="fn_tile_center">CENTER</string>
+    <string name="fn_tile_meter_spot">SPOT</string>
+    <string name="fn_tile_sound_focus">FOCUS</string>
+    <string name="fn_tile_sound_stage">STAGE</string>
+    <string name="fn_tile_grid_golden">GOLDEN</string>
+    <string name="fn_tile_grid_square">SQUARE</string>
+    <string name="fn_tile_torch">TORCH</string>
+    <string name="fn_tile_mic_phone">PHONE</string>
+    <string name="fn_tile_mic_wired">WIRED</string>
+    <string name="fn_tile_seconds">%1$ds</string>
+    <string name="fn_tile_focal_mm">%1$dmm</string>
     <string name="a11y_focus_distance">Focus distance</string>
     <string name="a11y_shutter_angle">Shutter angle</string>
     <string name="a11y_shutter_speed">Shutter speed</string>

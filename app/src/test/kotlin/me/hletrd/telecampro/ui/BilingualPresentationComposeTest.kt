@@ -354,7 +354,7 @@ class BilingualPresentationComposeTest {
     }
 
     @Test
-    fun `Korean held Fn uses compact visual resources and preserves full state at two-x font`() {
+    fun `Korean Fn strip draws localized abbreviations and preserves full state at two-x font`() {
         val ko = localizedContext("ko", fontScale = 2f)
         val orientation = mutableStateOf(90f)
         val photoState = CameraUiState(
@@ -377,9 +377,15 @@ class BilingualPresentationComposeTest {
             }
         }
 
-        assertEquals(2, compose.onAllNodesWithText("A--", useUnmergedTree = true).fetchSemanticsNodes().size)
-        compose.onNodeWithText("태양", useUnmergedTree = true).fetchSemanticsNode()
+        // P mode: both camera-owned values are drawn as the Korean AUTO word, never an English
+        // "AUTO" and never the old "A--" letter-and-dashes glue.
+        val auto = ko.getString(R.string.fn_tile_auto)
+        assertEquals("자동", auto)
+        assertEquals(2, compose.onAllNodesWithText(auto, useUnmergedTree = true).fetchSemanticsNodes().size)
+        compose.onNodeWithText("태양광", useUnmergedTree = true).fetchSemanticsNode()
         compose.onNodeWithText("TL", useUnmergedTree = true).fetchSemanticsNode()
+        assertEquals(0, compose.onAllNodesWithText("AUTO", useUnmergedTree = true).fetchSemanticsNodes().size)
+        // The tile still SPEAKS its complete localized state, exactly as before the strip redesign.
         compose.onNodeWithContentDescription(ko.getString(R.string.label_iso)).assert(
             SemanticsMatcher.expectValue(
                 SemanticsProperties.StateDescription,
@@ -392,8 +398,8 @@ class BilingualPresentationComposeTest {
 
         orientation.value = 270f
         compose.waitForIdle()
-        assertEquals(2, compose.onAllNodesWithText("A--", useUnmergedTree = true).fetchSemanticsNodes().size)
-        compose.onNodeWithText("태양", useUnmergedTree = true).fetchSemanticsNode()
+        assertEquals(2, compose.onAllNodesWithText(auto, useUnmergedTree = true).fetchSemanticsNodes().size)
+        compose.onNodeWithText("태양광", useUnmergedTree = true).fetchSemanticsNode()
 
         val videoState = CameraUiState(
             mode = CaptureMode.VIDEO,
@@ -402,6 +408,7 @@ class BilingualPresentationComposeTest {
             videoFnSlots = listOf(FnSlot.STABILIZATION, FnSlot.AUDIO_SCENE),
         )
         state.value = videoState
+        orientation.value = 0f
         compose.waitForIdle()
         compose.onNodeWithText("표준", useUnmergedTree = true).fetchSemanticsNode()
         compose.onNodeWithText("스테이지", useUnmergedTree = true).fetchSemanticsNode()
@@ -411,5 +418,40 @@ class BilingualPresentationComposeTest {
                 fnSlotValue(FnSlot.AUDIO_SCENE, videoState, ko),
             ),
         )
+        // The info line spells the selected tile out in full Korean — the name and the whole value
+        // the abbreviation stands for — as a visual mirror only: it is not a second spoken stop.
+        val infoLine = ko.getString(R.string.label_directionality) + " · " + ko.getString(R.string.value_sound_stage)
+        compose.onNodeWithText(infoLine, useUnmergedTree = true).fetchSemanticsNode()
+        assertEquals(0, compose.onAllNodesWithText(infoLine).fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun `every Fn tile word has a short Korean peer`() {
+        // The strip's words are resources so Korean reads Korean; the Latin glyphs (AF-C, AWB, 709)
+        // are literals by design. Each Korean word must fit a 64 dp tile at 12 sp: four Hangul
+        // syllables is the ceiling the table was written to.
+        val en = localizedContext("en")
+        val ko = localizedContext("ko")
+        val words = listOf(
+            R.string.fn_tile_auto, R.string.fn_tile_on, R.string.fn_tile_off, R.string.fn_tile_standard,
+            R.string.fn_tile_active, R.string.fn_tile_macro, R.string.fn_tile_wb_tungsten,
+            R.string.fn_tile_wb_fluorescent, R.string.fn_tile_wb_daylight, R.string.fn_tile_wb_cloudy,
+            R.string.fn_tile_wb_shade, R.string.fn_tile_wb_custom, R.string.fn_tile_drive_single,
+            R.string.fn_tile_drive_burst, R.string.fn_tile_drive_aeb, R.string.fn_tile_drive_timelapse,
+            R.string.fn_tile_meter_matrix, R.string.fn_tile_center, R.string.fn_tile_meter_spot,
+            R.string.fn_tile_sound_focus, R.string.fn_tile_sound_stage, R.string.fn_tile_grid_golden,
+            R.string.fn_tile_grid_square, R.string.fn_tile_torch, R.string.fn_tile_mic_phone,
+            R.string.fn_tile_mic_wired,
+        )
+        words.forEach { res ->
+            val english = en.getString(res)
+            val korean = ko.getString(res)
+            assertTrue("$english must be a short uppercase camera word", english == english.uppercase() && english.length <= 6)
+            assertTrue("$english -> $korean is too long for a tile", korean.length <= 4)
+        }
+        assertEquals("3s", fnTileText(FnTileText.Seconds(3), en))
+        assertEquals("3초", fnTileText(FnTileText.Seconds(3), ko))
+        assertEquals("300mm", fnTileText(FnTileText.FocalMm(300), ko))
+        assertEquals("AF-C", fnTileText(FnTileText.Literal("AF-C"), ko))
     }
 }

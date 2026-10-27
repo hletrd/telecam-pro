@@ -3,6 +3,7 @@ package me.hletrd.telecampro.ui
 import me.hletrd.telecampro.R
 
 import android.graphics.SurfaceTexture
+import android.content.Context
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.Surface
@@ -54,9 +55,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.res.stringResource
@@ -131,6 +135,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
@@ -2490,7 +2497,6 @@ internal fun FnOverlay(
     val a11yCloseFunctionMenu = stringResource(R.string.a11y_close_function_menu)
     val functionMenuPane = stringResource(R.string.a11y_function_menu)
     val labelContext = LocalContext.current
-    val dismiss = onDismiss
     BackHandler(onBack = onDismiss)
     val slots = remember(state.mode, state.activeFnSlots) {
         fnOverlaySlots(state.mode, state.activeFnSlots)
@@ -2505,12 +2511,86 @@ internal fun FnOverlay(
     val gridRows = remember(slots, glyphOrientation) {
         fnOverlayGridRows(slots, glyphOrientation)
     }
-    val contentAxis = fnTileContentAxis(glyphOrientation)
+    val infoRotation = fnOverlayInfoRotation(glyphOrientation)
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
+    val tileEnabled: (FnSlot) -> Boolean = { slot ->
+        val manualDial = manualDialForFnSlot(slot)
+        quickFnEnabled(slot, state) && when (manualDial) {
+            DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
+            null -> true
+            else -> quickManualDialEnabled(manualDial, availability)
+        }
+    }
+    // Sony's Fn cursor: the info line names the tile last touched (or reached by keyboard focus),
+    // and that tile carries the outline. Process death simply reopens on the first enabled tile.
+    var lastTouched by remember { mutableStateOf<FnSlot?>(null) }
+    val infoSlot = fnOverlayInfoSlot(slots, lastTouched, tileEnabled)
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
+
+    @Composable
+    fun Tile(slot: FnSlot, modifier: Modifier = Modifier) {
+        val manualDial = manualDialForFnSlot(slot)
+        FnOverlayTile(
+            slot = slot,
+            value = fnSlotValue(slot, state, labelContext),
+            enabled = tileEnabled(slot),
+            onClick = {
+                if (manualDial != null) {
+                    onSelectManualDial(manualDial)
+                    onDismiss()
+                } else {
+                    // Cycle/toggle actions keep the context visible so several shooting choices
+                    // can be prepared in one Fn visit; the info line follows the tile just changed.
+                    lastTouched = slot
+                    performQuickFn(slot, state, actions)
+                }
+            },
+            readout = fnTileReadout(slot, state),
+            selected = slot == infoSlot,
+            glyphRotation = glyphRotation,
+            onFocused = { lastTouched = slot },
+            modifier = modifier,
+        )
+    }
+
+    @Composable
+    fun Close(modifier: Modifier = Modifier) {
+        FnOverlayCloseButton(
+            description = a11yCloseFunctionMenu,
+            onDismiss = onDismiss,
+            modifier = modifier.focusRequester(closeFocusRequester),
+        )
+    }
+
+    @Composable
+    fun Info(modifier: Modifier = Modifier) {
+        FnOverlayInfoLine(slot = infoSlot, state = state, rotation = infoRotation, modifier = modifier)
+    }
+
+    // A held raw row is one PHYSICAL column of the 4x2 strip: FN_TILE_LONG_DP tall in raw terms is the
+    // tile's physical width. Null cells keep their place so a short custom list cannot shift the
+    // perceived 4x2 slot positions fnOverlayGridRows deliberately retained.
+    @Composable
+    fun HeldRows() {
+        gridRows.forEach { rowSlots ->
+            Row(
+                modifier = Modifier.fillMaxWidth().height(FN_TILE_LONG_DP.dp),
+                horizontalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+            ) {
+                rowSlots.forEach { slot ->
+                    if (slot == null) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    } else {
+                        Tile(slot, Modifier.weight(1f).fillMaxHeight())
+                    }
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -2519,7 +2599,7 @@ internal fun FnOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // Touch-only scrim: the explicit 48 dp Close control below is the modal's sole
+                // Touch-only scrim: the explicit 48 dp close target below is the modal's sole
                 // named close action for TalkBack, Switch Access, and UI automation.
                 .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
         )
@@ -2530,18 +2610,22 @@ internal fun FnOverlay(
                 .padding(horizontal = 14.dp)
                 // 154 dp clears the cluster's two ACTION rows and nothing above them: measured up
                 // from the same navigation-bar inset, the cluster spends 20 (its own bottom pad) +
-                // 76 (shutter row) + 8 + 48 (mode pair) = 152 dp on them, so the tray's bottom edge
-                // lands 2 dp clear of the mode pair. The focal rail above that (160-208 dp) is
-                // deliberately UNDER the tray — the whole screen is scrimmed while Fn is open, and
-                // the rail's lens presets are not what the tray is competing with for attention.
+                // 76 (shutter row) + 8 + 48 (mode pair) = 152 dp on them, so the strip's bottom edge
+                // lands 2 dp clear of the mode pair — directly above the shutter cluster, where a
+                // Sony body puts its Fn strip. The focal rail above that (160-208 dp) is
+                // deliberately UNDER the strip — the whole screen is scrimmed while Fn is open, and
+                // the rail's lens presets are not what the strip is competing with for attention.
                 //
                 // NOT interchangeable with bottomClusterRestHeightPx, despite that being a live
                 // measurement of the same cluster: it reports the Column's CONTENT height only
                 // (the 12/20 dp padding and navigationBarsPadding sit left of its onSizeChanged, so
                 // they are excluded → ~188 dp here), and it grows with the DISP dial-chip row, which
-                // would make the tray's anchor move with detail state. It is measured for
+                // would make the strip's anchor move with detail state. It is measured for
                 // previewTopPx's reserve, which wants exactly that behaviour; this anchor does not.
                 .padding(bottom = 154.dp)
+                // Centered and capped: four 64 dp tiles plus the close column, never stretched
+                // across a wide window. A narrower window shrinks the weighted tiles instead.
+                .widthIn(max = FN_OVERLAY_MAX_WIDTH_DP.dp)
                 .fillMaxWidth()
             FnOverlayAnchor.CENTER_START -> Modifier
                 .align(AbsoluteAlignment.CenterLeft)
@@ -2552,19 +2636,25 @@ internal fun FnOverlay(
                 .absolutePadding(right = 14.dp, top = 14.dp, bottom = 14.dp)
                 .width(FN_OVERLAY_HELD_WIDTH_DP.dp)
         }
-        // Raw placement, grid order, and label/value axes describe physical camera controls rather
-        // than reading order. Keep that coordinate space absolute under RTL locales; each Text still
-        // applies Unicode bidi shaping to its own localized content.
+        // Raw placement, grid order, and the info/close sides describe physical camera controls
+        // rather than reading order. Keep that coordinate space absolute under RTL locales; each Text
+        // still applies Unicode bidi shaping to its own localized content.
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Column(
                 modifier = panelPlacement
                     .modalFocusBoundary()
                     .clip(RoundedCornerShape(8.dp))
-                    // The full-screen scrim stays light, but the compact panel itself is opaque so
-                    // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
-                    // Pill IS that opaque panel grey — the settings sheet uses it — so a hand-rolled
-                    // 0xFF181818 here was only a second, near-identical panel colour.
-                    .background(CameraColors.Pill)
+                    // True black, OPAQUE: the HUD plate's black without its translucency, and no
+                    // longer the grey settings-sheet Pill this panel used to be (owner, 2026-10-28:
+                    // the old sheet "doesn't feel like a camera UI"). The translucent HudPlate itself
+                    // was tried first and rejected on device (Galaxy Z Flip6, 2026-10-28): the
+                    // portrait strip deliberately sits OVER the focal rail (see the 154 dp anchor),
+                    // and through an 82 % plate the rail's "0.6× 1× 3× 10×" chips, the Fn entry and
+                    // the grid lines read as a second row of values between the tiles — the same
+                    // ghosting that made this panel opaque in the first place. Opaque black is the
+                    // limit of the plate HudContrastTest measures, so every ink on it (white,
+                    // secondary, the Accent cursor, the ManualActive values) clears that floor too.
+                    .background(CameraColors.Background)
                     .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
                     .semantics {
                         paneTitle = functionMenuPane
@@ -2573,91 +2663,162 @@ internal fun FnOverlay(
                     // Consume blank-panel taps without exposing a nameless dummy Button.
                     .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                     .verticalScroll(rememberScrollState())
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(FN_PANEL_PADDING_DP.dp),
+                verticalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Short glyphs counter-rotate with device orientation; the wide header Row stays
-                    // screen-fixed because rotating a wide box would poke it out of its layout slot.
-                    Text(
-                        stringResource(R.string.label_fn),
-                        color = CameraColors.TextPrimary,
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.rotate(glyphRotation),
-                    )
-                    Box(
-                        modifier = Modifier
-                            .focusRequester(closeFocusRequester)
-                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                            .clip(RoundedCornerShape(50))
-                            .clickable(role = Role.Button, onClick = onDismiss)
-                            .clearAndSetSemantics {
-                                contentDescription = a11yCloseFunctionMenu
-                                role = Role.Button
-                                onClick {
-                                    dismiss()
-                                    true
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            stringResource(R.string.action_close),
-                            color = CameraColors.TextSecondary,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier
-                                .rotate(glyphRotation)
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                        )
-                    }
-                }
-                gridRows.forEach { rowSlots ->
-                    Row(
-                        // Preserve empty raw cells/rows for custom lists shorter than eight. Without
-                        // the row floor an all-null held row collapses and changes the perceived 4x2
-                        // slot position even though fnOverlayGridRows intentionally retained it.
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        rowSlots.forEach { slot ->
-                            if (slot == null) {
-                                Spacer(modifier = Modifier.weight(1f))
-                            } else {
-                                val manualDial = manualDialForFnSlot(slot)
-                                val enabled = quickFnEnabled(slot, state) && when (manualDial) {
-                                    DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
-                                    null -> true
-                                    else -> quickManualDialEnabled(manualDial, availability)
-                                }
-                                FnOverlayTile(
-                                    slot = slot,
-                                    value = fnSlotValue(slot, state, labelContext),
-                                    enabled = enabled,
-                                    onClick = {
-                                        if (manualDial != null) {
-                                            onSelectManualDial(manualDial)
-                                            onDismiss()
-                                        } else {
-                                            // Cycle/toggle actions keep the context visible so several
-                                            // shooting choices can be prepared in one Fn visit.
-                                            performQuickFn(slot, state, actions)
+                when (trayAnchor) {
+                    // Physical layout in EVERY hold: the info line above a 4x2 tile grid, and the
+                    // close target at the grid's physical end (right). The close is not on the info
+                    // line itself because the held tray's 148 dp depth budget has no room for a
+                    // third 48 dp physical row (see FN_OVERLAY_HELD_WIDTH_DP); keeping it in one
+                    // place for every hold means a turn never moves it (ORIENTATION MOVES NO CONTROL).
+                    FnOverlayAnchor.BOTTOM_CENTER -> {
+                        Info(Modifier.fillMaxWidth())
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                            ) {
+                                gridRows.forEach { rowSlots ->
+                                    Row(
+                                        // The row floor keeps an all-blank row (a custom list
+                                        // shorter than eight) from collapsing.
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = FN_TILE_SHORT_DP.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                                    ) {
+                                        rowSlots.forEach { slot ->
+                                            if (slot == null) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            } else {
+                                                Tile(slot, Modifier.weight(1f))
+                                            }
                                         }
-                                    },
-                                    compactValue = fnOverlayCompactValue(slot, state),
-                                    glyphRotation = glyphRotation,
-                                    contentAxis = contentAxis,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                    }
+                                }
                             }
+                            Close()
+                        }
+                    }
+                    // Held counter-clockwise: raw left is the physical bottom (grid against the
+                    // docked edge), raw right is physically up (the info line), raw bottom is the
+                    // physical right (the close row after the four raw tile rows).
+                    FnOverlayAnchor.CENTER_START -> Row(
+                        modifier = Modifier.fillMaxWidth().height(FN_HELD_STRIP_LENGTH_DP.dp),
+                        horizontalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                        ) {
+                            HeldRows()
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Close() }
+                        }
+                        Info(Modifier.width(FN_HELD_INFO_LINE_DP.dp).fillMaxHeight())
+                    }
+                    // Held clockwise: the mirror image — raw right is the physical bottom, raw left
+                    // is physically up, and raw TOP is the physical right, so the close row leads.
+                    FnOverlayAnchor.CENTER_END -> Row(
+                        modifier = Modifier.fillMaxWidth().height(FN_HELD_STRIP_LENGTH_DP.dp),
+                        horizontalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                    ) {
+                        Info(Modifier.width(FN_HELD_INFO_LINE_DP.dp).fillMaxHeight())
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(FN_TILE_GAP_DP.dp),
+                        ) {
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Close() }
+                            HeldRows()
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Sony's Fn title line: the selected tile's full localized name and full value ("ISO · Auto 3200").
+ * A decorative MIRROR, like the ruler readout: every tile already exports exactly this name and value
+ * as its own contentDescription/stateDescription, so exposing the line too would announce the same
+ * changing value at two consecutive accessibility stops.
+ */
+@Composable
+private fun FnOverlayInfoLine(
+    slot: FnSlot?,
+    state: CameraUiState,
+    rotation: Float,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    Box(
+        modifier = modifier.clearAndSetSemantics { },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (slot != null) {
+            val name = context.localizedLabel(slot)
+            val value = fnSlotValue(slot, state, context)
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = CameraColors.TextSecondary, fontWeight = FontWeight.Medium)) {
+                        append(name)
+                        append(" · ")
+                    }
+                    append(value)
+                },
+                color = CameraColors.TextPrimary,
+                style = hudGlyph(12.sp),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                // rotateLayout measures on the axis the line runs along, so in the held tray it gets
+                // the strip's whole raw height to run in before it ellipsizes.
+                modifier = Modifier
+                    .rotateLayout(rotation)
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The strip's one named close action. The visual "Fn / Close" header is gone, but TalkBack, Switch
+ * Access and UI automation still need an explicit, focusable control (the scrim is touch-only), and
+ * it is where focus lands when the strip opens. A bare × glyph, Sony-quiet, in a full 48 dp target.
+ */
+@Composable
+private fun FnOverlayCloseButton(
+    description: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dismiss = onDismiss
+    Box(
+        modifier = modifier
+            .size(FN_CLOSE_TARGET_DP.dp)
+            .clip(CircleShape)
+            .clickable(role = Role.Button, onClick = onDismiss)
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+                onClick {
+                    dismiss()
+                    true
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        // A symmetric glyph, so no counter-rotation: it reads the same in every hold.
+        Icon(
+            Icons.Outlined.Close,
+            contentDescription = null,
+            tint = CameraColors.TextSecondary,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
@@ -2668,28 +2829,30 @@ internal fun FnOverlayTile(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    compactValue: FnOverlayCompactValue? = null,
+    // What the tile DRAWS. [value] stays the complete localized state for accessibility.
+    readout: FnTileReadout = FnTileReadout(FnTileText.Literal(value)),
+    // Sony's Fn cursor: the tile the info line is describing.
+    selected: Boolean = false,
     glyphRotation: Float = 0f,
-    contentAxis: FnTileContentAxis = FnTileContentAxis.PORTRAIT,
+    onFocused: () -> Unit = {},
 ) {
     val activate = onClick
-    val heldLandscape = contentAxis != FnTileContentAxis.PORTRAIT
-    val localizedSlotLabel = LocalContext.current.localizedLabel(slot)
-    val visualLabel = fnOverlayVisualLabel(
-        slot,
-        heldLandscape,
-        localizedSlotLabel,
-        stringResource(R.string.fn_short_stabilization),
-        stringResource(R.string.fn_short_open_gate),
-    )
-    val visualValue = fnOverlayVisualValue(compactValue, value, heldLandscape)
+    val context = LocalContext.current
+    val localizedSlotLabel = context.localizedLabel(slot)
+    val glyph = fnTileText(readout.text, context)
     val foregroundAlpha = if (enabled) 1f else 0.55f
+    val valueInk = if (readout.manual) CameraColors.ManualActive else CameraColors.TextPrimary
+    val shape = RoundedCornerShape(6.dp)
     Box(
         modifier = modifier
-            .heightIn(min = 56.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .heightIn(min = FN_TILE_SHORT_DP.dp)
+            .clip(shape)
             .background(if (enabled) CameraColors.Block else CameraColors.BlockDisabled)
-            .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
+            // The cursor is an active, non-manual highlight — Accent by the token doc. Amber is
+            // already spoken for inside the tile (an operator-fixed value), and an amber frame
+            // around an amber value would merge into one mark.
+            .then(if (selected) Modifier.border(1.5.dp, CameraColors.Accent, shape) else Modifier)
+            .onFocusChanged { if (it.isFocused) onFocused() }
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = localizedSlotLabel
@@ -2702,109 +2865,44 @@ internal fun FnOverlayTile(
                     true
                 }
             }
-            // Carve-out from the shared 12/6 pill inset: this tile sits in the width-contended
-            // 148 dp held tray (CameraScreenPolicy), so only the vertical joins the scale.
-            .padding(horizontal = 9.dp, vertical = 6.dp),
+            .padding(4.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (heldLandscape) {
-            // The portrait-locked Activity becomes a narrow physical strip when held sideways.
-            // Separating glyphs on the raw X axis stacks them on the held device's Y axis. The icon
-            // rides WITH the label glyph (one rotated unit) so the pair stays readable at 90°.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (contentAxis == FnTileContentAxis.HELD_LANDSCAPE_VALUE_FIRST_RAW) {
-                    FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
-                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation), icon = fnSlotIcon(slot))
-                } else {
-                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation), icon = fnSlotIcon(slot))
-                    FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
-                }
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .rotateLayout(glyphRotation),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                FnOverlayTileLabel(visualLabel, foregroundAlpha, icon = fnSlotIcon(slot))
-                FnOverlayTileValue(visualValue, foregroundAlpha)
-            }
-        }
-    }
-}
-
-/** Short visual values for held-landscape tiles; accessibility keeps [fullValue] unchanged. */
-@Composable
-internal fun fnOverlayVisualValue(
-    compactValue: FnOverlayCompactValue?,
-    fullValue: String,
-    heldLandscape: Boolean,
-): String {
-    if (!heldLandscape) return fullValue
-    return when (val compact = compactValue) {
-        is FnOverlayCompactValue.Auto -> stringResource(R.string.fn_short_auto_value, compact.value)
-        FnOverlayCompactValue.WhiteBalanceDaylight -> stringResource(R.string.fn_short_daylight)
-        FnOverlayCompactValue.WhiteBalanceTungsten -> stringResource(R.string.fn_short_tungsten)
-        FnOverlayCompactValue.Standard -> stringResource(R.string.fn_short_standard)
-        FnOverlayCompactValue.Timelapse -> stringResource(R.string.fn_short_timelapse)
-        FnOverlayCompactValue.SoundFocus -> stringResource(R.string.fn_short_sound_focus)
-        FnOverlayCompactValue.SoundStage -> stringResource(R.string.fn_short_sound_stage)
-        is FnOverlayCompactValue.TeleconverterFocal ->
-            stringResource(R.string.fn_short_focal_mm, compact.millimeters)
-        null -> fullValue
-    }
-}
-
-@Composable
-private fun FnOverlayTileLabel(
-    text: String,
-    alpha: Float,
-    modifier: Modifier = Modifier,
-    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
-) {
-    // Icon + label as ONE unit (user-requested 2026-07-31: text-only tiles read as a wall of
-    // words). The icon inherits the label's secondary ink and alpha so a dimmed tile dims whole;
-    // contentDescription null because the tile's clearAndSetSemantics already names the slot —
-    // a second name here would double-announce.
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) {
+        // Icon over value as ONE rotated unit: rotateLayout measures it on the axis it runs along
+        // after the turn, so the same stack reads upright in portrait and in either held tray (the
+        // old held tiles had to split label and value along the raw X axis to stay legible).
+        Column(
+            modifier = Modifier.rotateLayout(glyphRotation),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            // contentDescription null: the tile's cleared semantics already name the slot.
             Icon(
-                icon,
+                fnSlotIcon(slot),
                 contentDescription = null,
-                tint = CameraColors.TextSecondary.copy(alpha = alpha),
-                modifier = Modifier.size(14.dp),
+                tint = CameraColors.TextSecondary.copy(alpha = foregroundAlpha),
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                glyph,
+                color = valueInk.copy(alpha = foregroundAlpha),
+                style = hudGlyph(12.sp),
+                maxLines = 1,
+                softWrap = false,
+                // The longest readouts ("LOGC3 RAW", "SG3C RAW") step down instead of ellipsizing;
+                // everything else in the table fits 12 sp inside a 64 dp tile.
+                autoSize = TextAutoSize.StepBased(minFontSize = 8.sp, maxFontSize = 12.sp, stepSize = 0.5.sp),
             )
         }
-        Text(
-            text,
-            color = CameraColors.TextSecondary.copy(alpha = alpha),
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 
-@Composable
-private fun FnOverlayTileValue(text: String, alpha: Float, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        color = CameraColors.TextPrimary.copy(alpha = alpha),
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.SemiBold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = modifier,
-    )
+/** Resolves a tile's [FnTileText] for the current locale (EN, or KO through the same resources). */
+internal fun fnTileText(text: FnTileText, context: Context): String = when (text) {
+    is FnTileText.Literal -> text.text
+    is FnTileText.Word -> context.getString(text.res)
+    is FnTileText.Seconds -> context.getString(R.string.fn_tile_seconds, text.seconds)
+    is FnTileText.FocalMm -> context.getString(R.string.fn_tile_focal_mm, text.millimeters)
 }
 
 // quickFnEnabled moved to ControlCycles.kt — one shared per-slot availability for every quick-Fn
