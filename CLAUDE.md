@@ -1601,16 +1601,28 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   same stock-shaped session CRASHED the provider inside configure (tombstone_29: SIGTRAP in
   `com.qti.node.gme.so` `QTIGMEWrapper::AlgoUninit` during pipeline teardown, ~80 ms in; the provider
   restarts on its own). The Galaxy Z Flip6 HAL refuses the same trick cleanly (CHI
-  `CreateUsecaseObject failed` for its third-party shooting mode). OPEN, not closed (2026-10-28
-  round 2): with `CPU_READ_OFTEN | RENDERSCRIPT` (0x100003, non-flexible without the encoder bit) and
-  stock's exact stream set — its vendor stream use cases ARE in cam 2's `availableStreamUseCases` —
-  the plain third-party path CONFIGURES and previews at 30 fps with no crash, but a still into the
-  8160×6128 RAW10 is lost (`wasImageCaptured`, buffers lost, no sensor-mode switch). Adding the
-  `is.sdk.camera.package` + `is.from.extension` pair selects the full OEM path, which then stalls
-  on the first frame and aborts in `OUsecaseDefault::WaitPendingBuffer` even with only advertised
-  streams — that path needs stock's in-app side. Stock itself is LIGHT-GATED: at ISO ~1600 its
-  50 MP shutter took a binned ZSL YUV, not the full-res RAW, so its real full-res capture request
-  is still unrecorded (next step: a bright-light stock shot under `cmd media.camera watch`).
+  `CreateUsecaseObject failed` for its third-party shooting mode). With `CPU_READ_OFTEN |
+  RENDERSCRIPT` (0x100003, non-flexible without the encoder bit) and stock's exact stream set — its
+  vendor stream use cases ARE in cam 2's `availableStreamUseCases` — the plain third-party path
+  CONFIGURES and previews at 30 fps with no crash, but a still into the 8160×6128 RAW10 is lost
+  (`wasImageCaptured`, buffers lost, no sensor-mode switch). Adding the `is.sdk.camera.package` +
+  `is.from.extension` pair selects the full OEM path, which then stalls on the first frame and aborts
+  in `OUsecaseDefault::WaitPendingBuffer` even with only advertised streams — that path needs
+  stock's in-app side. **CLOSED for third-party apps (2026-10-28, round 3).** A bright-light stock
+  50 MP shot (ISO 100) recorded under `cmd media.camera watch` is a 4-request STILL_CAPTURE burst
+  (`com.oplus.capture.request.num = 4`, `.idx` 1–4, `MFSRCaptureEVList`, frame 3 at EV −18, HQ
+  edge/shading/hot-pixel/aberration, AWB lock) whose RAW reaches stock's own developer at 8160×6128
+  via sensor mode 3 and an offline `ZSLSnapshotFormatConvertor` pipeline. Replaying that burst tag
+  for tag on the third-party path fails every request within 14 ms (reason 0, buffers lost, sensor
+  stays in binned mode 7, no crash): our session builds only `RealtimeDefault0`,
+  `OplusOfflineReprocess0` and `Depth1`, none of which serves the 8160 stream. What selects the
+  full-res capture is NOT a request tag: before the burst stock tells the HAL its capture plan
+  out of band, through `OplusCameraManager.sendOplusExtCamCmd` (`CMD_PRE_CAPTURE`, then
+  `CMD_PRE_EVLIST`; the provider logs `capturenum 4 zslnum 0 … featuretype 60` in bright light and
+  `zslnum 4 … featuretype 84` for the dim binned ZSL shot). That API enforces
+  `com.oplus.permission.safe.CAMERA`, protection `signature|privileged`, so only system apps can
+  send it. Stock is LIGHT-GATED by the same plan: at ISO ~1600 its 50 MP shutter took a binned ZSL
+  YUV. Evidence: local `.context/hires-2026-10-28/` (NOTES.md, stock/bright50/, runs/b1_50_burst).
   Each wrong guess can cost a provider crash. The capability-gated
   Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
   firmware or a different device advertises a hi-res size; do not expect it here and do not
