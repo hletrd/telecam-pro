@@ -104,6 +104,12 @@ internal data class DeviceProfile(
     /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
     val makerLogPipeline: Boolean = false,
     /**
+     * Separate admission for the standalone TC + 0x80b5 maker VIDEO probe. False on every production
+     * profile: the logical-maker measurement and TC zoom span do not measure this session, and an
+     * explicit debug probe must not enable GENERIC, CPH2841 or PMA120 by inheritance.
+     */
+    val makerLogStandaloneTeleVideo: Boolean = false,
+    /**
      * The highest LOGICAL-camera wire zoom measured to stay on the converter's host tele, or null
      * where Gamma = Log (maker) has not been measured with the teleconverter (it is then not offered
      * while TC is on). The maker pipeline only exists on the logical camera, which crosses physical

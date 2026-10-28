@@ -20,6 +20,9 @@ internal object MakerLogProtocol {
     const val CAPTURE_TYPE = "com.oplus.burst.capture.type"
 }
 
+/** Standalone TC maker VIDEO session type. Reserved for an explicitly admitted debug probe. */
+internal const val MAKER_VIDEO_SESSION_TYPE = 0x80b5
+
 /**
  * PMA110's measured [DeviceProfile.makerLogTeleMaxWireZoom], device-measured in THIS route on
  * 2026-10-26 (logical camera 0, maker session, dim room, chart ~1 m; converter glass NOT mounted):
@@ -61,6 +64,23 @@ fun makerLogOffered(
 internal fun makerLogSessionWanted(video: Boolean, transfer: ColorTransfer, offered: Boolean): Boolean =
     video && transfer == ColorTransfer.MAKER_LOG && offered
 
+/** The session carrying TC + maker Log. The standalone choice needs separate measured admission. */
+enum class MakerTeleSessionRoute { LOGICAL_MAKER, STANDALONE_VIDEO }
+
+/**
+ * Preserve the measured logical-maker route unless the standalone VIDEO session was explicitly
+ * admitted. Admission is deliberately independent of TC/maker intent and of [makerLogOffered].
+ */
+fun makerTeleSessionRoute(
+    tc: Boolean,
+    maker: Boolean,
+    standaloneVideoAdmitted: Boolean,
+): MakerTeleSessionRoute = if (tc && maker && standaloneVideoAdmitted) {
+    MakerTeleSessionRoute.STANDALONE_VIDEO
+} else {
+    MakerTeleSessionRoute.LOGICAL_MAKER
+}
+
 /** Native output is admitted by accepted camera truth, not the requested Gamma mode. */
 fun effectiveRecordingTransfer(requested: ColorTransfer, makerLogAccepted: Boolean): ColorTransfer =
     if (requested == ColorTransfer.MAKER_LOG && !makerLogAccepted) ColorTransfer.SLOG3 else requested
@@ -71,9 +91,13 @@ fun effectiveRecordingTransfer(requested: ColorTransfer, makerLogAccepted: Boole
  * once per session, rather than copying this array on every frame throughout a recording. Only the
  * first 256 entries carry the curve; the remaining published storage is zero-filled.
  */
-internal fun makerLogSourceConfirmed(operationMode: Int?, logMode: Int?, gamma: IntArray?): Boolean =
-    operationMode == MakerLogProtocol.SESSION_TYPE && logMode == 0 && gamma?.size == 1024 &&
-        gamma[0] == 754 && gamma[255] > gamma[0]
+internal fun makerLogSourceConfirmed(
+    expectedOperationMode: Int,
+    operationMode: Int?,
+    logMode: Int?,
+    gamma: IntArray?,
+): Boolean = operationMode == expectedOperationMode && logMode == 0 && gamma?.size == 1024 &&
+    gamma[0] == 754 && gamma[255] > gamma[0]
 
 /**
  * The teleconverter riding the maker pipeline: the LOGICAL camera, zoomed onto the converter's host
@@ -94,6 +118,21 @@ data class MakerTeleRoute(
     val wireZoomCeiling: Float,
     val hostPhysicalId: String?,
 )
+
+/**
+ * Only the logical-maker session needs TC-local ↔ logical-wire conversion. A standalone session's
+ * camera zoom is already TC-local, so manufacturing this conversion would scale every zoom twice.
+ */
+internal fun makerTeleLogicalWireRoute(
+    sessionRoute: MakerTeleSessionRoute,
+    wireZoomScale: Float,
+    wireZoomCeiling: Float,
+    hostPhysicalId: String?,
+): MakerTeleRoute? = if (sessionRoute == MakerTeleSessionRoute.LOGICAL_MAKER) {
+    MakerTeleRoute(wireZoomScale, wireZoomCeiling, hostPhysicalId)
+} else {
+    null
+}
 
 /**
  * The host tele's position on the logical wire scale: [unifiedZoomOf] for a TC-local 1× on the

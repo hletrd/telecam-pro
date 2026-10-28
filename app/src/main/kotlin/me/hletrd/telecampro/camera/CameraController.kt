@@ -1242,6 +1242,7 @@ class CameraController internal constructor(
                             if (closed || callbackSession !== s) return@confirmation
                             val confirmed = runCatching {
                                 makerLogSourceConfirmed(
+                                    MakerLogProtocol.SESSION_TYPE,
                                     result.get(CaptureResult.Key(MakerLogProtocol.OPERATION_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.LOG_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.GAMMA_INFO, IntArray::class.java)),

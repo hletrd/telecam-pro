@@ -44,13 +44,13 @@ class MakerLogTest {
 
     @Test fun `a tag echo or an SDR LUT cannot publish a native source`() {
         val log = IntArray(1024) { if (it < 256) 754 + it else 0 }
-        assertTrue(makerLogSourceConfirmed(0x830b, 0, log))
-        assertFalse(makerLogSourceConfirmed(0x830b, 0, null))
-        assertFalse(makerLogSourceConfirmed(0x830b, 0, log.copyOf(1023)))
-        assertFalse(makerLogSourceConfirmed(0x80b4, 0, log))
-        assertFalse(makerLogSourceConfirmed(0x830b, 1, log))
-        assertFalse(makerLogSourceConfirmed(0x830b, 0, IntArray(1024) { it * 4 }))
-        assertFalse(makerLogSourceConfirmed(0x830b, 0, IntArray(1024) { 754 }))
+        assertTrue(makerLogSourceConfirmed(0x830b, 0x830b, 0, log))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x830b, 0, null))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x830b, 0, log.copyOf(1023)))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x80b4, 0, log))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x830b, 1, log))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x830b, 0, IntArray(1024) { it * 4 }))
+        assertFalse(makerLogSourceConfirmed(0x830b, 0x830b, 0, IntArray(1024) { 754 }))
     }
 
     @Test fun `refused maker intent records the named fallback without rewriting intent`() {
