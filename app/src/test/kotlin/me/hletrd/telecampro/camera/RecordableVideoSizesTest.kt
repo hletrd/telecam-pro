@@ -79,6 +79,17 @@ class RecordableVideoSizesTest {
         assertFalse(59.94 in projected8kRates)
         assertEquals(listOf(eightK, uhd), projected.availableVideoSizes)
         assertTrue(uhd !in projected.extendedVideoSizeRates)
+
+        val directDefaultBitrateRates = projectedLegalVideoRates(
+            caps = capsWith(sizes = listOf(eightK)),
+            size = eightK,
+            candidates = candidatesWith8k30,
+            transfer = ColorTransfer.SDR,
+            codec = VideoCodec.HEVC,
+            sensorOrientation = projected.sensorOrientation,
+            contentRotation = 0,
+        )
+        assertEquals(setOf(29.97, 30.0), directDefaultBitrateRates.map { it.recordableCapabilityRate }.toSet())
     }
 
     @Test
