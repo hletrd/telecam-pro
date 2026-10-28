@@ -315,7 +315,17 @@ class CameraController internal constructor(
      * path, so intent cannot answer it.
      */
     @Volatile var rawLogConfigured = false
+    /** Frozen VIDEO graph supplied at open; REC reads it only through the accepted controller identity. */
+    @Volatile var videoSessionIntent: VideoSessionIntent? = null
         private set
+
+    /** Same-session codec/Gamma packet change; route, RAW shape, raster and cadence must be identical. */
+    internal fun updateVideoSessionIntentForAcceptedPipeline(candidate: VideoSessionIntent): Boolean {
+        val current = videoSessionIntent ?: return false
+        if (current.copy(codec = candidate.codec, transfer = candidate.transfer) != candidate) return false
+        videoSessionIntent = candidate
+        return true
+    }
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
     // Ready outputs and the still request's SENSOR_PIXEL_MODE.
@@ -438,11 +448,9 @@ class CameraController internal constructor(
         // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
-        // Accepted stream raster and whether it needs the extended-raster refusal door. No defaults:
-        // an open path that forgets either could turn an 8K rejection into an unintended Gamma/ladder
-        // fallback. The marker is resolved from the accepted size by the Engine, not from user intent.
-        acceptedStreamSize: android.util.Size,
-        extendedVideoRaster: Boolean,
+        // The complete resolved VIDEO graph, or null for PHOTO. The route/raster refusal door and
+        // accepted REC packet consume this same object rather than re-reading independent Engine fields.
+        videoSessionIntent: VideoSessionIntent?,
         makerLog: Boolean = false,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
@@ -476,7 +484,8 @@ class CameraController internal constructor(
             if (makerLogAttempt) makerLogFailed = true
             reportTerminalCameraFailure(dualOpenRestorability, failure, onError::onError)
         }
-        this.selection = selection
+        this.selection = videoSessionIntent?.route ?: selection
+        this.videoSessionIntent = videoSessionIntent
         this.caps = caps
         this.glSurface = glInputSurface
         this.runNativeAcquisition = runNativeAcquisition
@@ -496,7 +505,7 @@ class CameraController internal constructor(
             )
         }
         this.makerLogRequested = makerLog && deviceProfile.makerLogPipeline && caps.isLogicalMultiCamera &&
-            selection.physicalId == null && !caps.lensFacingFront
+            this.selection.physicalId == null && !caps.lensFacingFront
         this.makerLogRefused = false
         this.makerLogConfigured = false
         this.makerLogFailed = false
@@ -511,7 +520,9 @@ class CameraController internal constructor(
         this.p010BridgeRefused = false
         this.rawLogStream = rawLogStream
         this.rawLogRefused = false
-        this.extendedVideoRasterSize = acceptedStreamSize.takeIf { extendedVideoRaster }
+        this.extendedVideoRasterSize = videoSessionIntent?.streamSize?.takeIf {
+            requiresExtendedVideoProof(it.width, it.height)
+        }
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -523,7 +534,7 @@ class CameraController internal constructor(
         this.diagnosticRequestMode = if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO
         this.diagnosticOpticsGeneration = diagnosticOpticsGeneration
         modeIntentGate.reset(PreviewModeIntent(pinAutoFps, diagnosticOpticsGeneration))
-        this.rawCharsCameraId = selection.physicalId ?: selection.logicalId
+        this.rawCharsCameraId = this.selection.physicalId ?: this.selection.logicalId
         this.rawChars = readRawCharacteristics()
 
         // openCamera can throw SYNCHRONOUSLY — CameraAccessException CAMERA_DISABLED when the app is
@@ -534,7 +545,7 @@ class CameraController internal constructor(
         openAttempted = true
         val openAdmitted = runNativeAcquisition {
             runCatching {
-                manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
+                manager.openCamera(this.selection.logicalId, executor, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     // Claim the callback-supplied identity before observing controller state. If
                     // close won while open was in flight, the armed owner closes this late handle

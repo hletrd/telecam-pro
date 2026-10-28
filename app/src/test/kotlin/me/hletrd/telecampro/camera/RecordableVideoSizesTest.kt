@@ -97,6 +97,23 @@ class RecordableVideoSizesTest {
     }
 
     @Test
+    fun `minimum frame duration alone removes an otherwise exact extended format`() {
+        val raw = capsWith(sizes = listOf(eightK, uhd)).copy(
+            availableFpsRanges = arrayOf(Range(30, 30)),
+            videoMinFrameDurationsNs = mapOf(eightK to 40_000_000L),
+        )
+
+        assertNull(projectedLegalVideoRate(
+            raw, eightK, candidatesWith8k30, ColorTransfer.SDR,
+            VideoCodec.HEVC, raw.sensorOrientation, contentRotation = 0,
+        ))
+        val projected = projectRecordableVideoSizes(raw, candidatesWith8k30, rawLog = false)
+
+        assertEquals(listOf(uhd), projected.availableVideoSizes)
+        assertTrue(eightK !in projected.extendedVideoSizeRates)
+    }
+
+    @Test
     fun `the caps rate gate consumes the projected map without narrowing legacy rates`() {
         val projected = projectRecordableVideoSizes(
             raw = capsWith(sizes = listOf(eightK, uhd)),

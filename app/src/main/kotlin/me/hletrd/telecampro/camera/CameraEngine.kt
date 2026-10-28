@@ -2905,6 +2905,16 @@ class CameraEngine internal constructor(
             startupTraceOwnership.revoke(startupTraceOwner)
             return
         }
+        val openVideoIntent = if (videoMode) {
+            resolveCurrentVideoIntent(sel, c, videoSize)
+        } else {
+            null
+        }
+        if (videoMode && openVideoIntent == null) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return
+        }
         seedGlZoom(ownedGl)
         invalidateCameraReady()
         val outgoing = controller
@@ -2985,11 +2995,7 @@ class CameraEngine internal constructor(
                 // Re-derived from the installed selection: [caps] already carry this route's span.
                 makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
-                acceptedStreamSize = previewStreamSize,
-                extendedVideoRaster = videoMode && requiresExtendedVideoProof(
-                    previewStreamSize.width,
-                    previewStreamSize.height,
-                ),
+                videoSessionIntent = openVideoIntent,
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -3574,7 +3580,8 @@ class CameraEngine internal constructor(
         onCapsReady?.invoke(routeCaps, opticsIntentGeneration.get())
         val sel = selection ?: return
         val targetSize = chooseVideoSize(sel)
-        if (targetSize == null) {
+        val targetIntent = targetSize?.let { resolveCurrentVideoIntent(sel, routeCaps, it) }
+        if (targetIntent == null) {
             // PHOTO's accepted 4:3 stream is independent of a dormant 16:9 recording request. Only
             // an active VIDEO route loses Ready when its reprojected packet has no recordable stream.
             if (videoMode) {
@@ -3583,7 +3590,13 @@ class CameraEngine internal constructor(
             }
             return
         }
-        if (targetSize != videoSize) applyVideoSize(targetSize)
+        if (targetIntent.streamSize != videoSize || targetIntent.frameRate != videoFrameRate) {
+            applyVideoIntent(targetIntent)
+        } else {
+            // Codec/Gamma can change without changing the Camera2 source shape. Replace only those
+            // two fields in the accepted controller's frozen REC intent; route/RAW/raster/rate cannot.
+            controller?.updateVideoSessionIntentForAcceptedPipeline(targetIntent)
+        }
     }
 
     fun setPeaking(enabled: Boolean) {
@@ -4050,24 +4063,21 @@ class CameraEngine internal constructor(
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         val makerBefore = makerLogWanted()
+        val sel = selection
+        val targetIntent = sel?.let {
+            resolveCurrentVideoIntent(it, caps ?: return@let null, projectVideoSize(it, caps, enabled), gate = enabled)
+        }
+        if (sel != null && targetIntent == null) {
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return false
+        }
         synchronized(this) {
             // Share the extended-refusal ownership monitor: an older fallback packet either finishes
             // before this aspect intent or sees the new Open Gate/delivered-size truth and stays inert.
             openGate = enabled
             remapMakerRouteBoundary(makerBefore, makerLogWanted())
         }
-        val sel = selection ?: return true
-        val targetSize = chooseVideoSize(sel) ?: run {
-            val refusedMakerRoute = makerLogWanted()
-            synchronized(this) {
-                openGate = !enabled
-                remapMakerRouteBoundary(refusedMakerRoute, makerBefore)
-            }
-            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
-            return false
-        }
-        if (makerBefore != makerLogWanted() && targetSize == videoSize) reopenForSession()
-        else applyVideoSize(targetSize)
+        if (targetIntent != null) applyVideoIntent(targetIntent)
         return true
     }
 
@@ -4634,11 +4644,13 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
-        if (requiresExtendedVideoProof(s.width, s.height) && projectedExtendedVideoRate(s) == null) {
-            // Encoder support alone is insufficient: fixed-FPS and min-duration camera gates must
-            // also admit a rate BEFORE the request reaches persistence or the delivered-size UI.
-            return false
+        val sel = selection
+        val routeCaps = caps
+        val targetIntent = routeCaps?.let {
+            val route = sel ?: TeleSelection(it.logicalId, it.physicalId, it.equivalentFocalMm)
+            resolveCurrentVideoIntent(route, it, s)
         }
+        if (routeCaps != null && targetIntent == null) return false
         // Remember the user's pick so lens switches and the initial open don't silently re-derive
         // the largest size over it — chooseVideoSize honors this request whenever the current lens
         // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
@@ -4656,54 +4668,64 @@ class CameraEngine internal constructor(
                 )
             }
         }
-        if (videoSize == s) return true
-        applyVideoSize(s)
+        if (targetIntent != null) {
+            if (videoSize == s && videoFrameRate == targetIntent.frameRate) return true
+            applyVideoIntent(targetIntent)
+        } else {
+            // Pre-capability selections retain the legacy direct write; the first route open resolves
+            // the complete intent before Camera2. A resolved refusal returned above instead.
+            videoSize = s
+            onVideoSizeChosen?.invoke(s, null)
+            if (videoMode) {
+                previewStreamSize = s
+                emitPreviewAspect()
+                gl.setCameraPreviewSize(s.width, s.height)
+                reopenForSession()
+            }
+        }
         return true
     }
 
-    /** Nearest camera+exact-format-proven rate for an extended raster; legacy rates stay unchanged. */
-    private fun projectedExtendedVideoRate(size: Size, routeCaps: CameraCaps? = caps): VideoFrameRate? {
-        val currentCaps = routeCaps ?: return null
-        val allowed = projectedLegalVideoRates(
-            caps = currentCaps,
-            size = size,
-            candidates = videoEncoderCandidates,
-            transfer = videoProjectionTransfer(),
+    /** Resolves one route's complete VIDEO graph before any Engine, UI, persistence, or Camera2 write. */
+    private fun resolveCurrentVideoIntent(
+        sel: TeleSelection,
+        routeCaps: CameraCaps,
+        selectedSize: Size?,
+        gate: Boolean = openGate,
+    ): VideoSessionIntent? = resolveVideoSessionIntent(
+        requested = VideoSessionRequest(
+            route = sel,
             codec = videoCodec,
-            sensorOrientation = currentCaps.sensorOrientation,
+            transfer = videoProjectionTransfer(),
+            rawLogRequested = rawLogEnabled,
+            openGate = gate,
+            requestedSize = selectedSize,
+            automaticSize = selectedSize,
+            frameRate = videoFrameRate,
+            rawRequiresStandalone = activeDeviceProfile().rawRequiresStandalone,
             contentRotation = previewRotationDegrees(),
-        )
-        return if (videoFrameRate in allowed) {
-            videoFrameRate
-        } else {
-            allowed.minByOrNull { kotlin.math.abs(it.fps - videoFrameRate.fps) }
-        }
-    }
+        ),
+        caps = routeCaps,
+        candidates = videoEncoderCandidates,
+    )
 
-    private fun applyVideoSize(s: Size) {
-        if (requiresExtendedVideoProof(s.width, s.height)) {
-            val targetRate = projectedExtendedVideoRate(s) ?: run {
-                onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
-                return
-            }
-            // Resolution, codec, Open Gate and restored-request doors all converge here BEFORE the
-            // reopen is queued. The later ViewModel reconciliation updates display/request state; it
-            // is not permission to configure Camera2 at the outgoing 50/60 fps first.
-            val makerBefore = makerLogWanted()
-            synchronized(this) {
-                videoFrameRate = targetRate
-                controls = controls.copy(fps = targetRate.fps)
-                remapMakerRouteBoundary(makerBefore, makerLogWanted())
-            }
+    private fun applyVideoIntent(intent: VideoSessionIntent) {
+        // Rate, exposure cadence, maker-route eligibility, and delivered raster commit as one packet
+        // BEFORE the size publication/reopen. The same immutable intent reaches Camera2 and REC.
+        val makerBefore = makerLogWanted()
+        synchronized(this) {
+            videoFrameRate = intent.frameRate
+            controls = controls.copy(fps = intent.frameRate.fps)
+            videoSize = intent.streamSize
+            remapMakerRouteBoundary(makerBefore, makerLogWanted())
         }
-        videoSize = s
-        onVideoSizeChosen?.invoke(s, null)
+        onVideoSizeChosen?.invoke(intent.streamSize, null)
         // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
         // size takes effect on the stream when the user switches to VIDEO (setVideoMode reopens).
         if (videoMode) {
-            previewStreamSize = s
+            previewStreamSize = intent.streamSize
             emitPreviewAspect()
-            gl.setCameraPreviewSize(s.width, s.height)
+            gl.setCameraPreviewSize(intent.streamSize.width, intent.streamSize.height)
             // Output dimensions are part of Camera2's configured stream contract. Updating only the
             // SurfaceTexture default size leaves the producer on the old 16:9/4:3 stream.
             reopenForSession()
@@ -5136,7 +5158,11 @@ class CameraEngine internal constructor(
             }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
-        val preflightSessionGeneration = invalidateCameraReady()
+        // Capability/size/rate preflight runs while the accepted session stays Ready. Only a resolved
+        // graph (or an actual preflight failure) invalidates it; a dormant VIDEO refusal cannot dip PHOTO.
+        var preflightSessionGeneration: Long? = null
+        fun invalidateForPreflight(): Long = preflightSessionGeneration
+            ?: invalidateCameraReady().also { preflightSessionGeneration = it }
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
@@ -5176,7 +5202,7 @@ class CameraEngine internal constructor(
                 handlePreflightFailure(
                     transaction,
                     recoverColdPreflight,
-                    preflightSessionGeneration,
+                    invalidateForPreflight(),
                     startupTraceOwner,
                 )
                 return@execute
@@ -5186,7 +5212,7 @@ class CameraEngine internal constructor(
                     handlePreflightFailure(
                         transaction,
                         recoverColdPreflight,
-                        preflightSessionGeneration,
+                        invalidateForPreflight(),
                         startupTraceOwner,
                     )
                     return@execute
@@ -5217,12 +5243,30 @@ class CameraEngine internal constructor(
                 return@execute
             }
 
-            // Resolve automatic/explicit sizes before installing the candidate. Null is a truthful
-            // preflight refusal: no advertised ≤3840 automatic stream exists, and an explicit extended
-            // VIDEO pick was unavailable. PHOTO may retain its dormant recording request for a later route.
+            // Resolve automatic/explicit sizes and the complete rate/RAW fixed point before installing
+            // the candidate or invalidating Ready. PHOTO may retain a dormant recording request for a
+            // later route; only its independent 4:3 stream must resolve here.
             val nextVideoSize = projectVideoSize(sel, c)
+            val nextVideoIntent = if (videoMode) {
+                resolveCurrentVideoIntent(sel, c, nextVideoSize)
+            } else {
+                null
+            }
+            if (videoMode && nextVideoIntent == null) {
+                if (transaction.baselinePrecedesMutation) {
+                    rollbackOpticsAfterPreflight(
+                        transaction,
+                        CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status(),
+                        cameraSessionGeneration.get(),
+                    )
+                } else {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                }
+                return@execute
+            }
             val nextPreviewStreamSize = if (videoMode) {
-                nextVideoSize
+                nextVideoIntent?.streamSize
             } else {
                 projectStreamSize(sel, fourByThree = true, routeCaps = c)
             }
@@ -5230,31 +5274,24 @@ class CameraEngine internal constructor(
                 handlePreflightFailure(
                     transaction,
                     recoverColdPreflight,
-                    preflightSessionGeneration,
+                    invalidateForPreflight(),
                     startupTraceOwner,
                 )
                 return@execute
             }
-            val acceptedVideoSize = nextVideoSize ?: videoSize
-            if (requiresExtendedVideoProof(nextPreviewStreamSize.width, nextPreviewStreamSize.height)) {
-                val targetRate = projectedExtendedVideoRate(nextPreviewStreamSize, c) ?: run {
-                    handlePreflightFailure(
-                        transaction,
-                        recoverColdPreflight,
-                        preflightSessionGeneration,
-                        startupTraceOwner,
-                    )
-                    return@execute
-                }
-                // Restored extended requests do not pass through applyVideoSize. Project their rate
-                // here, before controller construction/configure; if ≤30 changes the maker-TC route,
-                // re-resolve the same owned transaction instead of opening the outgoing route once.
+            invalidateForPreflight()
+            val acceptedVideoSize = nextVideoIntent?.streamSize ?: nextVideoSize ?: videoSize
+            if (nextVideoIntent != null) {
+                // Restored requests do not pass through applyVideoIntent. Publish the resolved cadence
+                // before controller construction; a maker-route crossing re-resolves the same packet.
                 val makerBefore = makerLogWanted()
                 var makerRouteChanged = false
                 synchronized(this) {
-                    if (targetRate != videoFrameRate || controls.fps != targetRate.fps) {
-                        videoFrameRate = targetRate
-                        controls = controls.copy(fps = targetRate.fps)
+                    if (nextVideoIntent.frameRate != videoFrameRate ||
+                        controls.fps != nextVideoIntent.frameRate.fps
+                    ) {
+                        videoFrameRate = nextVideoIntent.frameRate
+                        controls = controls.copy(fps = nextVideoIntent.frameRate.fps)
                         remapMakerRouteBoundary(makerBefore, makerLogWanted())
                         makerRouteChanged = makerBefore != makerLogWanted()
                     }
@@ -5351,11 +5388,7 @@ class CameraEngine internal constructor(
                     makerLog = makerLogWanted() && !makerLogRefused,
                     makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
-                    acceptedStreamSize = previewStreamSize,
-                    extendedVideoRaster = videoMode && requiresExtendedVideoProof(
-                        previewStreamSize.width,
-                        previewStreamSize.height,
-                    ),
+                    videoSessionIntent = nextVideoIntent,
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
@@ -7008,10 +7041,14 @@ class CameraEngine internal constructor(
     private fun currentRecordingAdmissionSnapshot(): RecordingAdmissionSnapshot? = synchronized(this) {
         val acceptedSession = currentAcceptedRecordingSession() ?: return@synchronized null
         recordingPreNativeOverrides?.beforeEncoderAdmissionSnapshot?.invoke()
-        val frozenSize = videoSize
-        val frozenFrameRate = videoFrameRate
-        val frozenCodec = videoCodec
-        val frozenTransfer = effectiveRecordingTransfer(transfer, acceptedSession.outputs.makerLog)
+        val acceptedIntent = acceptedSession.controller.videoSessionIntent
+        val frozenSize = acceptedIntent?.streamSize ?: videoSize
+        val frozenFrameRate = acceptedIntent?.frameRate ?: videoFrameRate
+        val frozenCodec = acceptedIntent?.codec ?: videoCodec
+        val frozenTransfer = effectiveRecordingTransfer(
+            acceptedIntent?.transfer ?: transfer,
+            acceptedSession.outputs.makerLog,
+        )
         val frozenCandidates = videoEncoderCandidates.toList()
         val frozenHighSpeedFps = desiredHighSpeedFps()
         val inputs = RecordingAdmissionInputs(
@@ -9276,8 +9313,12 @@ class CameraEngine internal constructor(
      */
     private fun chooseVideoSize(sel: TeleSelection): Size? = projectVideoSize(sel, caps)
 
-    private fun projectVideoSize(sel: TeleSelection, routeCaps: CameraCaps?): Size? {
-        val list = routeCaps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+    private fun projectVideoSize(
+        sel: TeleSelection,
+        routeCaps: CameraCaps?,
+        gate: Boolean = openGate,
+    ): Size? {
+        val list = routeCaps?.let { if (gate) it.openGateVideoSizes else it.availableVideoSizes }
         val req = requestedVideoSize
         if (req != null && list?.contains(req) == true && !extendedVideoRasterRefusals.blocks(
                 rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
@@ -9287,7 +9328,7 @@ class CameraEngine internal constructor(
         ) {
             return req
         }
-        val auto = projectStreamSize(sel, fourByThree = openGate, routeCaps = routeCaps)
+        val auto = projectStreamSize(sel, fourByThree = gate, routeCaps = routeCaps)
         if (req == null) return auto
         if (list != null && req in list && extendedVideoRasterRefusals.blocks(
                 rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),

@@ -258,6 +258,76 @@ class CameraEngineRecordingPreNativeTest {
     }
 
     @Test
+    fun `same session codec change replaces the accepted REC intent without a reopen`() {
+        val setupPackets = CopyOnWriteArrayList<RecordingNativeSetupPacket>()
+        val resultDone = CountDownLatch(1)
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-hevc",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+        val engine = engine(
+            RecordingPreNativeEngineOverrides(
+                allocatePendingVideo = { _, _ -> Uri.parse("content://video/codec-intent") },
+                dispatchAllocation = ::runInline,
+                scheduleDeadline = { _, _ -> RecordingTeardownCancellation {} },
+                afterMicrophoneClaim = { _, _, _ -> error("native setup observer owns this terminal") },
+                discardPendingOutput = { PendingOutputDiscardResult.RECOVERY_MARKED },
+                useProductionEncoderAdmission = true,
+                frameRateAvailable = true,
+                onNativeSetupPacket = { packet ->
+                    setupPackets += packet
+                    false
+                },
+            ),
+        )
+        setField(engine, "videoMode", true)
+        val size = android.util.Size(1920, 1080)
+        setField(engine, "selection", TeleSelection("test", null, 23f))
+        setField(
+            engine,
+            "caps",
+            me.hletrd.telecampro.ui.ViewModelTestAccess.caps().copy(
+                availableVideoSizes = listOf(size),
+                openGateVideoSizes = listOf(android.util.Size(1440, 1080)),
+            ),
+        )
+        setField(engine, "videoSize", size)
+        engine.setVideoPipeline(listOf(hevc), ColorTransfer.SDR, VideoCodec.HEVC)
+        val controller = installAcceptedSession(engine)
+        setField(
+            controller,
+            "videoSessionIntent",
+            VideoSessionIntent(
+                route = TeleSelection("test", null, 23f),
+                codec = VideoCodec.HEVC,
+                transfer = ColorTransfer.SDR,
+                rawLog = false,
+                openGate = false,
+                streamSize = size,
+                encoderSize = android.util.Size(1080, 1920),
+                frameRate = VideoFrameRate.FPS_29_97,
+            ),
+        )
+
+        engine.setVideoPipeline(listOf(avc), ColorTransfer.SDR, VideoCodec.AVC)
+        engine.startRecording(recordAudio = false) { resultDone.countDown() }
+
+        assertTrue(resultDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertEquals(VideoCodec.AVC, setupPackets.single().codec)
+        assertEquals(listOf(avc), setupPackets.single().candidates)
+    }
+
+    @Test
     fun `real start timeout retires provider with exactly one result and failure status`() {
         val providerEntered = CountDownLatch(1)
         val providerRelease = trackedRelease()
@@ -1015,7 +1085,7 @@ class CameraEngineRecordingPreNativeTest {
     private fun engine(overrides: RecordingPreNativeEngineOverrides): CameraEngine =
         CameraEngine(app, overrides).also(engines::add)
 
-    private fun installAcceptedSession(engine: CameraEngine) {
+    private fun installAcceptedSession(engine: CameraEngine): CameraController {
         val controller = CameraController(app)
         val acceptedType = CameraEngine::class.java.declaredClasses
             .single { it.simpleName == "AcceptedCameraSession" }
@@ -1028,6 +1098,7 @@ class CameraEngineRecordingPreNativeTest {
         setField(engine, "acceptedCameraSession", accepted)
         setField(engine, "cameraReady", true)
         setField(engine, "previewReady", true)
+        return controller
     }
 
     private fun setField(target: Any, name: String, value: Any) {

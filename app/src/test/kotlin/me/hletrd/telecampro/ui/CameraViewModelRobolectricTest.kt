@@ -1661,6 +1661,37 @@ class CameraViewModelRobolectricTest {
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
     }
 
+    @Test fun `no future VIDEO size leaves accepted PHOTO session Ready`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val extendedOnly = android.util.Size(7680, 4320)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(extendedOnly),
+            openGateVideoSizes = emptyList(),
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("cameraReady").setBoolean(e, true)
+        engineField("selection").set(e, TeleSelection("test", null, 23f))
+        engineField("caps").set(e, routeCaps)
+        setState(v) { it.copy(mode = CaptureMode.PHOTO, caps = routeCaps, cameraReady = true) }
+        val avc = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "test.avc.no-extended",
+            mime = MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { false },
+        )
+
+        e.setVideoPipeline(listOf(avc), ColorTransfer.SDR, fallbackCodec = VideoCodec.AVC)
+        idleFor(50)
+
+        assertTrue("a dormant VIDEO projection cannot invalidate PHOTO", engineField("cameraReady").getBoolean(e))
+        assertTrue(v.state.value.cameraReady)
+    }
+
     @Test fun `Open Gate refusal does not update or persist the ViewModel request`() {
         val (v, e) = createViewModel()
         idleFor(0)
@@ -1739,6 +1770,62 @@ class CameraViewModelRobolectricTest {
 
         assertEquals(VideoFrameRate.FPS_29_97, rateAtSizePublication)
         assertEquals(30, controlsFpsAtSizePublication)
+    }
+
+    @Test fun `extended rate correction that enables RAW Log refuses an upscaled raster inertly`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            supportsRaw = true,
+            rawSize = android.util.Size(4096, 3072),
+            rawLogDevelopable = true,
+            rawMinFrameDurationNs = 33_333_333L,
+        )
+        val encoder8k30 = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-8k30",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("transfer").set(e, ColorTransfer.SLOG3)
+        engineField("rawLogEnabled").setBoolean(e, true)
+        engineField("videoFrameRate").set(e, VideoFrameRate.FPS_60)
+        engineField("controls").set(e, ManualControls(fps = 60))
+        engineField("videoEncoderCandidates").set(e, listOf(encoder8k30))
+        engineField("caps").set(e, routeCaps)
+        engineField("videoSize").set(e, uhd)
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = routeCaps,
+                videoResolution = uhd,
+                videoFrameRate = VideoFrameRate.FPS_60,
+                transfer = ColorTransfer.SLOG3,
+                rawLog = true,
+            )
+        }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertEquals(uhd, engineField("videoSize").get(e))
+        assertEquals(VideoFrameRate.FPS_60, engineField("videoFrameRate").get(e))
+        assertNull(e.currentRequestedVideoSize())
     }
 
     @Test fun `PHOTO extended admission uses retained Gamma and an illegal exact format is inert`() {
