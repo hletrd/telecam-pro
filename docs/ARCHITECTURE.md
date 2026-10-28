@@ -58,8 +58,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only (the per-phone maker-log product fact `nativeLogFlavor` was removed with those curves, 2026-10-26). `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
-| `RecordableVideoSizes.kt` | The single camera-size → recordable-size projection. Legacy sizes through 4096×3072 retain their existing admission/rate rules; an extended raster remains only when an exact active encoder candidate proves at least one standard rate ≤30 fps (and RAW Log has a large enough RAW source). `extendedVideoSizeRates` gates those extended FPS choices. CameraEngine applies this at accepted-route caps and rebuilds it from the raw cache after codec/transfer/RAW-intent changes; projected answers never become camera truth. |
-| `ExtendedVideoRasterRecovery.kt` | Gamma-preserving extended-raster configure refusal policy and ownership. A soft rejection bypasses maker-log, RAW-log, P010 and the ordinary ladders so the Engine can reopen the largest offered smaller raster with the same transfer; a device-fatal rejection carries its exact route/size into bounded recovery. The route/size/transfer latch retains every refused tuple, only an identical explicit resolution retry clears its own tuple, and per-open optics/pipeline/direct-size ownership makes older callbacks inert. |
+| `RecordableVideoSizes.kt` | The single camera-size → recordable-size projection. Legacy sizes through 4096×3072 retain their existing admission/rate rules; an extended raster remains only when an exact active encoder candidate proves at least one standard rate ≤30 fps (and RAW Log has a large enough RAW source). `extendedVideoSizeRates` gates those extended FPS choices. CameraEngine applies this at accepted-route caps and rebuilds it from the raw cache after codec/transfer/RAW-intent/bitrate changes; projected answers never become camera truth. |
+| `VideoSessionIntent.kt` | One immutable, atomically resolved VIDEO graph: route, codec, transfer, RAW-Log answer, Open Gate, camera stream size, actually rotated encoder raster, and exact recording rate. Resolution iterates rate → RAW eligibility → raster → rate to a fixed point before Engine/UI/Camera2 state changes; an illegal extended fixed point is refused, never upscaled. |
+| `ExtendedVideoRasterRecovery.kt` | Gamma-preserving extended-raster refusal policy, real-frame Ready gating, REC raster matching, and per-open ownership. Configure or streaming-fatal rejection latches the exact route/size/transfer and recovers the last real-frame accepted graph, or makes one legacy capped attempt when none survives — never an automatic descending extended-size ladder. Only an identical explicit retry clears its own tuple; controller/optics/pipeline/Open-Gate/direct-size/attempted-raster ownership makes older callbacks inert. |
 | `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
@@ -1136,33 +1137,61 @@ Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE
 
 Resolutions originate in the selected camera's `StreamConfigurationMap`, but the camera cache stays
 RAW: `CameraEngine.capsCache` never stores a packet-filtered answer. At accepted-route capability
-installation, and again after codec/transfer/RAW-intent changes before Ready, one
+installation, and again after codec/transfer/RAW-intent/bitrate changes before Ready, one
 `projectRecordableVideoSizes` projection filters the raw lists through the active exact encoder
 candidates and Gamma packet. Maker-TC zoom/aperture route adjustments are applied without restoring
 filtered sizes. ProSheet, frame-rate reconciliation and explicit-size admission all consume that same
-projected `availableVideoSizes` / `openGateVideoSizes`; there is no separate UI filter.
+projected `availableVideoSizes` / `openGateVideoSizes`; there is no separate UI filter. An empty
+projected aspect list retains the legacy direct-characteristics automatic answer, and failure to
+project a future VIDEO size never invalidates a healthy accepted PHOTO session.
 
 Automatic VIDEO and the PHOTO preview stay capped at 3840 wide, preserving the existing defaults
 (PMA110 selects 4K UHD / 2560×1920 Open Gate). With no matching-aspect size at or below the cap,
 selection takes the largest other advertised size inside it; if none exists, automatic selection has
 no answer and route configuration refuses preflight rather than exceeding the cap or inventing a
-stream. A size beyond the legacy 4096×3072 boundary, including
-8K, can configure only through an explicit VIDEO selection (or its restored request) present in the
-projected list. If a later route/Gamma packet removes it, the delivered size falls back to the capped
-automatic choice without rewriting the operator's request; reprojection from raw caps can admit that
-request again. Extended sizes expose only their exactly encoder-proven standard rates ≤30 fps that
-also survive the camera's fixed-FPS/minimum-duration gates, and
-every extended-size/reprojection door projects one of those rates into both the engine rate and the
-Camera2 controls before an open; a surviving-newer-pipeline rollback whose delivered raster differs
-from the accepted stream stays Not-Ready and reconfigures before Ready or REC admission.
+stream. A size beyond the legacy 4096×3072 boundary, including 8K, can configure only through an
+explicit VIDEO selection (or its restored request) present in the projected list. Extended admission
+uses the exact component and codec's `MediaFormat` support answer for the required profile (Main10
+where applicable), selected nominal query rate, actual bitrate, and rotation-corrected encoder
+raster, intersected with the camera's fixed-FPS/minimum-duration limits and the ≤30 fps extended
+ceiling. Exact 1001-grid recording rates remain intact; only platform queries use nominal rates.
+No legal rate means no selectable size and an inert explicit setter: Engine, UI, persistence, the
+current stream, and Ready remain unchanged. RAW Log additionally needs a native RAW raster at least
+as large as the requested output. PMA110 has no additional-size profile admission and remains
+4K-only; FIELD_CHECKS A29 preserves the measured OEM-Log 8K streaming fatalities and the validated
+installed 4K build facts.
 
-If Camera2 refuses an extended raster softly, `CameraController` reports it before any maker/RAW/P010
-or ordinary fallback rung. `CameraEngine` retains every refused route/size/transfer tuple, publishes
-the largest offered smaller size not already refused, and reopens with Gamma unchanged; the explicit request remains
-persisted. A fatal configure error applies the same latch before bounded recovery, so recovery cannot
-reopen any refused graph. Only an identical explicit resolution retry clears its own tuple. Callbacks
-superseded by controller, optics-generation, pipeline, or direct-size changes cannot replace newer
-state.
+Before a VIDEO reopen invalidates Ready or opens Camera2, `resolveVideoSessionIntent` resolves rate →
+RAW-Log eligibility → raster → rate to a fixed point and publishes one immutable `VideoSessionIntent`.
+The packet carries route, codec, transfer, RAW-Log answer, Open Gate, camera stream size, actual
+encoder raster, and exact rate; a rate correction that newly enables RAW Log reapplies the RAW raster
+gate before the open rather than asking the developer to upscale. The controller stages the newest
+packet before `openCamera`, and an open that races a newer same-shape pipeline cannot write its stale
+fallback back over it. PHOTO-mode explicit-size admission and retry identity use the retained
+next-Video Gamma, not PHOTO's forced SDR. If a later route/Gamma packet removes an extended request,
+the delivered size falls back to the capped automatic choice without rewriting the operator's
+request; reprojection from raw caps can admit that request again. Open Gate is published and
+persisted only after the Engine accepts the resolved change.
+
+Attempted and accepted raster truth stay separate. Per-open ownership records the attempted stream
+size with its route, transfer, optics/pipeline generations, direct-request write, and Open Gate;
+Camera2/GL use that attempt only for its owning transaction. The first valid real-camera-frame Ready
+publication installs `acceptedVideoSize` and the complete last accepted graph. REC freezes the
+accepted controller/session and an identical accepted raster, refusing a newer attempted or delivered
+size that differs. A surviving-newer-pipeline rollback either restores the actual accepted pair or
+stays Not-Ready and reconfigures; it never publishes a mismatched stream/size pair as Ready.
+
+An extended raster has one automatic attempt per explicit selection. A soft Camera2 configure
+rejection reports before any maker/RAW/P010 or ordinary fallback rung; a configure-fatal or later
+streaming-fatal device error takes the same exact route/size/transfer refusal latch before bounded
+recovery. Recovery restores the last usable real-frame accepted graph with Gamma unchanged, or, when
+no such graph survives, resolves exactly one legacy capped automatic attempt. It never descends
+through 5K/other extended intermediates and never recursively re-enters the rejected rollback
+transaction: recovery uses a post-mutation reconfiguration with bounded preflight/retry/terminal
+semantics, including when no accepted or capped answer resolves. The explicit request remains
+persisted, and only an identical explicit resolution retry clears its own refusal tuple. Every
+externally visible recovery effect revalidates controller, optics, pipeline, Open Gate, direct-size,
+and attempted-stream ownership, so an older callback cannot replace newer state.
 
 Frame rates include standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94).
 The UI deliberately excludes 120 fps because the constrained high-speed session crashes this HAL.
