@@ -19,6 +19,7 @@ from tc_ois_ab import (  # noqa: E402
     analyze_videos,
     decode_luminance_crop,
     estimate_translation,
+    main as analyzer_main,
     measure_directional_blur,
 )
 
@@ -96,6 +97,15 @@ def test_known_feature_motion_uses_content_coordinates() -> None:
     assert estimate.dy == pytest.approx(-7.0, abs=1.0)
 
 
+@pytest.mark.parametrize(("size", "max_shift"), [(16, 7), (24, 8)])
+def test_fallback_refuses_when_no_independent_sidelobes_exist(size: int, max_shift: int) -> None:
+    rng = np.random.default_rng(9100 + size)
+    reference = rng.random((size, size))
+    unrelated = rng.random((size, size))
+    estimate = estimate_translation(reference, unrelated, max_shift=max_shift)
+    assert not estimate.confident
+
+
 def test_translation_and_directional_blur_are_measured_together() -> None:
     reference, candidate = _crop_pair(12, -7)
     blurred = _motion_blur(candidate, length=17, axis="x")
@@ -156,6 +166,26 @@ def test_trial_aggregates_per_frame_measurements() -> None:
     assert result.dx == pytest.approx(11.0, abs=1.0)
     assert result.dy == pytest.approx(-6.5, abs=1.0)
     assert len(result.frames) == 2
+
+
+@pytest.mark.parametrize("max_frames", [0, -1])
+def test_trial_rejects_nonpositive_sampling_limit(max_frames: int) -> None:
+    reference, candidate = _crop_pair(0, 0)
+    with pytest.raises(ValueError, match="max_frames"):
+        analyze_trial(reference, candidate, max_frames=max_frames)
+
+
+@pytest.mark.parametrize("max_frames", ["0", "-2"])
+def test_cli_rejects_nonpositive_sampling_limit_before_decoding(max_frames: str) -> None:
+    with pytest.raises(ValueError, match="max_frames"):
+        analyzer_main(
+            [
+                "missing-reference.mp4",
+                "missing-candidate.mp4",
+                "--crop", "0,0,16,16",
+                "--max-frames", max_frames,
+            ]
+        )
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")

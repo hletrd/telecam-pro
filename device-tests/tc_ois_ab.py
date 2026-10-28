@@ -193,31 +193,37 @@ def estimate_translation(
         if normalization > 1.0e-12:
             fallback = np.fft.ifft2(fallback_spectrum).real / normalization
             fallback_search = np.where(allowed, fallback, -np.inf)
-            peak_y, peak_x = np.unravel_index(int(np.argmax(fallback_search)), fallback.shape)
-            peak = float(fallback[peak_y, peak_x])
-            wrapped_dy = (yy - peak_y + height // 2) % height - height // 2
-            wrapped_dx = (xx - peak_x + width // 2) % width - width // 2
-            sidelobes = allowed & ((np.abs(wrapped_dx) > 8) | (np.abs(wrapped_dy) > 8))
-            second = float(fallback[sidelobes].max(initial=-np.inf))
-            peak_ratio = peak / max(second, 1.0e-9)
-            if peak >= PHASE_PEAK_FLOOR and peak_ratio >= PHASE_PEAK_RATIO_FLOOR:
-                offset_x = _parabolic_offset(
-                    float(fallback[peak_y, (peak_x - 1) % width]),
-                    peak,
-                    float(fallback[peak_y, (peak_x + 1) % width]),
-                )
-                offset_y = _parabolic_offset(
-                    float(fallback[(peak_y - 1) % height, peak_x]),
-                    peak,
-                    float(fallback[(peak_y + 1) % height, peak_x]),
-                )
-                return TranslationEstimate(
-                    dx=float(x_shifts[peak_x]) + offset_x,
-                    dy=float(y_shifts[peak_y]) + offset_y,
-                    peak=peak,
-                    peak_ratio=peak_ratio,
-                    confident=True,
-                )
+            fallback_y, fallback_x = np.unravel_index(
+                int(np.argmax(fallback_search)), fallback.shape
+            )
+            fallback_peak = float(fallback[fallback_y, fallback_x])
+            fallback_dy = (yy - fallback_y + height // 2) % height - height // 2
+            fallback_dx = (xx - fallback_x + width // 2) % width - width // 2
+            sidelobes = allowed & ((np.abs(fallback_dx) > 8) | (np.abs(fallback_dy) > 8))
+            # With max_shift <= 8 the exclusion can cover the entire search
+            # space. An empty population is no confidence evidence, not an
+            # infinite peak ratio produced by the -inf initializer.
+            if np.any(sidelobes):
+                second = float(fallback[sidelobes].max())
+                fallback_ratio = fallback_peak / max(second, 1.0e-9)
+                if fallback_peak >= PHASE_PEAK_FLOOR and fallback_ratio >= PHASE_PEAK_RATIO_FLOOR:
+                    offset_x = _parabolic_offset(
+                        float(fallback[fallback_y, (fallback_x - 1) % width]),
+                        fallback_peak,
+                        float(fallback[fallback_y, (fallback_x + 1) % width]),
+                    )
+                    offset_y = _parabolic_offset(
+                        float(fallback[(fallback_y - 1) % height, fallback_x]),
+                        fallback_peak,
+                        float(fallback[(fallback_y + 1) % height, fallback_x]),
+                    )
+                    return TranslationEstimate(
+                        dx=float(x_shifts[fallback_x]) + offset_x,
+                        dy=float(y_shifts[fallback_y]) + offset_y,
+                        peak=fallback_peak,
+                        peak_ratio=fallback_ratio,
+                        confident=True,
+                    )
     return TranslationEstimate(
         dx=float(x_shifts[peak_x]) + offset_x,
         dy=float(y_shifts[peak_y]) + offset_y,
@@ -342,6 +348,8 @@ def analyze_trial(
     max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> TrialAnalysis:
     """Aggregate a bounded, evenly spaced sample of a matched frame sequence."""
+    if max_frames <= 0:
+        raise ValueError("max_frames must be positive")
     try:
         reference = _frame_stack(reference_frames)
         candidate = _frame_stack(candidate_frames)
@@ -351,7 +359,7 @@ def analyze_trial(
         return TrialAnalysis("UNJUDGEABLE", "FRAME_COUNT_MISMATCH", math.nan, math.nan, False, 0.0, math.nan, ())
 
     count = reference.shape[0]
-    sample_count = min(max(1, max_frames), count)
+    sample_count = min(max_frames, count)
     indices = np.linspace(0, count - 1, sample_count, dtype=int)
     frames = tuple(analyze_frame_pair(reference[index], candidate[index]) for index in indices)
     if any(frame.reason == "EXPOSURE_MISMATCH" for frame in frames):
@@ -437,6 +445,8 @@ def analyze_videos(
     max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> TrialAnalysis:
     """Decode identical regions/windows, then sample across the complete sequences."""
+    if max_frames <= 0:
+        raise ValueError("max_frames must be positive")
     reference_frames = decode_luminance_crop(
         reference, crop=crop, start_s=start_s, duration_s=duration_s
     )
