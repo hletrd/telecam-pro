@@ -364,8 +364,11 @@ class CameraController internal constructor(
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
     private var highSpeedFps = 0
     // Accepted VIDEO stream raster when it exceeds the legacy envelope. Its configure rejection must
-    // preserve Gamma and reopen smaller through the Engine, never degrade the transfer in this ladder.
+    // preserve Gamma and recover the accepted/capped graph through the Engine, never degrade transfer.
     private var extendedVideoRasterSize: android.util.Size? = null
+    // Configuration and an accepted setRepeatingRequest call are not observable frame truth. Arm each
+    // ordinary session's Ready here and deliver it from that session's first real capture result.
+    private val realFrameReadyGate = RealFrameReadyGate<CameraCaptureSession>()
 
     @Volatile private var pending: Pending? = null
     // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
@@ -495,6 +498,7 @@ class CameraController internal constructor(
         onReady: Ready,
         onError: ErrorCb,
     ) {
+        realFrameReadyGate.cancel()
         // A replaced controller's Engine callback is identity-inert while a dual-open candidate owns
         // the shared slot. Publish terminality BEFORE invoking that callback so supersession cleanup
         // can never mistake the outgoing native owner for a restorable one in the callback→close gap.
@@ -1256,8 +1260,9 @@ class CameraController internal constructor(
                         }
                     }
                     when (sessionStartDelivery(startPreview())) {
-                        SessionStartDelivery.READY -> if (!useMakerLog) deliverReady()
+                        SessionStartDelivery.READY -> if (!useMakerLog) realFrameReadyGate.arm(s, deliverReady)
                         SessionStartDelivery.ERROR -> {
+                            realFrameReadyGate.cancel()
                             pendingMakerConfirmation = null
                             onError.onError(IllegalStateException("repeating preview request failed"))
                         }
@@ -1722,6 +1727,7 @@ class CameraController internal constructor(
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
+                    realFrameReadyGate.onRealFrame(session)
                     pendingMakerConfirmation?.invoke(session, result)
                     // Pair this repeating result with its ring frame (EXIF/admission truth for the
                     // pseudo-ZSL serve path). Same camera thread as the reader listener.
@@ -3530,6 +3536,7 @@ class CameraController internal constructor(
     }
 
     internal fun close(): CameraControllerCloseResult {
+        realFrameReadyGate.cancel()
         val terminal = beginClose()
         // A callback must never await work or onClosed delivery on its own HandlerThread. Engine
         // replacement/release lanes call from outside this thread and consume the bounded terminal.

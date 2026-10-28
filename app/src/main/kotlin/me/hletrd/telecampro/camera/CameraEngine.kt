@@ -316,6 +316,10 @@ class CameraEngine internal constructor(
     private val extendedVideoRasterRefusals = ExtendedVideoRasterRefusalLatch()
     private val extendedVideoRasterOpenOwnership =
         java.util.WeakHashMap<CameraController, ExtendedVideoRasterOpenOwnership>()
+    // Attempted raster lives in each open-ownership packet above. This separate truth is installed
+    // only by the first real-frame Ready of an accepted session; REC never reads the attempt.
+    @Volatile private var acceptedVideoSize: Size? = null
+    @Volatile private var lastAcceptedVideoGraph: AcceptedVideoGraph? = null
     private val gyroLog = me.hletrd.telecampro.video.GyroLogRecorder(context) {
         onStatus?.invoke(CameraStatusMessage.GYRO_LOG_NOT_SAVED.status())
     }
@@ -764,9 +768,11 @@ class CameraEngine internal constructor(
         val selection: TeleSelection?,
         val caps: CameraCaps?,
         val videoSize: Size,
+        val acceptedVideoSize: Size?,
         val requestedVideoSize: Size?,
         val requestedVideoSizeDirectWrites: Long,
         val previewStreamSize: Size,
+        val openGate: Boolean,
         val preTeleUnifiedZoom: Float,
         val ready: Boolean,
         val readyController: CameraController?,
@@ -782,6 +788,11 @@ class CameraEngine internal constructor(
          */
         val rawLogEnabled: Boolean,
         val rawLogEnabledDirectWrites: Long,
+    )
+
+    private data class AcceptedVideoGraph(
+        val snapshot: OpticsSnapshot,
+        val intent: VideoSessionIntent,
     )
 
     // The RAW-loss facts commitOpticsReady computed for one exact accepted session (identity, not
@@ -862,7 +873,7 @@ class CameraEngine internal constructor(
         val previewAspect: Float,
         val punchInResolved: Boolean,
         val restoreSession: Boolean,
-        val reopenTransaction: OpticsTransaction?,
+        val reopenRequired: Boolean,
         val opticsPublication: OpticsRollbackPublication,
         val readyPublication: CameraReadyPublication,
     )
@@ -887,9 +898,11 @@ class CameraEngine internal constructor(
         selection = selection,
         caps = caps,
         videoSize = videoSize,
+        acceptedVideoSize = acceptedVideoSize,
         requestedVideoSize = requestedVideoSize,
         requestedVideoSizeDirectWrites = requestedVideoSizeDirectWrites,
         previewStreamSize = previewStreamSize,
+        openGate = openGate,
         preTeleUnifiedZoom = preTeleUnifiedZoom,
         ready = cameraReady,
         readyController = readyController,
@@ -901,6 +914,18 @@ class CameraEngine internal constructor(
         rawLogEnabled = rawLogEnabled,
         rawLogEnabledDirectWrites = rawLogEnabledDirectWrites,
     )
+
+    private fun installAcceptedVideoGraphLocked() {
+        check(Thread.holdsLock(this)) { "accepted video graph install requires the Engine monitor" }
+        val accepted = acceptedCameraSession ?: return
+        if (!videoMode) {
+            acceptedVideoSize = null
+            return
+        }
+        val intent = accepted.controller.videoSessionIntent ?: return
+        acceptedVideoSize = intent.streamSize
+        lastAcceptedVideoGraph = AcceptedVideoGraph(currentOpticsSnapshot(), intent)
+    }
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
         val (result, publications) = opticsCommitGate.begin { generation ->
@@ -987,6 +1012,7 @@ class CameraEngine internal constructor(
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }
+            if (effectiveReady) installAcceptedVideoGraphLocked()
             val acceptedMode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
             val acceptedCameraId = selection?.let { it.physicalId ?: it.logicalId } ?: "none"
             // The RAW-loss announcement's INPUTS ride the publication; the ViewModel's Ready fold
@@ -1372,6 +1398,7 @@ class CameraEngine internal constructor(
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = restoredController.takeIf { effectiveReady }
+            acceptedVideoSize = before.acceptedVideoSize
             nextCameraReadyPublication(
                 ready = effectiveReady,
                 opticsGeneration = transaction.generation,
@@ -1413,7 +1440,7 @@ class CameraEngine internal constructor(
             restoreSession = restoreSession,
             // The outgoing session still owns its accepted raster. Reconfigure the surviving codec/
             // Gamma packet before Ready or REC; never publish a UHD delivered size over an 8K stream.
-            reopenTransaction = transaction.takeIf { reprojectedRasterRequiresReopen },
+            reopenRequired = reprojectedRasterRequiresReopen,
             opticsPublication = opticsPublication,
             readyPublication = readyPublication,
         )
@@ -1473,7 +1500,13 @@ class CameraEngine internal constructor(
         if (!publishTerminal) return
         onCameraReadyChange?.invoke(effects.readyPublication)
         onStatus?.invoke(effects.status)
-        effects.reopenTransaction?.let { reconfigureCamera(overrideId, it) }
+        if (effects.reopenRequired) {
+            // The restored session's raster does not match the surviving pipeline. Reopen through a
+            // NEW post-mutation token: reusing the rejected optics transaction sent its preflight
+            // failure back through rollback and could recurse instead of entering bounded retry.
+            val recovery = currentOpticsReconfiguration()
+            reconfigureCamera(recovery.overrideId, recovery.transaction)
+        }
     }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
@@ -2696,6 +2729,7 @@ class CameraEngine internal constructor(
             } ?: return@synchronized null
             cameraReady = true
             readyController = accepted.controller
+            installAcceptedVideoGraphLocked()
             if (wasReady) return@synchronized null
             nextCameraReadyPublication(
                 ready = true,
@@ -2789,12 +2823,16 @@ class CameraEngine internal constructor(
     private fun registerExtendedVideoRasterOpenOwnership(ctrl: CameraController) {
         synchronized(this) {
             extendedVideoRasterOpenOwnership[ctrl] = ExtendedVideoRasterOpenOwnership(
+                routeKey = selection?.let {
+                    rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
+                } ?: return@synchronized,
+                transfer = videoProjectionTransfer(),
                 opticsGeneration = opticsIntentGeneration.get(),
                 pipelineGeneration = videoPipelinePublicationGeneration.get(),
                 requestedSize = requestedVideoSize,
                 requestedSizeDirectWrites = requestedVideoSizeDirectWrites,
                 openGate = openGate,
-                deliveredSize = videoSize,
+                attemptedSize = videoSize,
             )
         }
     }
@@ -4211,18 +4249,29 @@ class CameraEngine internal constructor(
         failedController: CameraController,
         failure: Throwable,
     ) {
+        var extendedRecoveryEffects: ExtendedRasterRecoveryEffects? = null
+        var extendedRecoveryUnavailable = false
         val outcome = synchronized(this) {
             if (!activeCameraFailureBelongsToController(controller, failedController)) return
-            // Before recovery reopens: that reopen must not repeat the attempt that failed the device.
-            // Extended-raster ownership is stricter than camera-health ownership: a newer Gamma,
-            // direct-size pick, or optics generation must not inherit this old graph's refusal.
-            if (failure is ExtendedVideoRasterConfigureFatalException) {
-                val attempted = extendedVideoRasterOpenOwnership[failedController]
+            // Latch the exact attempted graph even when the failure arrives AFTER configure. Eviction
+            // and policy denial are not raster refusals; every other active streaming-fatal is.
+            val attempted = extendedVideoRasterOpenOwnership[failedController]
+            val extendedFailureClass = attempted != null &&
+                requiresExtendedVideoProof(attempted.attemptedSize.width, attempted.attemptedSize.height) &&
+                !cameraFailureIsEviction(failure) && !cameraFailureIsPolicyBlock(failure) &&
+                failure !is me.hletrd.telecampro.video.NativeAcquisitionRefusedException
+            if (extendedFailureClass) {
+                val failureRoute = (failure as? ExtendedVideoRasterConfigureFatalException)?.routeKey
+                    ?: attempted.routeKey
+                val failureSize = (failure as? ExtendedVideoRasterConfigureFatalException)?.size
+                    ?: attempted.attemptedSize
+                extendedVideoRasterRefusals.refuse(
+                    ExtendedVideoRasterRefusal(failureRoute, failureSize, attempted.transfer),
+                )
                 val currentRouteKey = selection?.let {
                     rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
                 }
-                if (attempted != null && currentRouteKey == failure.routeKey &&
-                    failure.size == attempted.deliveredSize &&
+                if (currentRouteKey == failureRoute && failureSize == attempted.attemptedSize &&
                     extendedVideoRasterCallbackOwnsCurrent(
                         attempted = attempted,
                         controllerMatches = true,
@@ -4234,15 +4283,17 @@ class CameraEngine internal constructor(
                         currentDeliveredSize = videoSize,
                     )
                 ) {
-                    extendedVideoRasterRefusals.refuse(
-                        ExtendedVideoRasterRefusal(failure.routeKey, failure.size, transfer),
-                    )
+                    if (applyExtendedRasterRecoveryLocked()) {
+                        extendedRecoveryEffects = extendedRasterRecoveryEffectsLocked()
+                    } else {
+                        extendedRecoveryUnavailable = true
+                    }
                 }
             }
             if (failure is RawLogConfigureFatalException) rawLogRefusedRoute = failure.routeKey
             // A fatal extended-raster attempt is NOT a maker-pipeline refusal: its latch above selects
-            // a smaller OEM-log graph, whereas this branch would silently reopen ordinary S-Log3.
-            if (failedController.makerLogFailed && failure !is ExtendedVideoRasterConfigureFatalException) {
+            // accepted/capped recovery with the SAME Gamma, not the ordinary S-Log3 maker fallback.
+            if (failedController.makerLogFailed && !extendedFailureClass) {
                 makerLogRefused = true
                 // With the converter on, the refusal moves TELE back to the standalone host: drop
                 // the cached logical id so the bounded recovery reopen re-resolves the route.
@@ -4329,8 +4380,16 @@ class CameraEngine internal constructor(
             owned.gl.setTransfer(transfer)
             onRecordingTerminated?.invoke(failure)
         }
+        if (extendedRecoveryUnavailable) {
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return
+        }
+        extendedRecoveryEffects?.let {
+            publishExtendedRasterRecoveryEffectsIfCurrent(failedController, it, glOwners.current())
+        }
         // The recorder has been claimed before recovery checks its invariant, so a failed Camera2
-        // producer cannot strand UI/audio/encoder state and then suppress the bounded reopen.
+        // producer cannot strand UI/audio/encoder state and then suppress the bounded reopen. Recovery
+        // resolves the post-mutation accepted/capped packet above, never the failed attempt again.
         scheduleCameraRecovery(failedController)
     }
 
@@ -4350,13 +4409,130 @@ class CameraEngine internal constructor(
         reopenForSession(refused)
     }
 
+    private data class ExtendedRasterRecoveryEffects(
+        val optics: OpticsRollbackPublication,
+        val caps: CameraCaps?,
+        val videoSize: Size,
+        val previewStreamSize: Size,
+        val previewAspect: Float,
+        val transfer: ColorTransfer,
+        val openGate: Boolean,
+    )
+
+    /** Engine-monitor-only: restore a usable accepted graph, or resolve exactly one capped attempt. */
+    private fun applyExtendedRasterRecoveryLocked(): Boolean {
+        val accepted = lastAcceptedVideoGraph?.takeIf { graph ->
+            graph.snapshot.videoMode && !extendedVideoRasterRefusals.blocks(
+                rawLogRouteKey(
+                    graph.intent.route.logicalId,
+                    graph.intent.route.physicalId,
+                    graph.snapshot.teleconverter,
+                ),
+                graph.intent.streamSize,
+                graph.intent.transfer,
+            )
+        }
+        if (accepted != null) {
+            val before = accepted.snapshot
+            val intent = accepted.intent
+            videoMode = true
+            lensChoice = before.lens
+            teleconverterMode = before.teleconverter
+            teleconverterDeclaration = before.declaration
+            facing = before.facing
+            activeCameraRoute = before.route
+            selection = intent.route
+            caps = before.caps
+            controls = before.controls.copy(fps = intent.frameRate.fps)
+            photoExposureTimeNs = before.photoExposureTimeNs
+            overrideId = before.overrideId
+            userCameraPin = before.userPin
+            preTeleUnifiedZoom = before.preTeleUnifiedZoom
+            rawWanted = before.rawWanted
+            rawLogEnabled = intent.rawLog
+            openGate = before.openGate
+            requestedVideoSize = before.requestedVideoSize
+            publishVideoPipelineLocked(before.videoPipeline)
+            videoFrameRate = intent.frameRate
+            videoSize = intent.streamSize
+            previewStreamSize = intent.streamSize
+            currentOpticsPipelineGeneration = videoPipelinePublicationGeneration.get()
+            return true
+        }
+
+        // No usable accepted graph (or the accepted graph is the one just refused): the sole
+        // automatic answer is the legacy capped projection, never an extended 5K intermediate.
+        val sel = selection ?: return false
+        val routeCaps = caps ?: return false
+        val automatic = projectStreamSize(sel, fourByThree = openGate, routeCaps = routeCaps) ?: return false
+        val intent = resolveCurrentVideoIntent(sel, routeCaps, automatic) ?: return false
+        commitVideoIntentLocked(intent)
+        previewStreamSize = intent.streamSize
+        return true
+    }
+
+    private fun extendedRasterRecoveryEffectsLocked(): ExtendedRasterRecoveryEffects =
+        ExtendedRasterRecoveryEffects(
+            optics = OpticsRollbackPublication(
+                mode = CaptureMode.VIDEO,
+                transfer = requestedVideoTransfer,
+                videoCodec = videoCodec,
+                lens = lensChoice,
+                teleconverter = teleconverterMode,
+                facing = facing,
+                route = activeCameraRoute,
+                controls = controls,
+                photoExposureTimeNs = photoExposureTimeNs,
+                userPin = userCameraPin,
+                preTeleUnifiedZoom = preTeleUnifiedZoom,
+                declaration = teleconverterDeclaration,
+                generation = opticsIntentGeneration.get(),
+                videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
+                rawWanted = rawWanted,
+                requestedVideoSize = requestedVideoSize,
+            ),
+            caps = caps,
+            videoSize = videoSize,
+            previewStreamSize = previewStreamSize,
+            previewAspect = displayedPreviewAspect(previewStreamSize, caps),
+            transfer = transfer,
+            openGate = openGate,
+        )
+
+    private fun publishExtendedRasterRecoveryEffects(
+        effects: ExtendedRasterRecoveryEffects,
+        ownedGl: GlPipeline,
+    ) {
+        onOpticsRollback?.invoke(effects.optics)
+        effects.caps?.let { onCapsReady?.invoke(it, effects.optics.generation) }
+        onVideoSizeChosen?.invoke(effects.videoSize, effects.optics.generation)
+        onPreviewAspect?.invoke(effects.previewAspect, effects.optics.generation)
+        if (recorder == null) postGlTransfer(effects.transfer)
+        ownedGl.setCameraPreviewSize(effects.previewStreamSize.width, effects.previewStreamSize.height)
+        applyStabilization()
+        pushTeleFinder()
+    }
+
+    private fun publishExtendedRasterRecoveryEffectsIfCurrent(
+        failed: CameraController,
+        effects: ExtendedRasterRecoveryEffects,
+        ownedGl: GlPipeline,
+    ) {
+        synchronized(this) {
+            if (controller !== failed ||
+                opticsIntentGeneration.get() != effects.optics.generation ||
+                videoPipelinePublicationGeneration.get() != effects.optics.videoPipelineGeneration ||
+                openGate != effects.openGate || videoSize != effects.videoSize ||
+                previewStreamSize != effects.previewStreamSize
+            ) return
+            publishExtendedRasterRecoveryEffects(effects, ownedGl)
+        }
+    }
+
     /**
-     * A soft extended-raster configure rejection changes the DELIVERED size only. The explicit
-     * [requestedVideoSize] remains untouched, the exact route/size/Gamma graph is latched out of
-     * automatic choice, and the same-generation reopen selects the largest offered smaller raster.
-     * Controller, GL, optics, pipeline, Open Gate and direct-size ownership are checked against the
-     * attempted delivered stream. The same monitor covers every externally visible effect, so a newer
-     * intent either invalidates the callback up front or publishes strictly after its whole packet.
+     * A soft extended-raster rejection has exactly two recovery answers: the last real-frame
+     * accepted graph, or one legacy capped attempt when no such graph survives. It never descends
+     * through intermediate extended sizes and never re-enters the original rollback transaction.
      */
     private fun handleExtendedVideoRasterRefused(
         refused: CameraController,
@@ -4371,7 +4547,7 @@ class CameraEngine internal constructor(
                 rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode)
             }
             if (callbackOpticsGeneration != attempted.opticsGeneration ||
-                size != attempted.deliveredSize ||
+                size != attempted.attemptedSize ||
                 currentRouteKey != routeKey ||
                 !extendedVideoRasterCallbackOwnsCurrent(
                     attempted = attempted,
@@ -4385,35 +4561,17 @@ class CameraEngine internal constructor(
                 )
             ) return
             extendedVideoRasterRefusals.refuse(ExtendedVideoRasterRefusal(routeKey, size, transfer))
-            val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
-                ?: return
-            val fallback = fallbackSize(size, offered, admissible = { candidate ->
-                !extendedVideoRasterRefusals.blocks(routeKey, candidate, transfer)
-            })
-            if (fallback == null) {
-                // The configure failure was already consumed by the extended-raster door. With no
-                // unrefused smaller graph there is no safe direct reopen; enter the same owned,
-                // bounded failure/recovery path instead of leaving a silent permanent Not-Ready.
-                handleActiveCameraFailure(
-                    refused,
-                    ExtendedVideoRasterConfigureFatalException(
-                        routeKey,
-                        size,
-                        IllegalStateException("No unrefused smaller video raster"),
-                    ),
-                )
+            if (!applyExtendedRasterRecoveryLocked()) {
+                invalidateCameraReady()
+                onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
                 return
             }
-            videoSize = fallback
-            previewStreamSize = fallback
-            // These callbacks only enqueue UI/GL work. Keeping their publication inside the ownership
-            // monitor is what prevents a direct-size/pipeline/Open-Gate packet from landing between
-            // the state mutation above and its externally visible effects (Task 4 review round 1).
-            onVideoSizeChosen?.invoke(fallback, callbackOpticsGeneration)
-            emitPreviewAspect(callbackOpticsGeneration)
-            ownedGl.setCameraPreviewSize(fallback.width, fallback.height)
-            // No setTransfer/setVideoPipeline call: Gamma is deliberately identical on the reopen.
-            reopenForSession(refused)
+            val effects = extendedRasterRecoveryEffectsLocked()
+            // This token is deliberately POST-mutation. A preflight failure takes BARE_RETRY; the
+            // rejected optics transaction and its rollback baseline are never recursively reused.
+            val recovery = currentOpticsReconfiguration()
+            publishExtendedRasterRecoveryEffects(effects, ownedGl)
+            reopenForSession(refused, recovery)
         }
     }
 
@@ -4712,8 +4870,11 @@ class CameraEngine internal constructor(
             // the largest size over it — chooseVideoSize honors this request whenever the current lens
             // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
             // flip or a lens without that mode).
+            val requestChanged = requestedVideoSize != s
             requestedVideoSize = s
-            requestedVideoSizeDirectWrites++
+            // A same-size tap while that exact open is in flight is not a newer write: bumping this
+            // counter used to invalidate the open's refusal callback and strand recovery Not-Ready.
+            if (requestChanged) requestedVideoSizeDirectWrites++
             // An explicit retry clears ONLY the identical refused graph. PHOTO's next-Video Gamma,
             // not its active SDR transfer, names the tuple that returning to VIDEO must retry.
             selection?.let {
@@ -7109,6 +7270,10 @@ class CameraEngine internal constructor(
                 acceptedSessionGeneration = accepted.sessionGeneration,
                 cameraReady = cameraReady,
                 paused = paused,
+            ) && acceptedRecordingRasterMatches(
+                videoMode = videoMode,
+                acceptedIntentSize = accepted.controller.videoSessionIntent?.streamSize,
+                acceptedSize = acceptedVideoSize,
             )
         }
     }
@@ -9427,22 +9592,16 @@ class CameraEngine internal constructor(
             return req
         }
         val auto = projectStreamSize(sel, fourByThree = gate, routeCaps = routeCaps)
-        if (req == null) return auto
-        if (list != null && req in list && extendedVideoRasterRefusals.blocks(
+        if (req == null || extendedVideoRasterRefusals.blocks(
                 rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
                 req,
                 transfer,
             )
         ) {
-            // The request remains persisted for an explicit retry or a different route/Gamma. This
-            // automatic reopen must never land on any previously refused graph again (no recovery loop).
-            return fallbackSize(req, list, admissible = { candidate ->
-                !extendedVideoRasterRefusals.blocks(
-                    rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode),
-                    candidate,
-                    transfer,
-                )
-            }) ?: auto
+            // A refused extended request has no descending 5K/4K ladder. Its one automatic recovery
+            // answer is the ordinary capped projection; the explicit request remains available for
+            // the operator's identical retry, which is the only door that clears the refusal.
+            return auto
         }
         // An unsupported retained request degrades to the capped automatic answer. An offered explicit
         // request returned above, so automatic selection never needs to exceed 3840 on its behalf.

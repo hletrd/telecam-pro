@@ -2,6 +2,35 @@ package me.hletrd.telecampro.camera
 
 import android.util.Size
 
+/** A configured session is not Ready until a real capture result arrives from that same session. */
+internal class RealFrameReadyGate<T> {
+    private var pending: Pair<T, () -> Unit>? = null
+
+    @Synchronized
+    fun arm(session: T, ready: () -> Unit) {
+        pending = session to ready
+    }
+
+    fun onRealFrame(session: T) {
+        val ready = synchronized(this) {
+            pending?.takeIf { it.first == session }?.also { pending = null }?.second
+        } ?: return
+        ready()
+    }
+
+    @Synchronized
+    fun cancel() {
+        pending = null
+    }
+}
+
+/** REC may freeze only the raster installed by the accepted session, never a newer attempted one. */
+internal fun acceptedRecordingRasterMatches(
+    videoMode: Boolean,
+    acceptedIntentSize: Size?,
+    acceptedSize: Size?,
+): Boolean = !videoMode || acceptedIntentSize == null || acceptedIntentSize == acceptedSize
+
 /** The exact extended-raster graph a HAL refused. Gamma is part of the identity, never a fallback axis. */
 internal data class ExtendedVideoRasterRefusal(
     val routeKey: String,
@@ -42,17 +71,6 @@ internal fun shouldRetryRefusedRaster(
     explicitRetry: Boolean = false,
 ): Boolean = refusal?.matches(routeKey, size, transfer) != true || explicitRetry
 
-/** Largest offered raster strictly below the refused one that is not itself refused, by area. */
-internal fun fallbackSize(refused: Size, offered: List<Size>, admissible: (Size) -> Boolean = { true }): Size? {
-    val refusedArea = refused.width.toLong() * refused.height.toLong()
-    return offered.asSequence()
-        .filter {
-            val area = it.width.toLong() * it.height.toLong()
-            admissible(it) && it.width <= refused.width && it.height <= refused.height && area < refusedArea
-        }
-        .maxByOrNull { it.width.toLong() * it.height.toLong() }
-}
-
 /** The device-fatal counterpart of [ExtendedVideoRasterRefusal], reported before bounded recovery. */
 internal class ExtendedVideoRasterConfigureFatalException(
     val routeKey: String,
@@ -65,12 +83,14 @@ internal class ExtendedVideoRasterConfigureFatalException(
 
 /** One controller open's ownership facts; an older callback cannot mutate a newer request or Gamma. */
 internal data class ExtendedVideoRasterOpenOwnership(
+    val routeKey: String,
+    val transfer: ColorTransfer,
     val opticsGeneration: Long,
     val pipelineGeneration: Long,
     val requestedSize: Size?,
     val requestedSizeDirectWrites: Long,
     val openGate: Boolean,
-    val deliveredSize: Size,
+    val attemptedSize: Size,
 )
 
 internal fun extendedVideoRasterCallbackOwnsCurrent(
@@ -88,7 +108,7 @@ internal fun extendedVideoRasterCallbackOwnsCurrent(
     attempted.requestedSize == currentRequestedSize &&
     attempted.requestedSizeDirectWrites == currentRequestedSizeDirectWrites &&
     attempted.openGate == currentOpenGate &&
-    attempted.deliveredSize == currentDeliveredSize
+    attempted.attemptedSize == currentDeliveredSize
 
 /** Classified only after [ConfigureAttemptGate] has made this attempt's callback/throw exactly once. */
 internal sealed interface ExtendedVideoRasterConfigureRejection {

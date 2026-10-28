@@ -221,6 +221,19 @@ class ModeRollbackOwnershipRobolectricTest {
     }
 
     @Test
+    fun `rollback reopen effects cannot recursively retain the rejected transaction`() {
+        val effectsType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsRollbackEffects" }
+        val transactionType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsTransaction" }
+
+        assertFalse(
+            "a mismatch reopen must be requested as a Boolean and rebuilt post-mutation",
+            effectsType.declaredFields.any { transactionType.isAssignableFrom(it.type) },
+        )
+    }
+
+    @Test
     fun `newer same precision packet is the observable GL winner after rollback`() {
         val glTransfers = mutableListOf<ColorTransfer?>()
         val (viewModel, engine) = createAccepted(

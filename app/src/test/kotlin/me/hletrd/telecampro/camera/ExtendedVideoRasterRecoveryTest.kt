@@ -44,16 +44,33 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
-    fun `the fallback is the largest offered smaller raster`() {
-        assertEquals(
-            Size(5120, 2880),
-            fallbackSize(eightK, listOf(eightK, Size(5120, 2880), uhd, fullHd)),
-        )
-        assertEquals(
-            Size(2560, 1440),
-            fallbackSize(uhd, listOf(eightK, uhd, Size(2560, 1440), fullHd)),
-        )
-        assertNull(fallbackSize(fullHd, listOf(eightK, uhd, fullHd)))
+    fun `a refused explicit request returns to the capped automatic raster`() {
+        val fixture = extendedFixture(intermediateSize = Size(5120, 2880))
+        val latch = field(fixture.engine, "extendedVideoRasterRefusals") as ExtendedVideoRasterRefusalLatch
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, eightK, ColorTransfer.MAKER_LOG))
+
+        assertEquals(uhd, chooseVideoSize(fixture.engine))
+    }
+
+    @Test
+    fun `Ready is delivered once by the first real frame of its own session`() {
+        val gate = RealFrameReadyGate<String>()
+        var deliveries = 0
+        gate.arm("candidate") { deliveries++ }
+
+        assertEquals(0, deliveries)
+        gate.onRealFrame("outgoing")
+        assertEquals(0, deliveries)
+        gate.onRealFrame("candidate")
+        gate.onRealFrame("candidate")
+        assertEquals(1, deliveries)
+    }
+
+    @Test
+    fun `REC admission refuses a raster different from the accepted session raster`() {
+        assertFalse(acceptedRecordingRasterMatches(true, eightK, uhd))
+        assertTrue(acceptedRecordingRasterMatches(true, eightK, eightK))
+        assertTrue(acceptedRecordingRasterMatches(false, null, uhd))
     }
 
     @Test
@@ -122,8 +139,8 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
-    fun `an 8K maker Log refusal chooses 4K maker Log without overwriting the request`() {
-        val fixture = extendedFixture()
+    fun `an 8K maker Log refusal makes one capped attempt without overwriting the request`() {
+        val fixture = extendedFixture(intermediateSize = Size(5120, 2880))
         var published: Pair<Size, Long?>? = null
         fixture.engine.onVideoSizeChosen = { size, generation -> published = size to generation }
 
@@ -297,7 +314,7 @@ class ExtendedVideoRasterRecoveryTest {
 
         fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
 
-        assertEquals(CameraStatusMessage.CAMERA_ERROR_RECOVERING, status?.message)
+        assertEquals(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE, status?.message)
     }
 
     @Test
@@ -371,8 +388,8 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
-    fun `fatal recovery cannot choose the refused 8K graph again`() {
-        val fixture = extendedFixture()
+    fun `fatal recovery makes one capped attempt instead of re-entering 8K or choosing 5K`() {
+        val fixture = extendedFixture(intermediateSize = Size(5120, 2880))
         val cause = IllegalStateException("device fatal")
         // The controller's terminal wrapper marks a maker attempt failed; an extended-raster fatal
         // must not be reclassified as a maker-pipeline refusal during bounded recovery.
@@ -388,6 +405,122 @@ class ExtendedVideoRasterRecoveryTest {
         assertEquals(ColorTransfer.MAKER_LOG, field(fixture.engine, "transfer"))
         assertEquals(false, field(fixture.engine, "makerLogRefused"))
         assertEquals(uhd, chooseVideoSize(fixture.engine))
+    }
+
+    @Test
+    fun `a same-size tap during an in-flight open preserves refusal ownership`() {
+        val fixture = extendedFixture(intermediateSize = Size(5120, 2880))
+        val directWrites = field(fixture.engine, "requestedVideoSizeDirectWrites") as Long
+
+        assertTrue(fixture.engine.setVideoResolution(eightK))
+        assertEquals(directWrites, field(fixture.engine, "requestedVideoSizeDirectWrites"))
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals("the in-flight attempt still owns its capped recovery", uhd, field(fixture.engine, "videoSize"))
+    }
+
+    @Test
+    fun `a post-configure streaming fatal latches the exact extended graph`() {
+        val fixture = extendedFixture(intermediateSize = Size(5120, 2880))
+        val latch = field(fixture.engine, "extendedVideoRasterRefusals") as ExtendedVideoRasterRefusalLatch
+
+        handleFailure(fixture.engine, fixture.controller, IllegalStateException("Camera error 3"))
+
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
+        assertEquals(uhd, chooseVideoSize(fixture.engine))
+    }
+
+    @Test
+    fun `recovery reopens the previous accepted graph rather than descending`() {
+        val fiveK = Size(5120, 2880)
+        val fixture = extendedFixture(intermediateSize = fiveK)
+        setField(fixture.engine, "requestedVideoSize", uhd)
+        setField(fixture.engine, "videoSize", uhd)
+        setField(fixture.engine, "previewStreamSize", uhd)
+        setField(fixture.engine, "previewReady", true)
+        fixture.controller.stageVideoSessionIntentForOpen(videoIntent(uhd))
+        commitReady(fixture)
+
+        setField(fixture.engine, "requestedVideoSize", eightK)
+        setField(fixture.engine, "requestedVideoSizeDirectWrites", 2L)
+        setField(fixture.engine, "videoSize", eightK)
+        setField(fixture.engine, "previewStreamSize", eightK)
+        setField(fixture.engine, "cameraReady", false)
+        registerOwnership(fixture)
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        assertEquals(uhd, field(fixture.engine, "previewStreamSize"))
+    }
+
+    @Test
+    fun `sequential 8K then 5K refusals recover accepted UHD and never auto re-enter 8K`() {
+        val fiveK = Size(5120, 2880)
+        val fixture = extendedFixture(intermediateSize = fiveK)
+        setField(fixture.engine, "requestedVideoSize", uhd)
+        setField(fixture.engine, "videoSize", uhd)
+        setField(fixture.engine, "previewStreamSize", uhd)
+        setField(fixture.engine, "previewReady", true)
+        fixture.controller.stageVideoSessionIntentForOpen(videoIntent(uhd))
+        commitReady(fixture)
+
+        setField(fixture.engine, "requestedVideoSize", eightK)
+        setField(fixture.engine, "requestedVideoSizeDirectWrites", 2L)
+        setField(fixture.engine, "videoSize", eightK)
+        setField(fixture.engine, "previewStreamSize", eightK)
+        setField(fixture.engine, "cameraReady", false)
+        registerOwnership(fixture)
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+
+        fixture.controller.stageVideoSessionIntentForOpen(videoIntent(fiveK))
+        setField(fixture.engine, "requestedVideoSize", fiveK)
+        setField(fixture.engine, "requestedVideoSizeDirectWrites", 3L)
+        setField(fixture.engine, "videoSize", fiveK)
+        setField(fixture.engine, "previewStreamSize", fiveK)
+        registerOwnership(fixture)
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, fiveK, 7L)
+
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        val latch = field(fixture.engine, "extendedVideoRasterRefusals") as ExtendedVideoRasterRefusalLatch
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
+        assertTrue(latch.blocks(routeKey, fiveK, ColorTransfer.MAKER_LOG))
+        setField(fixture.engine, "requestedVideoSize", eightK)
+        assertEquals(uhd, chooseVideoSize(fixture.engine))
+    }
+
+    private fun videoIntent(size: Size) = VideoSessionIntent(
+        route = route,
+        codec = VideoCodec.HEVC,
+        transfer = ColorTransfer.MAKER_LOG,
+        rawLog = false,
+        openGate = false,
+        streamSize = size,
+        encoderSize = Size(size.height, size.width),
+        frameRate = VideoFrameRate.FPS_29_97,
+    )
+
+    private fun commitReady(fixture: Fixture) {
+        val sessionGeneration = (field(fixture.engine, "cameraSessionGeneration") as AtomicLong).get()
+        CameraEngine::class.java.declaredMethods.single {
+            it.name == "commitOpticsReady" && it.parameterTypes.size == 6
+        }.apply { isAccessible = true }.invoke(
+            fixture.engine,
+            7L,
+            fixture.controller,
+            PhotoSessionOutputs(),
+            sessionGeneration,
+            {},
+            null,
+        )
+    }
+
+    private fun registerOwnership(fixture: Fixture) {
+        CameraEngine::class.java.declaredMethods.single {
+            it.name == "registerExtendedVideoRasterOpenOwnership"
+        }.apply { isAccessible = true }.invoke(fixture.engine, fixture.controller)
     }
 
     private fun extendedFixture(

@@ -1096,6 +1096,7 @@ class CameraEngineRecordingPreNativeTest {
         setField(engine, "controller", controller)
         setField(engine, "readyController", controller)
         setField(engine, "acceptedCameraSession", accepted)
+        setField(engine, "acceptedVideoSize", checkNotNull(field(engine, "videoSize")))
         setField(engine, "cameraReady", true)
         setField(engine, "previewReady", true)
         return controller
