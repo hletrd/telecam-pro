@@ -1593,11 +1593,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   50 MP, plus 16320×12256 for 200 MP — that receive buffers only at the shutter, then develops them
   itself. The identical session from a third-party app fails in CAMERASERVER, before the HAL:
   `roundBufferDimensionNearest: No configurations for format 37 width 8160, height 6128`. AOSP's
-  `createSurfaceFromGbp` rounds every SW_READ / HW_TEXTURE / HW_COMPOSER consumer (every
-  ImageReader and SurfaceTexture) to an ADVERTISED size unless the client is privileged, and OPLUS's
-  libcameraservice carries a `Bypass roundBufferDimensionNearest for privilegedClient` path for
-  `com.oplus.camera` only. So no session parameter, vendor key or operation mode can open those
-  sizes to this app; only a size the camera ADVERTISES can. The capability-gated
+  `createSurfaceFromGbp` rounds every "flexible" consumer (SW_READ / HW_TEXTURE / HW_COMPOSER
+  usage without VIDEO_ENCODER — a default ImageReader or a SurfaceTexture) to an ADVERTISED size
+  unless the client is privileged, and OPLUS's libcameraservice carries a `Bypass
+  roundBufferDimensionNearest for privilegedClient` path for `com.oplus.camera` only. A reader whose
+  usage adds `USAGE_VIDEO_ENCODE` is NOT flexible and does reach the HAL unrounded — and there the
+  same stock-shaped session CRASHED the provider inside configure (tombstone_29: SIGTRAP in
+  `com.qti.node.gme.so` `QTIGMEWrapper::AlgoUninit` during pipeline teardown, ~80 ms in; the provider
+  restarts on its own). The Galaxy Z Flip6 HAL refuses the same trick cleanly (CHI
+  `CreateUsecaseObject failed` for its third-party shooting mode). Every failed guess at stock's
+  private stream set costs a provider crash here, so the door stays shut: only a size the camera
+  ADVERTISES is a product path. The capability-gated
   Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
   firmware or a different device advertises a hi-res size; do not expect it here and do not
   re-probe it. **Never pipe `dumpsys media.camera` into an early-exiting reader** (`| grep -m1`,
