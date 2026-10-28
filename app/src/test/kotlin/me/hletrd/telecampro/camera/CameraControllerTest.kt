@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import android.util.Size
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -78,6 +79,48 @@ class CameraControllerTest {
                 deviceFatal = true,
             ),
         )
+    }
+
+    @Test
+    fun `a staged pre-open intent accepts the newest same-shape pipeline`() {
+        val controller = CameraController(ApplicationProvider.getApplicationContext())
+        val initial = VideoSessionIntent(
+            route = TeleSelection("test", null, 23f),
+            codec = VideoCodec.HEVC,
+            transfer = ColorTransfer.SDR,
+            rawLog = false,
+            openGate = false,
+            streamSize = Size(1920, 1080),
+            encoderSize = Size(1080, 1920),
+            frameRate = VideoFrameRate.FPS_29_97,
+        )
+        controller.stageVideoSessionIntentForOpen(initial)
+        val newest = initial.copy(codec = VideoCodec.AVC)
+
+        assertTrue(controller.updateVideoSessionIntentForAcceptedPipeline(newest))
+        assertEquals(newest, controller.videoSessionIntent)
+    }
+
+    @Test
+    fun `an update after staged intent consumption is never overwritten by open`() {
+        val controller = CameraController(ApplicationProvider.getApplicationContext())
+        val initial = VideoSessionIntent(
+            route = TeleSelection("test", null, 23f),
+            codec = VideoCodec.HEVC,
+            transfer = ColorTransfer.SDR,
+            rawLog = false,
+            openGate = false,
+            streamSize = Size(1920, 1080),
+            encoderSize = Size(1080, 1920),
+            frameRate = VideoFrameRate.FPS_29_97,
+        )
+        controller.stageVideoSessionIntentForOpen(initial)
+        assertEquals(initial, controller.consumeVideoSessionIntentForOpen(initial))
+        val newest = initial.copy(codec = VideoCodec.AVC)
+
+        assertTrue(controller.updateVideoSessionIntentForAcceptedPipeline(newest))
+
+        assertEquals("open must not write the consumed older value back", newest, controller.videoSessionIntent)
     }
 
     @Test

@@ -2979,6 +2979,19 @@ class CameraEngine internal constructor(
         var openStarted = false
         terminalAcquisitionGate.runIfOpen cameraOpen@{
             if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
+            val latestOpenVideoIntent = synchronized(this) {
+                if (videoMode) {
+                    val resolved = resolveCurrentVideoIntent(sel, caps ?: c, videoSize)
+                    resolved?.let(ctrl::stageVideoSessionIntentForOpen)
+                    resolved
+                } else {
+                    null
+                }
+            }
+            if (videoMode && latestOpenVideoIntent == null) {
+                onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                return@cameraOpen
+            }
             openStarted = true
             // Same pre-configure resolve as the dual-open path: this sequential fallback must not
             // silently drop an admitted hi-res session (or keep one video mode denies).
@@ -2999,7 +3012,7 @@ class CameraEngine internal constructor(
                 // Re-derived from the installed selection: [caps] already carry this route's span.
                 makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
-                videoSessionIntent = openVideoIntent,
+                videoSessionIntent = latestOpenVideoIntent,
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -5437,6 +5450,22 @@ class CameraEngine internal constructor(
             var openStarted = false
             terminalAcquisitionGate.runIfOpen cameraOpen@{
                 if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
+                val openVideoIntent = synchronized(this) {
+                    if (videoMode) {
+                        // A same-shape codec/Gamma update may land AFTER candidate publication. Resolve
+                        // and stage the newest packet before open so the update has a live intent to
+                        // update, and open/REC cannot pair the old codec with new candidates.
+                        val resolved = resolveCurrentVideoIntent(sel, caps ?: c, videoSize)
+                        resolved?.let(next::stageVideoSessionIntentForOpen)
+                        resolved
+                    } else {
+                        null
+                    }
+                }
+                if (videoMode && openVideoIntent == null) {
+                    onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                    return@cameraOpen
+                }
                 openStarted = true
                 // Resolved against the freshly selected route, BEFORE configure (the deferred
                 // session included) — the controller only re-checks the standalone/advertised
@@ -5457,7 +5486,7 @@ class CameraEngine internal constructor(
                     makerLog = makerLogWanted() && !makerLogRefused,
                     makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
-                    videoSessionIntent = nextVideoIntent,
+                    videoSessionIntent = openVideoIntent,
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,

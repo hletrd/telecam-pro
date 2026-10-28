@@ -319,6 +319,25 @@ class CameraController internal constructor(
     @Volatile var videoSessionIntent: VideoSessionIntent? = null
         private set
 
+    /** Publishes the intent BEFORE the open call, closing the candidate-publication/update window. */
+    internal fun stageVideoSessionIntentForOpen(intent: VideoSessionIntent) {
+        videoSessionIntent = intent
+    }
+
+    /**
+     * Reads the staged open packet WITHOUT writing it back: a same-shape update may land immediately
+     * after this read, and must remain the field REC consumes. Only an unstaged fallback is installed.
+     */
+    internal fun consumeVideoSessionIntentForOpen(fallback: VideoSessionIntent?): VideoSessionIntent? {
+        if (fallback == null) {
+            videoSessionIntent = null
+            return null
+        }
+        videoSessionIntent?.let { return it }
+        videoSessionIntent = fallback
+        return fallback
+    }
+
     /** Same-session codec/Gamma packet change; route, RAW shape, raster and cadence must be identical. */
     internal fun updateVideoSessionIntentForAcceptedPipeline(candidate: VideoSessionIntent): Boolean {
         val current = videoSessionIntent ?: return false
@@ -484,8 +503,8 @@ class CameraController internal constructor(
             if (makerLogAttempt) makerLogFailed = true
             reportTerminalCameraFailure(dualOpenRestorability, failure, onError::onError)
         }
-        this.selection = videoSessionIntent?.route ?: selection
-        this.videoSessionIntent = videoSessionIntent
+        val intentToOpen = consumeVideoSessionIntentForOpen(videoSessionIntent)
+        this.selection = intentToOpen?.route ?: selection
         this.caps = caps
         this.glSurface = glInputSurface
         this.runNativeAcquisition = runNativeAcquisition
@@ -520,7 +539,7 @@ class CameraController internal constructor(
         this.p010BridgeRefused = false
         this.rawLogStream = rawLogStream
         this.rawLogRefused = false
-        this.extendedVideoRasterSize = videoSessionIntent?.streamSize?.takeIf {
+        this.extendedVideoRasterSize = intentToOpen?.streamSize?.takeIf {
             requiresExtendedVideoProof(it.width, it.height)
         }
         this.nativeLogEiCurvePoints = null
