@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
@@ -53,7 +55,7 @@ import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
 import me.hletrd.telecampro.video.EncoderSelection
-import me.hletrd.telecampro.video.EncoderSizeRateSupport
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
 import java.util.ArrayDeque
@@ -1708,6 +1710,21 @@ class CameraViewModelRobolectricTest {
             CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
         engineField("videoMode").setBoolean(e, true)
         engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(
+            e,
+            listOf(
+                EncoderSelection(
+                    codec = VideoCodec.HEVC,
+                    codecName = "extended-test",
+                    mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+                    hardwareAccelerated = true,
+                    main10 = true,
+                    formatSupport = EncoderFormatSupport { format ->
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+                    },
+                ),
+            ),
+        )
         v.onVideoFrameRate(VideoFrameRate.FPS_60)
         var rateAtSizePublication: VideoFrameRate? = null
         var controlsFpsAtSizePublication: Int? = null
@@ -1722,6 +1739,89 @@ class CameraViewModelRobolectricTest {
 
         assertEquals(VideoFrameRate.FPS_29_97, rateAtSizePublication)
         assertEquals(30, controlsFpsAtSizePublication)
+    }
+
+    @Test fun `PHOTO extended admission uses retained Gamma and an illegal exact format is inert`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(eightK, uhd),
+            // A stale projected map must not override the exact retained-HLG format probe.
+            extendedVideoSizeRates = mapOf(eightK to setOf(23.976, 24.0, 29.97, 30.0)),
+        )
+        val mainOnly = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "main-only",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_PROFILE) ==
+                    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("videoEncoderCandidates").set(e, listOf(mainOnly))
+        engineField("caps").set(e, routeCaps)
+        engineField("requestedVideoSize").set(e, null)
+        engineField("videoSize").set(e, uhd)
+        setState(v) { it.copy(mode = CaptureMode.PHOTO, caps = routeCaps, videoResolution = uhd) }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(uhd, engineField("videoSize").get(e))
+    }
+
+    @Test fun `camera fixed 60 and encoder 30 leaves no legal rate and setter is inert`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            extendedVideoSizeRates = mapOf(eightK to setOf(29.97, 30.0)),
+        )
+        val encoder30 = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-30",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { true },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("videoEncoderCandidates").set(e, listOf(encoder30))
+        engineField("caps").set(e, routeCaps)
+        engineField("requestedVideoSize").set(e, null)
+        engineField("videoSize").set(e, uhd)
+        setState(v) {
+            it.copy(mode = CaptureMode.VIDEO, caps = routeCaps, videoResolution = uhd)
+        }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(uhd, engineField("videoSize").get(e))
     }
 
     @Test fun `codec reconciliation falls back from 8K without relabeling the request`() {
@@ -1745,7 +1845,9 @@ class CameraViewModelRobolectricTest {
             mime = "video/hevc",
             hardwareAccelerated = true,
             main10 = true,
-            sizeRateSupport = EncoderSizeRateSupport { _, _, rate -> rate <= 30.0 },
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
         )
         val avcUhd = EncoderSelection(
             codec = VideoCodec.AVC,
@@ -1753,7 +1855,10 @@ class CameraViewModelRobolectricTest {
             mime = "video/avc",
             hardwareAccelerated = true,
             main10 = false,
-            sizeRateSupport = EncoderSizeRateSupport { width, _, rate -> width <= 3840 && rate <= 30.0 },
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_WIDTH) <= 3840 &&
+                    format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
         )
         ViewModelTestAccess.setField(
             v,

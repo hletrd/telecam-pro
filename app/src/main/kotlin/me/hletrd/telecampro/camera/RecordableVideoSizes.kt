@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import android.util.Size
+import me.hletrd.telecampro.video.ColorProfiles
 import me.hletrd.telecampro.video.EncoderSelection
 import kotlin.math.roundToInt
 
@@ -19,6 +20,78 @@ internal val VideoFrameRate.recordableCapabilityRate: Double
     get() = (encoderRate * 1000.0).roundToInt() / 1000.0
 
 /**
+ * Encoder-proven nominal rates for one extended raster. The probe is the REAL recorder format:
+ * exact component and MIME, profile/color transfer, nominal rate, and the rotated encoder raster.
+ */
+private fun projectedExtendedEncoderRates(
+    size: Size,
+    candidates: List<EncoderSelection>,
+    transfer: ColorTransfer,
+    codec: VideoCodec,
+    sensorOrientation: Int,
+    contentRotation: Int,
+): Set<Double> {
+    val (encoderWidth, encoderHeight) = RotationMath.encoderSurfaceSize(
+        size.width, size.height, sensorOrientation, contentRotation,
+    )
+    return VideoFrameRate.entries.asSequence()
+        .filter { it.fps <= 30 && !it.highSpeed }
+        .filter { rate ->
+            val nominalRate = rate.recordableCapabilityRate
+            val format = ColorProfiles.videoFormat(
+                codec = codec,
+                width = encoderWidth,
+                height = encoderHeight,
+                encoderRate = nominalRate,
+                captureRate = 0.0,
+                bitRate = videoBitRate(
+                    encoderWidth, encoderHeight, nominalRate, BitrateLevel.HIGH.bpp, codec,
+                ),
+                transfer = transfer,
+            )
+            candidates.any { it.codec == codec && it.formatSupport?.supports(format) == true }
+        }
+        .map { it.recordableCapabilityRate }
+        .toSet()
+}
+
+/** All camera+encoder legal rates for [size], with the extended-raster ≤30 rule applied. */
+internal fun projectedLegalVideoRates(
+    caps: CameraCaps,
+    size: Size,
+    candidates: List<EncoderSelection>,
+    transfer: ColorTransfer,
+    codec: VideoCodec,
+    sensorOrientation: Int,
+    contentRotation: Int,
+): List<VideoFrameRate> {
+    if (!requiresExtendedVideoProof(size.width, size.height)) {
+        return VideoFrameRate.availableFor(caps, size, codec)
+    }
+    val encoderRates = projectedExtendedEncoderRates(
+        size, candidates, transfer, codec, sensorOrientation, contentRotation,
+    )
+    if (encoderRates.isEmpty()) return emptyList()
+    val projected = caps.copy(
+        extendedVideoSizeRates = caps.extendedVideoSizeRates + (size to encoderRates),
+    )
+    return VideoFrameRate.availableFor(projected, size, codec).filter { it.fps <= 30 }
+}
+
+/** One legal rate, or null when camera and exact-format encoder support have no intersection. */
+fun projectedLegalVideoRate(
+    caps: CameraCaps,
+    size: Size,
+    candidates: List<EncoderSelection>,
+    transfer: ColorTransfer,
+    codec: VideoCodec,
+    sensorOrientation: Int,
+    contentRotation: Int,
+): VideoFrameRate? = projectedLegalVideoRates(
+    caps, size, candidates, transfer, codec, sensorOrientation, contentRotation,
+).firstOrNull()
+
+/**
  * Projects raw camera stream sizes through the exact encoder candidates for the active video packet.
  * Legacy sizes never need a probe. An extended size needs an encoder-supported rate that also
  * survives the camera's fixed-FPS/minimum-duration gates and, for RAW Log, a large enough RAW source;
@@ -28,17 +101,18 @@ fun projectRecordableVideoSizes(
     raw: CameraCaps,
     candidates: List<EncoderSelection>,
     rawLog: Boolean,
+    transfer: ColorTransfer = ColorTransfer.SDR,
+    contentRotation: Int = 0,
 ): CameraCaps {
-    val standardRates = VideoFrameRate.entries.map { it.recordableCapabilityRate }.filter { it <= 30.0 }.toSet()
     val codec = candidates.firstOrNull()?.codec ?: VideoCodec.HEVC
     fun encoderRates(sizes: List<Size>): Map<Size, Set<Double>> =
         sizes.filter { requiresExtendedVideoProof(it.width, it.height) }.mapNotNull { size ->
             if (rawLog && raw.rawSize?.let { it.width >= size.width && it.height >= size.height } != true) {
                 return@mapNotNull null
             }
-            val rates = standardRates.filter { rate ->
-                candidates.any { it.sizeRateSupport?.supports(size.width, size.height, rate) == true }
-            }.toSet()
+            val rates = projectedExtendedEncoderRates(
+                size, candidates, transfer, codec, raw.sensorOrientation, contentRotation,
+            )
             if (rates.isEmpty()) null else size to rates
         }.toMap()
     val videoRates = encoderRates(raw.availableVideoSizes)

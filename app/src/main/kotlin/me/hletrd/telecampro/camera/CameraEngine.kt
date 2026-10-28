@@ -700,12 +700,17 @@ class CameraEngine internal constructor(
         gl.setTransfer(value)
     }
 
+    /** The transfer whose encoder format the next Video session would actually configure. */
+    private fun videoProjectionTransfer(): ColorTransfer = if (videoMode) transfer else requestedVideoTransfer
+
     /** Projects one route's RAW camera sizes through the active exact encoder/Gamma packet. */
     private fun projectRouteCaps(sel: TeleSelection, routeRaw: CameraCaps, raw: CameraCaps): CameraCaps =
         projectRecordableVideoSizes(
             raw = routeRaw,
             candidates = videoEncoderCandidates,
             rawLog = rawLogWanted(sel, raw),
+            transfer = videoProjectionTransfer(),
+            contentRotation = previewRotationDegrees(),
         )
 
     /**
@@ -4632,7 +4637,6 @@ class CameraEngine internal constructor(
         if (requiresExtendedVideoProof(s.width, s.height) && projectedExtendedVideoRate(s) == null) {
             // Encoder support alone is insufficient: fixed-FPS and min-duration camera gates must
             // also admit a rate BEFORE the request reaches persistence or the delivered-size UI.
-            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
         // Remember the user's pick so lens switches and the initial open don't silently re-derive
@@ -4657,9 +4661,18 @@ class CameraEngine internal constructor(
         return true
     }
 
-    /** Nearest camera+encoder-proven rate for an extended raster; legacy rates stay byte-identical. */
+    /** Nearest camera+exact-format-proven rate for an extended raster; legacy rates stay unchanged. */
     private fun projectedExtendedVideoRate(size: Size, routeCaps: CameraCaps? = caps): VideoFrameRate? {
-        val allowed = VideoFrameRate.availableFor(routeCaps, size, videoCodec).filter { it.fps <= 30 }
+        val currentCaps = routeCaps ?: return null
+        val allowed = projectedLegalVideoRates(
+            caps = currentCaps,
+            size = size,
+            candidates = videoEncoderCandidates,
+            transfer = videoProjectionTransfer(),
+            codec = videoCodec,
+            sensorOrientation = currentCaps.sensorOrientation,
+            contentRotation = previewRotationDegrees(),
+        )
         return if (videoFrameRate in allowed) {
             videoFrameRate
         } else {

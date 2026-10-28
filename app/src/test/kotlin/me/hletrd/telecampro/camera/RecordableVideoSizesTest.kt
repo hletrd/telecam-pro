@@ -1,12 +1,14 @@
 package me.hletrd.telecampro.camera
 
+import android.media.MediaFormat
 import android.util.Range
 import android.util.Size
 import me.hletrd.telecampro.ui.ViewModelTestAccess
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.EncoderSelection
-import me.hletrd.telecampro.video.EncoderSizeRateSupport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,11 +23,19 @@ class RecordableVideoSizesTest {
 
     private val candidatesWithoutProbe = candidates(null)
     private val candidatesWithout8k = candidates(
-        EncoderSizeRateSupport { width, height, _ -> width < 7680 || height < 4320 },
+        EncoderFormatSupport { format ->
+            val width = format.getInteger(MediaFormat.KEY_WIDTH)
+            val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+            (width < 7680 || height < 4320) && (width < 4320 || height < 7680)
+        },
     )
     private val candidatesWith8k30 = candidates(
-        EncoderSizeRateSupport { width, height, rate ->
-            width == 7680 && height == 4320 && rate in setOf(23.976, 24.0, 29.97, 30.0)
+        EncoderFormatSupport { format ->
+            val width = format.getInteger(MediaFormat.KEY_WIDTH)
+            val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+            val rate = format.getFloat(MediaFormat.KEY_FRAME_RATE)
+            ((width == 7680 && height == 4320) || (width == 4320 && height == 7680)) &&
+                rate in setOf(23.976f, 24.0f, 29.97f, 30.0f)
         },
     )
 
@@ -76,6 +86,10 @@ class RecordableVideoSizesTest {
             availableFpsRanges = arrayOf(Range(60, 60)),
         )
 
+        assertNull(projectedLegalVideoRate(
+            raw, eightK, candidatesWith8k30, ColorTransfer.SDR,
+            VideoCodec.HEVC, raw.sensorOrientation, contentRotation = 0,
+        ))
         val projected = projectRecordableVideoSizes(raw, candidatesWith8k30, rawLog = false)
 
         assertEquals(listOf(uhd), projected.availableVideoSizes)
@@ -126,14 +140,14 @@ class RecordableVideoSizesTest {
             rawSize = rawSize,
         )
 
-    private fun candidates(support: EncoderSizeRateSupport?): List<EncoderSelection> = listOf(
+    private fun candidates(support: EncoderFormatSupport?): List<EncoderSelection> = listOf(
         EncoderSelection(
             codec = VideoCodec.HEVC,
             codecName = "test.hevc",
             mime = "video/hevc",
             hardwareAccelerated = true,
             main10 = true,
-            sizeRateSupport = support,
+            formatSupport = support,
         ),
     )
 }

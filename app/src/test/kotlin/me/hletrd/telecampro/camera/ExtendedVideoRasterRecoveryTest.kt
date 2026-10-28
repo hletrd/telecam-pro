@@ -3,10 +3,12 @@ package me.hletrd.telecampro.camera
 import android.app.Application
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaFormat
 import android.util.Size
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import me.hletrd.telecampro.ui.ViewModelTestAccess
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.EncoderSelection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -211,7 +213,7 @@ class ExtendedVideoRasterRecoveryTest {
             mime = "video/hevc",
             hardwareAccelerated = true,
             main10 = true,
-            sizeRateSupport = null,
+            formatSupport = null,
         )
 
         val published = interleaveFallbackEffects(fixture) {
@@ -339,7 +341,7 @@ class ExtendedVideoRasterRecoveryTest {
             mime = "video/hevc",
             hardwareAccelerated = true,
             main10 = true,
-            sizeRateSupport = null,
+            formatSupport = null,
         )
 
         fixture.engine.setVideoPipeline(listOf(legacyOnly), ColorTransfer.SDR)
@@ -407,6 +409,22 @@ class ExtendedVideoRasterRecoveryTest {
         setField(engine, "videoMode", true)
         setField(engine, "transfer", ColorTransfer.MAKER_LOG)
         setField(engine, "requestedVideoTransfer", ColorTransfer.MAKER_LOG)
+        setField(
+            engine,
+            "videoEncoderCandidates",
+            listOf(
+                EncoderSelection(
+                    codec = VideoCodec.HEVC,
+                    codecName = "extended-fixture",
+                    mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+                    hardwareAccelerated = true,
+                    main10 = true,
+                    formatSupport = EncoderFormatSupport { format ->
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+                    },
+                ),
+            ),
+        )
         setField(engine, "requestedVideoSize", eightK)
         setField(engine, "requestedVideoSizeDirectWrites", 1L)
         setField(engine, "videoSize", outgoingSizeAtWire ?: eightK)

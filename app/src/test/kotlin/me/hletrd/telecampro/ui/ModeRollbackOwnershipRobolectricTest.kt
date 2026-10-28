@@ -22,7 +22,7 @@ import me.hletrd.telecampro.camera.recordingEncoderAdmission
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoPipelineEngineOverrides
 import me.hletrd.telecampro.video.EncoderSelection
-import me.hletrd.telecampro.video.EncoderSizeRateSupport
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -166,7 +166,9 @@ class ModeRollbackOwnershipRobolectricTest {
             MediaFormat.MIMETYPE_VIDEO_HEVC,
             hardwareAccelerated = true,
             main10 = true,
-            sizeRateSupport = EncoderSizeRateSupport { _, _, rate -> rate <= 30.0 },
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
         )
         val avcUhd = EncoderSelection(
             VideoCodec.AVC,
@@ -174,7 +176,10 @@ class ModeRollbackOwnershipRobolectricTest {
             MediaFormat.MIMETYPE_VIDEO_AVC,
             hardwareAccelerated = true,
             main10 = false,
-            sizeRateSupport = EncoderSizeRateSupport { width, _, rate -> width <= 3840 && rate <= 30.0 },
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_WIDTH) <= 3840 &&
+                    format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
         )
         setField(viewModel, "encoderInventory", CodecInventory(mapOf(
             VideoCodec.HEVC to listOf(hevc8k),
