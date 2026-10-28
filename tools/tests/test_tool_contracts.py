@@ -1651,8 +1651,10 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 text = text.replace(needle, "traceText!!.takeIf {", 1)
             elif mutation == "release":
                 needle = "me.hletrd.telecampro.BuildConfig.DEBUG,"
-                self.assertIn(needle, text)
-                text = text.replace(needle, "true,", 1)
+                trace_call = "traceAdmission = captureFamilyTraceAdmission("
+                self.assertIn(trace_call, text)
+                argument = text.index(needle, text.index(trace_call))
+                text = text[:argument] + "true," + text[argument + len(needle):]
             else:
                 needle = "traceAdmission.registration && recurringDiagnosticAllowed("
                 self.assertIn(needle, text)
