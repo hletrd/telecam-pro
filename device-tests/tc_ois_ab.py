@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import select
 import subprocess
 import threading
@@ -38,6 +39,11 @@ BLUR_ATTENUATION_FLOOR = 0.45
 BLUR_ANISOTROPY_FLOOR = 1.8
 DEFAULT_MAX_SHIFT = 64
 DEFAULT_MAX_FRAMES = 30
+SOURCE_TIME_TOLERANCE_S = 1.0e-4
+STDERR_RETAINED_BYTES = 65536
+PTS_TIME_PATTERN = re.compile(
+    rb"pts_time:(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +94,9 @@ class _DecodedWindow:
     frames: np.ndarray
     selected_indices: tuple[int, ...]
     source_frame_count: int
+    # FFmpeg showinfo's timestamp for EVERY decoded source frame, not only the
+    # retained pixel sample. This is linear scalar metadata, never full-frame buffering.
+    source_pts_s: tuple[float, ...]
 
 
 def _luminance(image: np.ndarray) -> np.ndarray:
@@ -212,7 +221,7 @@ def estimate_translation(
         peak,
         float(correlation[(peak_y + 1) % height, peak_x]),
     )
-    confident = peak >= PHASE_PEAK_FLOOR and peak_ratio >= PHASE_PEAK_RATIO_FLOOR
+    confident = bool(np.any(sidelobes)) and peak >= PHASE_PEAK_FLOOR and peak_ratio >= PHASE_PEAK_RATIO_FLOOR
     if not confident:
         # A long motion kernel turns the whitened phase peak into a ridge. A
         # normalized, non-whitened correlation keeps its center at the true
@@ -421,6 +430,34 @@ def analyze_trial(
     )
 
 
+def _stream_start_pts_s(video: str | Path, deadline: float) -> float:
+    """Read the stream start used to turn a duration into a -copyts absolute stop."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0.0:
+        raise TimeoutError("FFmpeg start-time probe exceeded its decode deadline")
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=start_time", "-of",
+                "default=noprint_wrappers=1:nokey=1", str(Path(video)),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=remaining,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError("FFmpeg start-time probe exceeded its decode deadline") from error
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg start-time probe failed: {message}") from error
+    text = result.stdout.decode("ascii", errors="replace").strip()
+    if not text or text == "N/A":
+        return 0.0
+    start = float(text)
+    return start if math.isfinite(start) else 0.0
+
+
 def _decode_luminance_window(
     video: str | Path,
     *,
@@ -446,17 +483,22 @@ def _decode_luminance_window(
         raise ValueError("max_frames must be positive when supplied")
     if timeout_s <= 0.0:
         raise ValueError("timeout_s must be positive")
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    deadline = time.monotonic() + timeout_s
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-copyts"]
     if start_s > 0.0:
         command += ["-ss", f"{start_s:.6f}"]
     command += ["-i", str(Path(video))]
     if duration_s is not None:
         if duration_s <= 0.0:
             raise ValueError("duration_s must be positive")
-        command += ["-t", f"{duration_s:.6f}"]
+        # -copyts keeps source PTS, so an absolute -to is the requested window's
+        # end; -t would instead cut a nonzero-start stream short on this FFmpeg.
+        source_start_s = _stream_start_pts_s(video, deadline)
+        command += ["-to", f"{max(start_s, source_start_s) + duration_s:.6f}"]
     command += [
         "-an", "-sn", "-dn",
-        "-vf", f"crop={width}:{height}:{x}:{y},format=gray",
+        "-vf", f"crop={width}:{height}:{x}:{y},format=gray,showinfo",
+        "-fps_mode", "passthrough",
         "-f", "rawvideo", "-pix_fmt", "gray", "-",
     ]
     frame_bytes = width * height
@@ -466,13 +508,45 @@ def _decode_luminance_window(
         stderr=subprocess.PIPE,
         bufsize=0,
     )
-    deadline = time.monotonic() + timeout_s
     stderr_parts: list[bytes] = []
+    stderr_size = 0
+    source_pts_s: list[float] = []
+
+    def retain_stderr(line: bytes) -> None:
+        nonlocal stderr_size
+        payload = line + b"\n"
+        stderr_parts.append(payload)
+        stderr_size += len(payload)
+        while stderr_size > STDERR_RETAINED_BYTES and len(stderr_parts) > 1:
+            stderr_size -= len(stderr_parts.pop(0))
+        if stderr_size > STDERR_RETAINED_BYTES:
+            stderr_parts[:] = [stderr_parts[0][-STDERR_RETAINED_BYTES:]]
+            stderr_size = len(stderr_parts[0])
+
+    def metadata_line(line: bytes) -> None:
+        if b"showinfo" in line:
+            match = PTS_TIME_PATTERN.search(line)
+            if match is not None:
+                source_pts_s.append(float(match.group(1)))
+                return
+        if line:
+            retain_stderr(line)
 
     def drain_stderr() -> None:
         assert process.stderr is not None
+        pending = bytearray()
         while chunk := process.stderr.read(65536):
-            stderr_parts.append(chunk)
+            pending.extend(chunk)
+            lines = re.split(br"[\r\n]", bytes(pending))
+            pending = bytearray(lines.pop())
+            for line in lines:
+                metadata_line(line)
+            # A broken/infinite diagnostic line must not defeat the memory bound.
+            if len(pending) > STDERR_RETAINED_BYTES:
+                retain_stderr(bytes(pending[-STDERR_RETAINED_BYTES:]))
+                pending.clear()
+        if pending:
+            metadata_line(bytes(pending))
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
     stderr_thread.start()
@@ -556,6 +630,7 @@ def _decode_luminance_window(
         frames=frames,
         selected_indices=tuple(index for index, _ in selected),
         source_frame_count=index,
+        source_pts_s=tuple(source_pts_s),
     )
 
 
@@ -603,6 +678,26 @@ def analyze_videos(
     if reference_window.source_frame_count != candidate_window.source_frame_count:
         return TrialAnalysis(
             "UNJUDGEABLE", "FRAME_COUNT_MISMATCH", math.nan, math.nan,
+            False, 0.0, math.nan, (),
+        )
+    if (
+        len(reference_window.source_pts_s) != reference_window.source_frame_count
+        or len(candidate_window.source_pts_s) != candidate_window.source_frame_count
+    ):
+        return TrialAnalysis(
+            "UNJUDGEABLE", "SOURCE_TIME_METADATA_MISSING", math.nan, math.nan,
+            False, 0.0, math.nan, (),
+        )
+    if any(
+        not math.isfinite(reference_pts)
+        or not math.isfinite(candidate_pts)
+        or abs(reference_pts - candidate_pts) > SOURCE_TIME_TOLERANCE_S
+        for reference_pts, candidate_pts in zip(
+            reference_window.source_pts_s, candidate_window.source_pts_s, strict=True
+        )
+    ):
+        return TrialAnalysis(
+            "UNJUDGEABLE", "SOURCE_TIME_MISMATCH", math.nan, math.nan,
             False, 0.0, math.nan, (),
         )
     if reference_window.selected_indices != candidate_window.selected_indices:

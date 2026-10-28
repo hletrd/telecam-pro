@@ -324,15 +324,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val protectedDebugCommandDeferral = DebugCameraCommandDeferral()
+
+    private fun applyProtectedDebugCameraFollowups(command: DebugCameraControlCommand) {
+        command.zoomRatio?.let(vm::debugApplyZoom)
+        command.record?.let(vm::debugSetRecording)
+        repeat(command.shutterPresses) { vm.debugPressShutter() }
+    }
+
     /** Consumes only commands admitted by the debug manifest's DUMP-protected component. */
     private fun consumeProtectedDebugCameraCommand() {
         if (!BuildConfig.DEBUG) return
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
-        command.standaloneMakerVideo?.let(vm::debugSetStandaloneMakerVideoProbe)
-        command.zoomRatio?.let(vm::debugApplyZoom)
-        command.record?.let(vm::debugSetRecording)
-        repeat(command.shutterPresses) { vm.debugPressShutter() }
+        if (protectedDebugCommandDeferral.hasPending) {
+            // Repeated or newer probe packets must not cancel the barrier. A changed probe starts
+            // its own reopen; a repeated one is a no-op. Either way only the newest followups merge,
+            // and release still requires this transaction's Not-Ready → accepted-Ready sequence.
+            command.standaloneMakerVideo?.let(vm::debugSetStandaloneMakerVideoProbe)
+            protectedDebugCommandDeferral.defer(
+                command.copy(zslSpike = null, standaloneMakerVideo = null),
+                currentlyReady = vm.state.value.cameraReady,
+            )
+            return
+        }
+        protectedDebugCommandDeferral.clear()
+        val reopenStarted = command.standaloneMakerVideo
+            ?.let(vm::debugSetStandaloneMakerVideoProbe) == true
+        val followups = command.copy(zslSpike = null, standaloneMakerVideo = null)
+        if (reopenStarted && !followups.isEmpty) {
+            protectedDebugCommandDeferral.defer(
+                followups,
+                currentlyReady = vm.state.value.cameraReady,
+            )
+        } else {
+            applyProtectedDebugCameraFollowups(followups)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -409,6 +436,14 @@ class MainActivity : ComponentActivity() {
                         .collect { dimEligible -> onTimelapseRunningChanged(dimEligible) }
                 } finally {
                     onTimelapseRunningChanged(false)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.state.map { it.cameraReady }.distinctUntilChanged().collect { ready ->
+                    protectedDebugCommandDeferral.onCameraReady(ready)
+                        ?.let(::applyProtectedDebugCameraFollowups)
                 }
             }
         }

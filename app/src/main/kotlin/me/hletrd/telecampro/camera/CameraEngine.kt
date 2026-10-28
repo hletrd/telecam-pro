@@ -1562,6 +1562,7 @@ class CameraEngine internal constructor(
 
     private fun activeDeviceProfile(): DeviceProfile = debugStandaloneMakerVideoProfile(
         deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL),
+        model = android.os.Build.MODEL,
         debugBuild = me.hletrd.telecampro.BuildConfig.DEBUG,
         probeEnabled = debugStandaloneMakerVideoProbe,
     )
@@ -3717,10 +3718,10 @@ class CameraEngine internal constructor(
     }
 
     /** Explicitly retries or leaves the standalone 0x80b5 probe through one ordinary optics reopen. */
-    internal fun setStandaloneMakerVideoProbe(enabled: Boolean) {
-        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
+    internal fun setStandaloneMakerVideoProbe(enabled: Boolean): Boolean {
+        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return false
         synchronized(this) {
-            if (debugStandaloneMakerVideoProbe == enabled || recorder != null) return
+            if (debugStandaloneMakerVideoProbe == enabled || recorder != null) return false
             debugStandaloneMakerVideoProbe = enabled
             // A debug toggle is an explicit route selection, so it may retry a refused probe.
             makerLogRefused = false
@@ -3729,6 +3730,7 @@ class CameraEngine internal constructor(
         // Bare-door token: a preflight failure keeps the newest debug intent and uses bounded retry,
         // never a rollback to the old accepted camera while this new admission remains installed.
         reopenForSession()
+        return true
     }
 
     fun setAeMetering(enabled: Boolean) {

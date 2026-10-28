@@ -186,6 +186,14 @@ internal data class DeviceProfile(
         )
 
         /**
+         * Debug-only standalone 0x80b5 admission is measured on the exact PMA110 model. The sibling
+         * models inherit PMA110's production quirks by owner decision, but no standalone maker VIDEO
+         * measurement licenses this probe on them. A future sibling needs its own measurement here.
+         */
+        fun standaloneMakerVideoProbeMeasured(model: String?): Boolean =
+            model?.trim()?.uppercase() == "PMA110"
+
+        /**
          * Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL].
          * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
          * the WHOLE PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT

@@ -59,11 +59,13 @@ class CameraControllerTest {
     }
 
     @Test
-    fun `standalone maker profile admission requires debug and a maker profile`() {
-        assertTrue(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = false, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = true, probeEnabled = false).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.GENERIC, debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+    fun `standalone maker profile admission is exact PMA110 debug only`() {
+        assertTrue(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = false, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = true, probeEnabled = false).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.GENERIC, "SM-F741N", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.resolve("CPH2841"), "CPH2841", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.resolve("PMA120"), "PMA120", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
     }
 
     @Test

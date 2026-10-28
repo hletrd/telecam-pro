@@ -114,12 +114,16 @@ internal fun applyHasselbladMode40(
 internal fun originalZoomHintForStandaloneTc(localZoom: Float, magnification: Float): Float =
     localZoom.coerceAtLeast(1f) * magnification
 
-/** The probe can augment a maker-capable profile in debug only; release and GENERIC stay byte-identical. */
+/** The exact measured PMA110 probe can augment its maker profile in debug only; siblings and release stay unchanged. */
 internal fun debugStandaloneMakerVideoProfile(
     profile: DeviceProfile,
+    model: String?,
     debugBuild: Boolean,
     probeEnabled: Boolean,
-): DeviceProfile = if (debugBuild && probeEnabled && profile.makerLogPipeline) {
+): DeviceProfile = if (
+    debugBuild && probeEnabled && profile.makerLogPipeline &&
+    DeviceProfile.standaloneMakerVideoProbeMeasured(model)
+) {
     profile.copy(makerLogStandaloneTeleVideo = true)
 } else {
     profile

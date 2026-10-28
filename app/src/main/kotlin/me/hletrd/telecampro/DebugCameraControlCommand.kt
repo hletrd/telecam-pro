@@ -26,6 +26,41 @@ internal data class DebugCameraControlCommand(
 }
 
 /**
+ * Holds protected-harness followups across a probe-triggered reopen. A stale Ready must not release
+ * zoom/REC against the outgoing route's caps: after a deferral from Ready, observe Not-Ready first,
+ * then the next accepted Ready. Main-thread only, like the Activity mailbox consumer.
+ */
+internal class DebugCameraCommandDeferral {
+    private var pending: DebugCameraControlCommand? = null
+    private var waitingForNotReady = false
+
+    val hasPending: Boolean get() = pending != null
+
+    fun defer(command: DebugCameraControlCommand, currentlyReady: Boolean) {
+        if (command.isEmpty) return
+        val previous = pending
+        pending = previous?.mergedWith(command) ?: command
+        if (previous == null) waitingForNotReady = currentlyReady
+    }
+
+    fun onCameraReady(ready: Boolean): DebugCameraControlCommand? {
+        val command = pending ?: return null
+        if (!ready) {
+            waitingForNotReady = false
+            return null
+        }
+        if (waitingForNotReady) return null
+        pending = null
+        return command
+    }
+
+    fun clear() {
+        pending = null
+        waitingForNotReady = false
+    }
+}
+
+/**
  * Process-local bridge from the DUMP-protected debug component to the live launcher Activity.
  * Multiple shell commands merge until MainActivity consumes them, so a cold-start command cannot
  * be lost between the protected component's startActivity call and ViewModel construction.

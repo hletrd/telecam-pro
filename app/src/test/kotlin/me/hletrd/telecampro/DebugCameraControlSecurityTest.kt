@@ -137,6 +137,66 @@ class DebugCameraControlSecurityTest {
         assertFalse(DebugCameraControlMailbox.publish(DebugCameraControlCommand()))
     }
 
+    @Test fun `combined probe followups wait for not ready then accepted ready`() {
+        val deferral = DebugCameraCommandDeferral()
+        val followups = DebugCameraControlCommand(zoomRatio = 3f, record = true)
+        deferral.defer(followups, currentlyReady = true)
+
+        assertNull(deferral.onCameraReady(true))
+        assertNull(deferral.onCameraReady(false))
+        assertEquals(followups, deferral.onCameraReady(true))
+        assertNull(deferral.onCameraReady(true))
+    }
+
+    @Test fun `deferred debug followups keep the newest zoom and REC intent`() {
+        val deferral = DebugCameraCommandDeferral()
+        deferral.defer(
+            DebugCameraControlCommand(zoomRatio = 2f, record = true),
+            currentlyReady = false,
+        )
+        deferral.defer(
+            DebugCameraControlCommand(zoomRatio = 4f, record = false),
+            currentlyReady = false,
+        )
+
+        assertEquals(
+            DebugCameraControlCommand(zoomRatio = 4f, record = false),
+            deferral.onCameraReady(true),
+        )
+    }
+
+    @Test fun `repeated probe packet cannot clear an active reopen barrier`() {
+        DebugCameraControlMailbox.consume()
+        RobolectricEglSentinels.ensure()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        try {
+            val consume = MainActivity::class.java.getDeclaredMethod("consumeProtectedDebugCameraCommand")
+                .apply { isAccessible = true }
+            val deferralField = MainActivity::class.java.getDeclaredField("protectedDebugCommandDeferral")
+                .apply { isAccessible = true }
+            val deferral = deferralField.get(controller.get()) as DebugCameraCommandDeferral
+            DebugCameraControlMailbox.publish(
+                DebugCameraControlCommand(standaloneMakerVideo = true, zoomRatio = 2f, record = true),
+            )
+            consume.invoke(controller.get())
+            assertTrue(deferral.hasPending)
+
+            DebugCameraControlMailbox.publish(
+                DebugCameraControlCommand(standaloneMakerVideo = true, zoomRatio = 4f, record = false),
+            )
+            consume.invoke(controller.get())
+
+            assertTrue(deferral.hasPending)
+            assertEquals(
+                DebugCameraControlCommand(zoomRatio = 4f, record = false),
+                deferral.onCameraReady(true),
+            )
+        } finally {
+            controller.destroy()
+            DebugCameraControlMailbox.consume()
+        }
+    }
+
     @Test fun `standalone maker probe commands merge by newest wanted state`() {
         DebugCameraControlMailbox.consume()
         assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(standaloneMakerVideo = true)))

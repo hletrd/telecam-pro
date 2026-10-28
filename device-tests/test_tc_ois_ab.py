@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 DEVICE_TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(DEVICE_TESTS))
 
+import tc_ois_ab  # noqa: E402
 from tc_ois_ab import (  # noqa: E402
     analyze_frame_pair,
     analyze_trial,
@@ -62,14 +64,37 @@ def _motion_blur(image: np.ndarray, length: int, axis: str) -> np.ndarray:
     raise ValueError(axis)
 
 
-def _write_gray_video(path: Path, frames: np.ndarray, fps: int = 2) -> None:
+def _write_gray_video(
+    path: Path,
+    frames: np.ndarray,
+    fps: float = 2,
+    start_pts_s: float = 0.0,
+) -> None:
     height, width = frames.shape[-2:]
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}",
+        "-r", str(fps), "-i", "-", "-frames:v", str(len(frames)),
+    ]
+    if start_pts_s:
+        command += ["-output_ts_offset", str(start_pts_s)]
+    command += ["-c:v", "ffv1", str(path)]
+    subprocess.run(command, input=frames.astype(np.uint8).tobytes(), check=True)
+
+
+def _write_gray_video_with_pts(path: Path, frames: np.ndarray, pts_s: list[float]) -> None:
+    """Encode identical pixels against hand-selected source timestamps."""
+    assert len(frames) == len(pts_s)
+    height, width = frames.shape[-2:]
+    expression = f"{pts_s[-1]}/TB"
+    for index in range(len(pts_s) - 2, -1, -1):
+        expression = f"if(eq(N\\,{index})\\,{pts_s[index]}/TB\\,{expression})"
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}",
-            "-r", str(fps), "-i", "-", "-frames:v", str(len(frames)),
-            "-c:v", "ffv1", str(path),
+            "-r", "2", "-i", "-", "-frames:v", str(len(frames)),
+            "-vf", f"setpts={expression}", "-fps_mode", "passthrough", "-c:v", "ffv1", str(path),
         ],
         input=frames.astype(np.uint8).tobytes(),
         check=True,
@@ -97,6 +122,15 @@ def test_known_feature_motion_uses_content_coordinates() -> None:
     estimate = estimate_translation(reference, candidate)
     assert estimate.dx == pytest.approx(12.0, abs=1.0)
     assert estimate.dy == pytest.approx(-7.0, abs=1.0)
+
+
+@pytest.mark.parametrize(("max_shift", "seed"), [(1, 9201), (2, 9271)])
+def test_primary_phase_refuses_when_no_independent_sidelobes_exist(max_shift: int, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    reference = rng.random((64, 64))
+    unrelated = rng.random((64, 64))
+    estimate = estimate_translation(reference, unrelated, max_shift=max_shift)
+    assert not estimate.confident
 
 
 @pytest.mark.parametrize(("size", "max_shift"), [(16, 7), (24, 8)])
@@ -288,6 +322,94 @@ def test_mismatched_duration_is_not_hidden_by_endpoint_sampling(tmp_path: Path) 
     )
     assert result.verdict == "UNJUDGEABLE"
     assert result.reason == "FRAME_COUNT_MISMATCH"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_equal_frame_counts_at_different_fps_are_unjudgeable(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference-fps.mkv"
+    candidate_video = tmp_path / "candidate-fps.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video(reference_video, frames, fps=2)
+    _write_gray_video(candidate_video, frames, fps=4)
+
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "SOURCE_TIME_MISMATCH"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_different_source_start_pts_is_unjudgeable(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference-start.mkv"
+    candidate_video = tmp_path / "candidate-start.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video(reference_video, frames)
+    _write_gray_video(candidate_video, frames, start_pts_s=1.25)
+
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "SOURCE_TIME_MISMATCH"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_missing_source_time_metadata_is_unjudgeable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video = tmp_path / "missing-pts.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video(video, frames)
+    decode = tc_ois_ab._decode_luminance_window
+
+    def without_source_pts(*args: object, **kwargs: object) -> tc_ois_ab._DecodedWindow:
+        return replace(decode(*args, **kwargs), source_pts_s=())
+
+    monkeypatch.setattr(tc_ois_ab, "_decode_luminance_window", without_source_pts)
+    result = analyze_videos(
+        video,
+        video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "SOURCE_TIME_METADATA_MISSING"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_different_drop_duplicate_placement_is_unjudgeable(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference-placement.mkv"
+    candidate_video = tmp_path / "candidate-placement.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video_with_pts(reference_video, frames, [0.0, 0.5, 1.0, 1.5])
+    # The same four decoded frames occupy a different interior source-time slot,
+    # as happens when two recordings drop/duplicate at different positions.
+    _write_gray_video_with_pts(candidate_video, frames, [0.0, 0.5, 0.75, 1.5])
+
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "SOURCE_TIME_MISMATCH"
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
