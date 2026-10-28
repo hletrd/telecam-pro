@@ -45,6 +45,14 @@ class CameraControllerTest {
     }
 
     @Test
+    fun `standalone source pre-rotation requires accepted maker confirmation`() {
+        assertTrue(standaloneMakerSourcePreRotated(standaloneMakerVideo = true, makerLogConfigured = true))
+        assertFalse(standaloneMakerSourcePreRotated(standaloneMakerVideo = true, makerLogConfigured = false))
+        assertFalse(standaloneMakerSourcePreRotated(standaloneMakerVideo = false, makerLogConfigured = true))
+        assertFalse(standaloneMakerSourcePreRotated(standaloneMakerVideo = false, makerLogConfigured = false))
+    }
+
+    @Test
     fun `neither maker route writes the conflicting Hasselblad mode 40 hint`() {
         assertFalse(applyHasselbladMode40(teleconverter = true, standaloneMakerVideo = true, logicalMaker = false))
         assertFalse(applyHasselbladMode40(teleconverter = true, standaloneMakerVideo = false, logicalMaker = true))
@@ -56,16 +64,6 @@ class CameraControllerTest {
     fun `standalone TC original zoom keeps the converter multiplied value`() {
         assertEquals(4.286f * 2f, originalZoomHintForStandaloneTc(2f, 4.286f), 0f)
         assertEquals(4.286f, originalZoomHintForStandaloneTc(0.5f, 4.286f), 0f)
-    }
-
-    @Test
-    fun `standalone maker profile admission is exact PMA110 debug only`() {
-        assertTrue(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = false, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, "PMA110", debugBuild = true, probeEnabled = false).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.GENERIC, "SM-F741N", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.resolve("CPH2841"), "CPH2841", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
-        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.resolve("PMA120"), "PMA120", debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
     }
 
     @Test

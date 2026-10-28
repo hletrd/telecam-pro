@@ -32,6 +32,13 @@ class RotationMathTest {
     }
 
     @Test
+    fun `standalone maker source rotation replaces the afocal correction`() {
+        assertEquals(0, RotationMath.previewRotationDegrees(true, sourcePreRotated = true))
+        assertEquals(180, RotationMath.previewRotationDegrees(true, sourcePreRotated = false))
+        assertEquals(0, RotationMath.previewRotationDegrees(false, sourcePreRotated = true))
+    }
+
+    @Test
     fun `capture rotation adds sensor + afocal MINUS the CCW-positive device term`() {
         // DEVICE-CONFIRMED 2026-07-25: dev is GyroEis CCW-positive, so BACK subtracts it (the old
         // +dev matrix saved a landscape-held rear still 180 deg rotated; portrait dev=0 was inert).

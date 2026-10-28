@@ -324,8 +324,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val protectedDebugCommandDeferral = DebugCameraCommandDeferral()
-
     private fun applyProtectedDebugCameraFollowups(command: DebugCameraControlCommand) {
         command.zoomRatio?.let(vm::debugApplyZoom)
         command.record?.let(vm::debugSetRecording)
@@ -337,31 +335,7 @@ class MainActivity : ComponentActivity() {
         if (!BuildConfig.DEBUG) return
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
-        if (protectedDebugCommandDeferral.hasPending) {
-            // Repeated or newer probe packets must not cancel the barrier. A changed probe starts
-            // its own reopen; a repeated one is a no-op. Either way only the newest followups merge,
-            // and release still requires this transaction's Not-Ready → accepted-Ready sequence.
-            command.standaloneMakerVideo?.let(vm::debugSetStandaloneMakerVideoProbe)
-            protectedDebugCommandDeferral.defer(
-                command.copy(zslSpike = null, standaloneMakerVideo = null),
-                currentlyReady = vm.state.value.cameraReady,
-            )
-            return
-        }
-        protectedDebugCommandDeferral.clear()
-        val reopenStarted = command.standaloneMakerVideo
-            ?.let(vm::debugSetStandaloneMakerVideoProbe) == true
-        val followups = command.copy(zslSpike = null, standaloneMakerVideo = null)
-        if (reopenStarted) {
-            // Arm even with no followup yet: a probe-only packet still invalidates the old route's
-            // Ready/caps, and a later zoom/REC packet must join this same accepted-reopen barrier.
-            protectedDebugCommandDeferral.defer(
-                followups,
-                currentlyReady = vm.state.value.cameraReady,
-            )
-        } else {
-            applyProtectedDebugCameraFollowups(followups)
-        }
+        applyProtectedDebugCameraFollowups(command.copy(zslSpike = null))
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -441,15 +415,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                vm.state.map { it.cameraReady }.distinctUntilChanged().collect { ready ->
-                    protectedDebugCommandDeferral.onCameraReady(ready)
-                        ?.let(::applyProtectedDebugCameraFollowups)
-                }
-            }
-        }
-
         setContent {
             TeleCamProTheme {
                 val state by vm.state.collectAsState()

@@ -2701,11 +2701,6 @@ class CameraViewModel private constructor(
         engine.setZslSpike(enabled)
     }
 
-    internal fun debugSetStandaloneMakerVideoProbe(enabled: Boolean): Boolean {
-        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return false
-        return engine.setStandaloneMakerVideoProbe(enabled)
-    }
-
     internal fun debugApplyZoom(ratio: Float) {
         if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
         if (ratio > 0f) applyZoomRatio(ratio)

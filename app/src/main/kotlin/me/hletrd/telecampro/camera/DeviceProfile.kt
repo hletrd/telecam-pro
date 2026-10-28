@@ -104,9 +104,10 @@ internal data class DeviceProfile(
     /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
     val makerLogPipeline: Boolean = false,
     /**
-     * Separate admission for the standalone TC + 0x80b5 maker VIDEO probe. False on every production
-     * profile: the logical-maker measurement and TC zoom span do not measure this session, and an
-     * explicit debug probe must not enable GENERIC, CPH2841 or PMA120 by inheritance.
+     * Standalone TC + 0x80b5 maker VIDEO, measured on the exact PMA110 with the physical converter:
+     * real OEM O-Log2/HDR colour, lower residual motion than stock TC without directional blur, and
+     * upright preview/encoder output after accounting for this source's pixel-level 180° pre-rotation
+     * (FIELD_CHECKS A30). CPH2841 and PMA120 stay false until separately measured; GENERIC stays false.
      */
     val makerLogStandaloneTeleVideo: Boolean = false,
     /**
@@ -169,6 +170,7 @@ internal data class DeviceProfile(
             nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
+            makerLogStandaloneTeleVideo = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             previewStabilizedStillMaxExposureNs = PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS,
@@ -186,14 +188,6 @@ internal data class DeviceProfile(
         )
 
         /**
-         * Debug-only standalone 0x80b5 admission is measured on the exact PMA110 model. The sibling
-         * models inherit PMA110's production quirks by owner decision, but no standalone maker VIDEO
-         * measurement licenses this probe on them. A future sibling needs its own measurement here.
-         */
-        fun standaloneMakerVideoProbeMeasured(model: String?): Boolean =
-            model?.trim()?.uppercase() == "PMA110"
-
-        /**
          * Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL].
          * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
          * the WHOLE PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT
@@ -209,7 +203,8 @@ internal data class DeviceProfile(
         fun resolve(model: String?): DeviceProfile {
             val key = model?.trim()?.uppercase()
             return when (key) {
-                "PMA110", "CPH2841", "PMA120" -> PMA110
+                "PMA110" -> PMA110
+                "CPH2841", "PMA120" -> PMA110.copy(makerLogStandaloneTeleVideo = false)
                 else -> GENERIC
             }
         }

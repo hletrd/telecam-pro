@@ -34,9 +34,13 @@ class DeviceProfileTest {
     }
 
     @Test
-    fun `the global and satellite Find X9 Ultra take the whole PMA110 profile`() {
+    fun `global and satellite inherit PMA110 except unmeasured standalone maker video`() {
         for (model in listOf("CPH2841", "cph2841", " CPH2841 ", "PMA120", " pma120 ")) {
-            assertEquals(model, DeviceProfile.PMA110, DeviceProfile.resolve(model))
+            assertEquals(
+                model,
+                DeviceProfile.PMA110.copy(makerLogStandaloneTeleVideo = false),
+                DeviceProfile.resolve(model),
+            )
         }
     }
 
@@ -103,10 +107,18 @@ class DeviceProfileTest {
         for (model in formerMakerLogModels + unrelated) {
             assertEquals("$model", DeviceProfile.GENERIC, DeviceProfile.resolve(model))
         }
-        // Only the Find X9 Ultra codes take the PMA110 set, in any case or padding.
-        for (model in listOf("PMA110", "CPH2841", "PMA120")) {
+        // Only the Find X9 Ultra codes take the PMA110 set, in any case or padding; the siblings
+        // alone do not inherit the exact-model standalone maker-video measurement.
+        for (spelling in listOf("PMA110", "pma110", " PMA110 ")) {
+            assertEquals(spelling, DeviceProfile.PMA110, DeviceProfile.resolve(spelling))
+        }
+        for (model in listOf("CPH2841", "PMA120")) {
             for (spelling in listOf(model, model.lowercase(), " $model ")) {
-                assertEquals(spelling, DeviceProfile.PMA110, DeviceProfile.resolve(spelling))
+                assertEquals(
+                    spelling,
+                    DeviceProfile.PMA110.copy(makerLogStandaloneTeleVideo = false),
+                    DeviceProfile.resolve(spelling),
+                )
             }
         }
     }

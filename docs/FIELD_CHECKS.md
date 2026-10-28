@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-28):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-29):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -1681,7 +1681,7 @@ Local evidence:
 `.context/8k-oem-2026-10-28/evidence/` (immutable build receipts, full logcat, dumpsys, UI state and
 installed-hash checks).
 
-### A30. Standalone TC OEM Log 0x80b5 probe — ◐ HALF DONE 2026-10-28
+### A30. Standalone TC OEM Log 0x80b5 probe and product validation — ✅ PASSED 2026-10-29
 
 PMA110 `PMA110_17.0.0.106(CN01)`, unlocked `172.30.50.127:44715`, immutable debug
 `69687fb3173e-5c90fd61` (source `69687fb3`; APK SHA-256
@@ -1719,6 +1719,65 @@ ordinary-TC control take, and the final installed-hash readback. Therefore stock
 the final hash check remain open; no production promotion or physical stabilization claim follows.
 Local evidence: `.context/tc-maker-stabilization-2026-10-28/` (APK/source identity, full logcat,
 dumpsys, watch metadata, clip, native frames/crops and analysis).
+
+**Mounted-converter completion (2026-10-28/29).** The physical Hasselblad converter stayed clamped
+over the 3× periscope for every condition. Stock PRO VIDEO bare-3× showed the afocal-inverted field;
+ordinary app TC and stock TC corrected it. The final installed-hash readback for the initial probe
+also matched `0b72f5a0…ed0d`, closing that interruption.
+
+**Rotation root cause, measured at each boundary.** Ordinary `0x80b4` and standalone `0x80b5` both
+had `previewRotationDegrees()=180`, GL `requestedDeg/effectiveDeg=180`, `emulation=0`, and the SAME
+SurfaceTexture matrix `[0,-1,0,0,-1,0,0,0,0,0,1,0,1,1,0,1]`. Their pixels nevertheless differed by
+180°. Thus this was not lost/reseeded rotation state and not a producer-matrix difference: the
+standalone OEM session delivers pixel-level pre-rotation. The fix removes only the duplicate afocal
+term for accepted standalone-maker source truth (`sourcePreRotated` requires standalone intent AND
+accepted maker confirmation), re-pushed before Ready/REC. It does not add another 180°, alter OIS,
+or infer orientation from magnification. Product preview and recorded frames are upright like
+ordinary TC; the stock bare-tele control remains inverted as expected.
+
+**Five-trial stabilization A/B.** Same distant textured power-strip scene, repeated yaw/pitch, 4K30,
+1/30 s, OIS ON and standard video stabilization OFF. Stock TC's AE settled at ISO 12414; ordinary TC
+recorded ISO 12700 and standalone OEM ISO 9100 (its accepted route's cap), so these are the actual
+values, not a false claim of identical gain. The reviewed analyzer ran on the identical
+`x=600,y=1800,w=600,h=1000` region and the first four seconds, losslessly normalized to 30 fps. Each
+route used its own sharp static control. Every candidate and stock-TC pair was JUDGEABLE; no route
+recorded a directional-blur vote:
+
+| Trial | stock TC dx / dy px | ordinary TC dx / dy px | standalone 0x80b5 dx / dy px |
+|---|---|---|---|
+| 1 | 28.128 / −0.294 | 0.060 / 0.000 | 15.872 / −2.806 |
+| 2 | 28.375 / −0.451 | −4.431 / 0.000 | 1.001 / 0.373 |
+| 3 | 28.042 / −1.063 | −6.000 / 0.000 | 23.421 / −9.300 |
+| 4 | 28.645 / −1.150 | −0.708 / 0.000 | 15.335 / −2.232 |
+| 5 | 27.498 / −0.537 | −6.059 / 1.020 | 18.904 / −7.562 |
+
+Standalone's |dx| was below stock TC in all five trials, while its blur attenuation stayed near one
+(1.018–1.034). Direct stock-PRO-VIDEO-versus-standalone pairs were also JUDGEABLE in all five trials,
+with no directional-blur vote (attenuation 1.070–1.123). This demonstrates the measured strong
+stabilization; it does NOT assign a numeric 4.3× OIS gain from converter magnification.
+
+**Stock colour parity.** Static stock PRO VIDEO O-Log2 and standalone OEM takes used 1/30 s,
+WB 5000 K and actual ISO 6395/6400. After rotating the stock bare-tele frame 180° and phase-aligning
+the identical region, five windows (1/3/5/7/9 s) had stock-minus-candidate mean RGB deltas no larger
+than **0.816 decoded 8-bit codes**, median-luma ratio 1.0066, and confident translation. This closes
+the earlier stock-WB/pixel-parity gap for the measured scene; it is not a universal gamut certificate.
+
+**Product path (no debug admission).** Immutable debug namespace `2dc354ed3cc6-1be32733`, APK SHA-256
+`aaab0f1eaafad4f6d7b77f839b1d60fcfb8f429a069b777bdc4af19a145341d1` (installed hash matched).
+With only the production profile admission, TC + OEM Log opened standalone 4 and result metadata
+reported operation mode **32949 (`0x80b5`)**, Log format 0, real gamma beginning `754 970 1210 …`,
+ISO 9100, OIS ON and vstab OFF. `VID_TELECAM_F1_1793204156954_0000000001.mp4` is 2160×3840 HEVC
+**Main 10**, BT.2020 full / `bt2020-10`, AAC 48 kHz stereo, 300 frames / 10.000 s at exactly 30 fps,
+with a clean full decode and upright 3-second frame. TC-local 30× produced wire zoom 2.3 and
+`effZoom=9.857142`, then restored 13× at wire 1.0. Selecting 59.94 fps exercised the soft fallback to
+ordinary `0x80b4` with the truthful `SLOG3` readout and upright preview; restoring 30 fps returned to
+`0x80b5`. No fatal fault was induced.
+
+Production `makerLogStandaloneTeleVideo` is now `true` ONLY for exact PMA110; CPH2841/PMA120
+explicitly resolve with it `false`, and GENERIC remains false. The debug standalone command and its
+admission/deferral path are removed. Sensor mode remains **50**, not 48. Local evidence:
+`.context/tc-maker-stabilization-2026-10-28/task4/` (route/matrix logs, all 20 trial clips, static
+controls, analyzer JSON, stock colour parity, product watch/clip and installed hashes).
 
 ## B. Held in hand — 3 min
 

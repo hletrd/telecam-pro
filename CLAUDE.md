@@ -1191,14 +1191,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   product take has no PTS interval above 33.367 ms. The previous SDK-only/impossibility claims
   were disproved; neither this result nor the gain ratio is a certified total dynamic-range test.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
-  work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
-  mode offers 1080p/4K at 30/60 fps and no O-Log2). The selected product route is logical 0:
-  standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. A26's
-  newer standalone 4 + VIDEO 0x80b5 probe does reach native Log/HDR, but its focus/optics behaviour
-  has not passed the matched chart check, so it is not selected. With TC on, Video + Log (maker)
+  work with it too"; standalone product route measured and promoted 2026-10-29).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
+  mode offers 1080p/4K at 30/60 fps and no O-Log2). On exact PMA110 the selected product route is now
+  standalone camera 4 + VIDEO 0x80b5: the mounted five-trial A/B measured lower residual displacement
+  than stock TC with no directional blur, five stock-O-Log2 colour windows matched within 0.82 decoded
+  RGB codes, and preview plus 4K Main10 files are upright (FIELD_CHECKS A30). `makerLogStandaloneTeleVideo`
+  is true only there; CPH2841/PMA120 explicitly keep it false and retain the logical route. Earlier
+  route facts remain: standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like
+  gamma. The standalone OEM source's pixels arrive 180° pre-rotated while its SurfaceTexture matrix is
+  identical to ordinary 0x80b4, so accepted source truth (`sourcePreRotated`, never maker intent) removes
+  the duplicate afocal correction before Ready/REC; stabilization is not inferred from that rotation or
+  from `original.zoomRatio`. On profiles WITHOUT standalone admission, Video + Log (maker)
   opens the LOGICAL camera with the native protocol
   (`makerLogTeleRouteWanted` / `teleRouteCameraId`, used by EVERY TELE door — startup/reopen, mode,
-  lens/TC, recall) and holds it on the host tele by zoom; the afocal 180°, TC-local zoom, focal and
+  lens/TC, recall) and holds it on the host tele by zoom; on that logical route the afocal 180°, TC-local zoom, focal and
   magnification readouts, OSD and EXIF are the ordinary TC route's, untouched. The zoom stays
   TC-LOCAL in engine, GL and UI; only the controller maps it (`MakerTeleRoute`: wire = local × the tele
   chip's unified position, 3.0 on PMA110, `makerTeleWireZoomScale`; results divided back so the GL

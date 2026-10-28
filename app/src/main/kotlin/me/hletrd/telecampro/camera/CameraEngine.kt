@@ -1009,6 +1009,9 @@ class CameraEngine internal constructor(
                 expectedController.rawLogConfigured,
                 me.hletrd.telecampro.gl.SourceTransformEmulation.rearTransformFor(caps?.sensorOrientation ?: 0),
             )
+            // Source rotation is ACCEPTED truth too: standalone 0x80b5 confirms only when its real
+            // OEM gamma arrives, so the initial afocal-180 preview must be replaced here before REC.
+            pushPreviewRotation()
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }
@@ -1556,15 +1559,10 @@ class CameraEngine internal constructor(
     // Measured per-device HAL quirks (multi-device 2026-08-01). Resolved once; PMA110 keeps every
     // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
     private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
-    // Explicit DUMP-protected debug probe only. activeDeviceProfile() re-checks BuildConfig.DEBUG and
-    // maker-profile support on every read, so release and GENERIC never inherit this admission.
-    @Volatile private var debugStandaloneMakerVideoProbe = false
 
-    private fun activeDeviceProfile(): DeviceProfile = debugStandaloneMakerVideoProfile(
-        deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL),
-        model = android.os.Build.MODEL,
-        debugBuild = me.hletrd.telecampro.BuildConfig.DEBUG,
-        probeEnabled = debugStandaloneMakerVideoProbe,
+    private fun activeDeviceProfile(): DeviceProfile = deviceProfileForRoute(
+        deviceProfile,
+        externalRoute = activeCameraRoute == CameraRoute.EXTERNAL,
     )
 
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
@@ -2467,7 +2465,7 @@ class CameraEngine internal constructor(
         // It still needs the sensor orientation separately to pick the right preview ASPECT, because
         // that ~90° SurfaceTexture rotation swaps the displayed width/height.
         gl.setSensorOrientation(c.sensorOrientation)
-        gl.setRotationDegrees(previewRotationDegrees())
+        pushPreviewRotation()
         // Selfie mirror is ROUTE state plumbed exactly like the rotation pair above: re-pushed on
         // every session (re)config/rollback, which also covers a replacement GL generation (this
         // method runs after each reconfigure, so a fresh pipeline can never start with a stale
@@ -2495,16 +2493,35 @@ class CameraEngine internal constructor(
         controller?.setVideoStabMode(c.videoStabControlMode(videoStabMode))
     }
 
+    private fun pushPreviewRotation() {
+        val previewRotation = previewRotationDegrees()
+        gl.setRotationDegrees(previewRotation)
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i(
+                "CameraEngine",
+                "RotationBoundary: route=$activeCameraRoute tele=$teleconverterMode " +
+                    "sensor=${caps?.sensorOrientation} sourcePreRotated=${controller?.sourcePreRotated == true} " +
+                    "previewDeg=$previewRotation",
+            )
+        }
+    }
+
     /**
      * CW degrees the GL renderer adds ON TOP of the camera SurfaceTexture transform to show the
      * preview upright. That transform already applies the sensor orientation to the sampled image, so
      * the ONLY correction left is the afocal teleconverter's 180° inversion — no sensor term here
      * (unlike [captureRotationDegrees], which rotates the raw-sensor JPEG/RAW and therefore keeps it).
+     * The accepted standalone 0x80b5 OEM source is the measured exception: its pixels already carry
+     * that 180°, with the SAME SurfaceTexture matrix as ordinary 0x80b4, so it must not be flipped
+     * a second time. Re-pushed at Ready from accepted source truth, never from maker intent.
      * Empirically calibrated on this device: +sensorOrientation (270°) read 90° CCW and
      * −sensorOrientation (90°) read 90° CW, so the upright value is the afocal 180° alone. Portrait-
      * locked UI ⇒ no device-orientation term (tilting the phone tilts the world in the preview).
      */
-    private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
+    private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(
+        teleconverterMode,
+        sourcePreRotated = controller?.sourcePreRotated == true,
+    )
 
     // NOTE: there is deliberately no setTeleconverterMode(Boolean) convenience here. TELE is a
     // CAMERA SWITCH, not just the afocal flip, and the ONE correct entry point is
@@ -3715,22 +3732,6 @@ class CameraEngine internal constructor(
             return
         }
         ctrl.setZslSpike(enabled)
-    }
-
-    /** Explicitly retries or leaves the standalone 0x80b5 probe through one ordinary optics reopen. */
-    internal fun setStandaloneMakerVideoProbe(enabled: Boolean): Boolean {
-        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return false
-        synchronized(this) {
-            if (debugStandaloneMakerVideoProbe == enabled || recorder != null) return false
-            debugStandaloneMakerVideoProbe = enabled
-            // A debug toggle is an explicit route selection, so it may retry a refused probe.
-            makerLogRefused = false
-            overrideId = userCameraPin
-        }
-        // Bare-door token: a preflight failure keeps the newest debug intent and uses bounded retry,
-        // never a rollback to the old accepted camera while this new admission remains installed.
-        reopenForSession()
-        return true
     }
 
     fun setAeMetering(enabled: Boolean) {

@@ -25,7 +25,7 @@ internal object MakerLogProtocol {
 /** Ordinary standalone TC session type; separate from both maker protocols. */
 internal const val VENDOR_TC_SESSION_TYPE = 0x80b4
 
-/** Standalone TC maker VIDEO session type. Reserved for an explicitly admitted debug probe. */
+/** Standalone TC maker VIDEO session type, admitted only on the measured PMA110 profile. */
 internal const val MAKER_VIDEO_SESSION_TYPE = 0x80b5
 
 /** One operation-mode choice; maker modes take precedence over the ordinary TC ladder rung. */
@@ -110,24 +110,18 @@ internal fun applyHasselbladMode40(
     logicalMaker: Boolean,
 ): Boolean = teleconverter && !standaloneMakerVideo && !logicalMaker
 
+/**
+ * Accepted standalone 0x80b5 frames already carry the 180° source rotation; intent alone is not
+ * sufficient because a refused maker attempt returns to the ordinary TC source (FIELD_CHECKS A30).
+ */
+internal fun standaloneMakerSourcePreRotated(
+    standaloneMakerVideo: Boolean,
+    makerLogConfigured: Boolean,
+): Boolean = standaloneMakerVideo && makerLogConfigured
+
 /** Standalone TC zoom is already lens-local; only the converter's magnification multiplies it. */
 internal fun originalZoomHintForStandaloneTc(localZoom: Float, magnification: Float): Float =
     localZoom.coerceAtLeast(1f) * magnification
-
-/** The exact measured PMA110 probe can augment its maker profile in debug only; siblings and release stay unchanged. */
-internal fun debugStandaloneMakerVideoProfile(
-    profile: DeviceProfile,
-    model: String?,
-    debugBuild: Boolean,
-    probeEnabled: Boolean,
-): DeviceProfile = if (
-    debugBuild && probeEnabled && profile.makerLogPipeline &&
-    DeviceProfile.standaloneMakerVideoProbeMeasured(model)
-) {
-    profile.copy(makerLogStandaloneTeleVideo = true)
-} else {
-    profile
-}
 
 /** The session carrying TC + maker Log. The standalone choice needs separate measured admission. */
 enum class MakerTeleSessionRoute { LOGICAL_MAKER, STANDALONE_VIDEO }

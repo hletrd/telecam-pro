@@ -539,14 +539,26 @@ Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientat
 **Preview (GL):**
 
 ```kotlin
-// RotationMath.previewRotationDegrees(teleconverterMode)
-val rotation = if (teleconverterMode) 180 else 0   // afocal 180° only; sensor already applied by SurfaceTexture
+// RotationMath.previewRotationDegrees(teleconverterMode, sourcePreRotated)
+val rotation = if (teleconverterMode && !sourcePreRotated) 180 else 0
+// Sensor already applied by SurfaceTexture; sourcePreRotated is ACCEPTED-source truth.
 // Then pass to FlipRenderer.setRotationDegrees(rotation)
-// Example: sensorOrientation=90, teleconverter ON -> preview rotation = 180° (sensor term NOT added)
+// Example: sensorOrientation=90, ordinary teleconverter ON -> preview rotation = 180° (sensor term NOT added)
 ```
 
+**Accepted standalone-maker source exception (PMA110, 2026-10-28/29):** ordinary TC `0x80b4`
+and standalone maker `0x80b5` report byte-identical SurfaceTexture matrices, while the latter's pixels
+arrive rotated 180° relative to the ordinary source. Engine and GL both still requested the afocal
+180°, so the duplicate correction inverted preview AND encoder. `CameraController.sourcePreRotated`
+requires standalone intent AND accepted `makerLogConfigured`; `commitOpticsReady` re-pushes rotation
+from that proof before Ready/REC, and `RotationMath.previewRotationDegrees` returns 0 only for this
+source. A refused/fallback session therefore restores the ordinary afocal correction rather than
+inheriting the maker value. This is pixel-level source behavior, not a SurfaceTexture-matrix or lost-
+state workaround, and no extra 180° is added to compensate.
+
 **Key insight**: The camera SurfaceTexture transform (applied via `stMatrix` in `FlipRenderer.draw`) 
-**already rotates the sampled image by the sensor orientation**. The GL renderer adds **only the afocal 180°** 
+**already rotates the sampled image by the sensor orientation**. Except for the accepted pre-rotated
+source above, the GL renderer adds **only the afocal 180°**
 in tele mode (and 0° otherwise). The sensor orientation is still passed to the renderer, but **only to pick the 
 preview aspect ratio** (a ~90° rotation swaps displayed width/height). On-device testing confirmed: preview is 
 upright when using 180° afocal correction alone, with no sensor-orientation term added. `FlipRenderer` still 
@@ -750,7 +762,8 @@ FOCUSED on device.
 
 `camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model and
 for CPH2841, the Find X9 Ultra's global model (owner decision 2026-10-06, inferred from shared
-hardware, NOT measured on CPH2841) and PMA120 (the satellite edition, same reasoning); and
+hardware, NOT measured on CPH2841) and PMA120 (the satellite edition, same reasoning), except that
+those siblings explicitly withhold `makerLogStandaloneTeleVideo` until separately measured; and
 `GENERIC` for every other handset;
 `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on PMA110. Each PMA110 value is a MEASURED HAL deviation; GENERIC is Android-as-specified. Statements elsewhere in this document and
 in CLAUDE.md about these behaviours describe the PMA110 profile unless they say otherwise.
@@ -765,7 +778,7 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `videoMinFrameDurationsUnderstated` | `true` | `false` | `CameraCaps.read(gateVideoRatesOnMinFrameDuration)` fills `videoMinFrameDurationsNs`, which `VideoFrameRate.availableFor` uses to drop rates the selected size's advertised SurfaceTexture minimum frame duration cannot sustain; PMA110's TELE advertises 30 fps at 3840×2160 yet records ~60 |
 | `nativeLogCurveMeasured` | `true` (the programmed S-Log3 curve measured landing scene levels where the convention puts them, 2026-10-14) | `false` (unmeasured; in one dim room the Galaxy Z Flip6 decoded a chart's white to the same ~5½-stops-under level as PMA110, 2026-10-26) | NOT a route gate — native log still runs wherever the curve is advertised (owner decision 2026-10-26). `CameraEngine.nativeLogCurveMeasured` → `CameraUiState.nativeLogCurveVerified`; false shows the one-line Caution warning under Gamma = Log on the native path (`nativeLogUnverifiedWarningVisible`) |
 | `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no pin/Open Gate, up to 30 fps; TC only where `makerLogTeleMaxWireZoom` is set; actual result confirmation gates Ready and recording source truth |
-| `makerLogStandaloneTeleVideo` | `false` in production; only the exact PMA110's explicitly enabled debug probe sets `true` | `false` | `debugStandaloneMakerVideoProfile` is the sole override; `makerLogRequestAdmitted` separately requires standalone TC route truth, no physical id, and this admission before `sessionTypeFor` selects the 0x80b5 maker VIDEO probe |
+| `makerLogStandaloneTeleVideo` | `true` only on the exact PMA110, from the mounted-converter A/B; CPH2841/PMA120 explicitly resolve with this flag `false` | `false` | `makerLogRequestAdmitted` separately requires standalone TC route truth, no physical id, and this admission before `sessionTypeFor` selects 0x80b5. Accepted source confirmation also drives the measured pre-rotated-pixel exception above; the debug-only admission is removed |
 | `makerLogTeleMaxWireZoom` | `9.8` (measured 2026-10-26 on the maker TC route: wire 9.89 stayed on the host tele, every entry to 10.0 handed over to the 10× periscope for 1.6–1.9 s) | `null` (TC + Log (maker) not offered) | `makerLogOffered`'s TC term; `CameraEngine.makerTeleRouteFor` → `MakerTeleRoute.wireZoomCeiling` and the route caps' TC-local window `[1, 9.8 ÷ 3]` (≈42.6× TOTAL on the 300 mm kit) |
 | `nativeLogEiSupported` | `false` (measured: ISP output not exposure-linear under the programmed curve, 2026-10-15) | `true` (spec: linear TONEMAP_CURVE input; unmeasured) | `CameraController.repeatingNativeLogEiStops` forces wire offset 0 when false; `CameraEngine.nativeLogEiSupported` → `CameraUiState.nativeLogEiSupported` hides the Video-tab "Log EI Offset" row and the OSD " +N" |
 | `tenBitNativeLogBridge` | `true` (measured 2026-10-25: P010 + S-Log3 curve + JPEG + RAW on cam 2 and on cam 4 under 0x80b4; ten bits reach GL and the file) | `false` (unmeasured; a HAL may advertise P010 + STANDARD and still reject or mis-tag it) | `CameraEngine.tenBitNativeLogStreamFor` resolves the GL input size for `CameraController.open(tenBitNativeLogStream)` when the capability half also holds (`CameraCaps.p010StandardAdvertised`, the size in `CameraCaps.p010OutputSizes`, not FRONT); the controller builds a `P010InputBridge` on the first try of each rung and retries that rung 8-bit if it is refused. True also starts every GL generation on an RGBA1010102 EGL config |
@@ -1095,17 +1108,28 @@ Matched-exposure stock/probe gamma arrays were identical. Product testing confir
 HDR mode 1/two exposures and error-free 4K Main10 + AAC recording (FIELD_CHECKS A20). Pixel identity
 and exact gamut equivalence outside the measured chart remain unproven: stock's VideoColorBT709
 result still differs. A26 restores matching DCG/gamma arrays and measures close TC pixel agreement.
-Standalone 4 + video operation mode 0x80b5 now reaches native HDR in a probe, but has not passed the
-matched focus/optics comparison; the product keeps the validated logical TC route.
 
-**TC + Log (maker)** (owner request 2026-10-26) keeps that signature by keeping its camera: with the
-converter on, Video + Log (maker) opens logical camera 0 with the unchanged maker protocol instead of
-standalone 4 + `0x80b4`, and holds it on the host tele by zoom. One resolver
+**TC + Log (maker), standalone product route (PMA110, physical-converter validated 2026-10-28/29).**
+On the exact PMA110, `makerLogStandaloneTeleVideo=true` selects standalone camera 4 + video operation
+mode `0x80b5`: this preserves the measured converter-strength stabilization while carrying the real
+OEM O-Log2/HDR/DRC/WB pipeline. The mounted A/B recorded five trials per route against matched sharp
+controls; standalone residual displacement stayed below stock TC in every trial, with no directional
+blur vote, and five aligned stock-versus-standalone colour windows matched within 0.82 decoded RGB
+codes (FIELD_CHECKS A30). TC-local zoom/readouts and clean 2160×3840 Main10 recording are retained.
+The accepted source's pixel-level pre-rotation follows the exception in the Rotation section; no
+`original.zoomRatio` multiplication is treated as stabilization or orientation proof. CPH2841 and
+PMA120 do not inherit this admission. A maker refusal selects the ordinary standalone TC route and
+its truthful app-log fallback rather than claiming OEM output.
+
+**TC + Log (maker), pre-existing logical route (profiles without standalone admission).** Where the
+standalone route is not admitted, the established resolver opens logical camera 0 with the unchanged
+maker protocol instead of standalone 4 + `0x80b4`, and holds it on the host tele by zoom. One resolver
 (`CameraEngine.teleRouteCameraId`, from `makerLogTeleRouteWanted`) serves every TELE door — startup and
 reopen (`selectCurrentLens`), Photo/Video, lens/TC and MR/settings recall — so Photo TC, any other
-transfer, > 30 fps, Open Gate or a camera pin still open the ordinary TC route byte-identically. The
-converter's GL/readout world is untouched: afocal 180°, TC-local zoom, focal/magnification readouts,
-OSD and EXIF. Only the session and the zoom WIRE differ, both inside the controller: `MakerTeleRoute`
+transfer, > 30 fps, Open Gate or a camera pin still open the ordinary TC route byte-identically. On
+this logical route only, the converter's GL/readout world remains TC-local: afocal 180°, TC-local
+zoom, focal/magnification readouts, OSD and EXIF. Only the session and the zoom WIRE differ, both
+inside the controller: `MakerTeleRoute`
 multiplies every `CONTROL_ZOOM_RATIO` written by the tele chip's unified position (3.0 on PMA110,
 `makerTeleWireZoomScale`) and divides every one read back, so engine, GL zoom compensation and UI
 stay TC-local; `original.zoomRatio` carries the wire value and the Hasselblad `camera.mode` hint is

@@ -170,6 +170,8 @@ class CameraController internal constructor(
     private var pendingMakerConfirmation: ((CameraCaptureSession, TotalCaptureResult) -> Unit)? = null
     @Volatile var makerLogConfigured = false
         private set
+    internal val sourcePreRotated: Boolean
+        get() = standaloneMakerSourcePreRotated(standaloneMakerVideo, makerLogConfigured)
     @Volatile var makerLogFailed = false
         private set
     // The maker TC route (MakerLog.kt): non-null when this controller opened the LOGICAL camera

@@ -31,8 +31,14 @@ object RotationMath {
      * teleconverterMode off), and the selfie-mirror axis is owned entirely by the GL draw roles
      * ([me.hletrd.telecampro.gl.FrontMirrorConvention] decides which draws mirror; rotation never
      * does), so the front preview rotation is simply 0.
+     *
+     * [sourcePreRotated] is accepted-source truth, not optics intent. PMA110's standalone TC +
+     * 0x80b5 OEM pipeline delivers pixels already rotated 180° relative to ordinary 0x80b4 while
+     * their SurfaceTexture matrices are identical (device-bisected 2026-10-28), so applying the
+     * afocal term again would invert both preview and encoder output.
      */
-    fun previewRotationDegrees(teleconverterMode: Boolean): Int = if (teleconverterMode) AFOCAL_FLIP else 0
+    fun previewRotationDegrees(teleconverterMode: Boolean, sourcePreRotated: Boolean = false): Int =
+        if (teleconverterMode && !sourcePreRotated) AFOCAL_FLIP else 0
 
     /**
      * Extra CW degrees the PREVIEW draw adds on top of [previewRotationDegrees] when the app WINDOW

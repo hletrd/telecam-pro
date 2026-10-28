@@ -10,10 +10,8 @@ internal data class DebugCameraControlCommand(
     val record: Boolean? = null,
     /** Photo shutter presses still to deliver. A COUNT, so presses merged before consumption all fire. */
     val shutterPresses: Int = 0,
-    /** Explicitly enter/leave the standalone TC + 0x80b5 maker-video probe; null leaves admission alone. */
-    val standaloneMakerVideo: Boolean? = null,
 ) {
-    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0 && standaloneMakerVideo == null
+    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0
 
     fun mergedWith(newer: DebugCameraControlCommand): DebugCameraControlCommand =
         DebugCameraControlCommand(
@@ -21,51 +19,7 @@ internal data class DebugCameraControlCommand(
             zoomRatio = newer.zoomRatio ?: zoomRatio,
             record = newer.record ?: record,
             shutterPresses = shutterPresses + newer.shutterPresses,
-            standaloneMakerVideo = newer.standaloneMakerVideo ?: standaloneMakerVideo,
         )
-}
-
-/**
- * Holds protected-harness followups across a probe-triggered reopen. A stale Ready must not release
- * zoom/REC against the outgoing route's caps: after a deferral from Ready, observe Not-Ready first,
- * then the next accepted Ready. Main-thread only, like the Activity mailbox consumer.
- */
-internal class DebugCameraCommandDeferral {
-    private var pending: DebugCameraControlCommand? = null
-    private var barrierArmed = false
-    private var waitingForNotReady = false
-
-    /** True even for a probe-only reopen whose followup has not arrived yet. */
-    val hasPending: Boolean get() = barrierArmed
-
-    fun defer(command: DebugCameraControlCommand, currentlyReady: Boolean) {
-        if (!barrierArmed) {
-            barrierArmed = true
-            waitingForNotReady = currentlyReady
-        }
-        if (command.isEmpty) return
-        pending = pending?.mergedWith(command) ?: command
-    }
-
-    fun onCameraReady(ready: Boolean): DebugCameraControlCommand? {
-        if (!barrierArmed) return null
-        if (!ready) {
-            waitingForNotReady = false
-            return null
-        }
-        if (waitingForNotReady) return null
-        val command = pending
-        pending = null
-        barrierArmed = false
-        waitingForNotReady = false
-        return command
-    }
-
-    fun clear() {
-        pending = null
-        barrierArmed = false
-        waitingForNotReady = false
-    }
 }
 
 /**
