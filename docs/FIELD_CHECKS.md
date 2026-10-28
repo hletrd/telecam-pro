@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-28):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-28):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -1680,6 +1680,45 @@ filled 1. This validates retained 4K behavior, not an 8K capability or an 8K soa
 Local evidence:
 `.context/8k-oem-2026-10-28/evidence/` (immutable build receipts, full logcat, dumpsys, UI state and
 installed-hash checks).
+
+### A30. Standalone TC OEM Log 0x80b5 probe — ◐ HALF DONE 2026-10-28
+
+PMA110 `PMA110_17.0.0.106(CN01)`, unlocked `172.30.50.127:44715`, immutable debug
+`69687fb3173e-5c90fd61` (source `69687fb3`; APK SHA-256
+`0b72f5a062472521f93e2e30d3f5c06f2f022ecf177fa277dd47cfd401efed0d`, wrapper and installed-path
+hashes matched before measurement). The DUMP-protected debug command was the only admission;
+production `makerLogStandaloneTeleVideo` stayed false. The Video tab read HEVC 4K29.97, OEM Log,
+then TC + `debug_standalone_maker_video=true` opened **standalone camera 4 + 0x80b5** at fallback 0
+and reached Ready. Follow-up `08aa4156` changes documentation/host tests only.
+
+**Focus and optics:** continuous-video AF settled from `PASSIVE_SCAN` to `PASSIVE_FOCUSED` at
+1.36739266 diopters and held that distance through the take. Native 2160×3840 frames and 1:1 crops
+resolve the fixed tablet scene's small labels and icon edges, unlike the severe unresolved blur in
+A26's earlier standalone attempt. The accepted controller/session remained camera 4. No physical
+chart was present, so this is a fixed-texture focus check, not a chart-distance or mounted-converter
+stabilization claim.
+
+**Real OEM pipeline, not a tag echo:** results report operation mode 32949 (`0x80b5`), Log format 0,
+and native gamma beginning `754 1067 1329 1500 1628 1730 1815 1888`. Ready additionally proves the
+existing acceptance predicate consumed a real **1024-entry** gamma with entry 0 = 754 and entry
+255 > 754; Camera2's watch dump itself abbreviates the array to eight entries. `HDRFeatureMode=1`,
+`drc_gain=7.80164671`, and packed conversion gains 7.77653646 / 1.0 show the unequal HDR/DRC policy.
+AWB AUTO converged; numeric WB-gain parity was not measured in this run. Requests carry
+`pro_video_log_mode` (not Hasselblad mode 40), `original.zoomRatio=4.28571415`, OIS ON and
+standard/vendor stabilization ON/1. CamX `ProcessSensorModeUpdate` selected **lighthousetele sensor
+mode 50**, 4096×2560 30 fps SHDR(2EXP) DCG 2PD, **not mode 48**. Sensor mode and ois/vstab values are
+supporting evidence only, not stabilization proof.
+
+`VID_TELECAM_F1_1793192341178_0000000001.mp4`: 2160×3840 HEVC **Main 10**, `yuv420p10le`, BT.2020
+full range / `bt2020-10`, AAC-LC 48 kHz stereo; 298 frames / 9.943267 s at exactly 30000/1001, every
+PTS delta 0.033366–0.033367 s, `EncoderClock placed=298 dropped=0 filled=0`, and a clean full decode.
+The 3-second frame has 614 distinct Y10 levels and 74.9994% nonzero low two bits.
+
+Wireless ADB disconnected after this take, before a same-scene stock PRO VIDEO O-Log2 control, an
+ordinary-TC control take, and the final installed-hash readback. Therefore stock pixel parity and
+the final hash check remain open; no production promotion or physical stabilization claim follows.
+Local evidence: `.context/tc-maker-stabilization-2026-10-28/` (APK/source identity, full logcat,
+dumpsys, watch metadata, clip, native frames/crops and analysis).
 
 ## B. Held in hand — 3 min
 
