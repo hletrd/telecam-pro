@@ -32,30 +32,38 @@ internal data class DebugCameraControlCommand(
  */
 internal class DebugCameraCommandDeferral {
     private var pending: DebugCameraControlCommand? = null
+    private var barrierArmed = false
     private var waitingForNotReady = false
 
-    val hasPending: Boolean get() = pending != null
+    /** True even for a probe-only reopen whose followup has not arrived yet. */
+    val hasPending: Boolean get() = barrierArmed
 
     fun defer(command: DebugCameraControlCommand, currentlyReady: Boolean) {
+        if (!barrierArmed) {
+            barrierArmed = true
+            waitingForNotReady = currentlyReady
+        }
         if (command.isEmpty) return
-        val previous = pending
-        pending = previous?.mergedWith(command) ?: command
-        if (previous == null) waitingForNotReady = currentlyReady
+        pending = pending?.mergedWith(command) ?: command
     }
 
     fun onCameraReady(ready: Boolean): DebugCameraControlCommand? {
-        val command = pending ?: return null
+        if (!barrierArmed) return null
         if (!ready) {
             waitingForNotReady = false
             return null
         }
         if (waitingForNotReady) return null
+        val command = pending
         pending = null
+        barrierArmed = false
+        waitingForNotReady = false
         return command
     }
 
     fun clear() {
         pending = null
+        barrierArmed = false
         waitingForNotReady = false
     }
 }

@@ -352,7 +352,9 @@ class MainActivity : ComponentActivity() {
         val reopenStarted = command.standaloneMakerVideo
             ?.let(vm::debugSetStandaloneMakerVideoProbe) == true
         val followups = command.copy(zslSpike = null, standaloneMakerVideo = null)
-        if (reopenStarted && !followups.isEmpty) {
+        if (reopenStarted) {
+            // Arm even with no followup yet: a probe-only packet still invalidates the old route's
+            // Ready/caps, and a later zoom/REC packet must join this same accepted-reopen barrier.
             protectedDebugCommandDeferral.defer(
                 followups,
                 currentlyReady = vm.state.value.cameraReady,

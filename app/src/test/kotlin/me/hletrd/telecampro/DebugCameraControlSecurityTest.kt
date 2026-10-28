@@ -165,6 +165,38 @@ class DebugCameraControlSecurityTest {
         )
     }
 
+    @Test fun `probe only packet arms the barrier for a later followup`() {
+        DebugCameraControlMailbox.consume()
+        RobolectricEglSentinels.ensure()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        try {
+            val consume = MainActivity::class.java.getDeclaredMethod("consumeProtectedDebugCameraCommand")
+                .apply { isAccessible = true }
+            val deferralField = MainActivity::class.java.getDeclaredField("protectedDebugCommandDeferral")
+                .apply { isAccessible = true }
+            val deferral = deferralField.get(controller.get()) as DebugCameraCommandDeferral
+            DebugCameraControlMailbox.publish(
+                DebugCameraControlCommand(standaloneMakerVideo = true),
+            )
+            consume.invoke(controller.get())
+            assertTrue(deferral.hasPending)
+
+            DebugCameraControlMailbox.publish(
+                DebugCameraControlCommand(zoomRatio = 3f, record = true),
+            )
+            consume.invoke(controller.get())
+
+            assertTrue(deferral.hasPending)
+            assertEquals(
+                DebugCameraControlCommand(zoomRatio = 3f, record = true),
+                deferral.onCameraReady(true),
+            )
+        } finally {
+            controller.destroy()
+            DebugCameraControlMailbox.consume()
+        }
+    }
+
     @Test fun `repeated probe packet cannot clear an active reopen barrier`() {
         DebugCameraControlMailbox.consume()
         RobolectricEglSentinels.ensure()
