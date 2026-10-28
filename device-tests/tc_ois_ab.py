@@ -145,7 +145,9 @@ def estimate_translation(
     window = np.outer(np.hanning(height), np.hanning(width))
     ref_window = (ref - ref.mean()) * window
     cand_window = (cand - cand.mean()) * window
-    cross = np.fft.fft2(ref_window) * np.conj(np.fft.fft2(cand_window))
+    # Content moved +d has candidate(x) = reference(x - d). This spectrum's
+    # inverse transform therefore peaks at +d, in image-content coordinates.
+    cross = np.fft.fft2(cand_window) * np.conj(np.fft.fft2(ref_window))
     magnitude = np.abs(cross)
     cross = np.divide(cross, magnitude, out=np.zeros_like(cross), where=magnitude > 1.0e-12)
     correlation = np.fft.ifft2(cross).real
@@ -179,6 +181,43 @@ def estimate_translation(
         float(correlation[(peak_y + 1) % height, peak_x]),
     )
     confident = peak >= PHASE_PEAK_FLOOR and peak_ratio >= PHASE_PEAK_RATIO_FLOOR
+    if not confident:
+        # A long motion kernel turns the whitened phase peak into a ridge. A
+        # normalized, non-whitened correlation keeps its center at the true
+        # displacement; a wide exclusion zone prevents that broad lobe itself
+        # from counting as confidence. Periodic/ambiguous texture still refuses.
+        ref_centered = ref - ref.mean()
+        cand_centered = cand - cand.mean()
+        fallback_spectrum = np.fft.fft2(cand_centered) * np.conj(np.fft.fft2(ref_centered))
+        normalization = math.sqrt(float(np.sum(ref_centered**2) * np.sum(cand_centered**2)))
+        if normalization > 1.0e-12:
+            fallback = np.fft.ifft2(fallback_spectrum).real / normalization
+            fallback_search = np.where(allowed, fallback, -np.inf)
+            peak_y, peak_x = np.unravel_index(int(np.argmax(fallback_search)), fallback.shape)
+            peak = float(fallback[peak_y, peak_x])
+            wrapped_dy = (yy - peak_y + height // 2) % height - height // 2
+            wrapped_dx = (xx - peak_x + width // 2) % width - width // 2
+            sidelobes = allowed & ((np.abs(wrapped_dx) > 8) | (np.abs(wrapped_dy) > 8))
+            second = float(fallback[sidelobes].max(initial=-np.inf))
+            peak_ratio = peak / max(second, 1.0e-9)
+            if peak >= PHASE_PEAK_FLOOR and peak_ratio >= PHASE_PEAK_RATIO_FLOOR:
+                offset_x = _parabolic_offset(
+                    float(fallback[peak_y, (peak_x - 1) % width]),
+                    peak,
+                    float(fallback[peak_y, (peak_x + 1) % width]),
+                )
+                offset_y = _parabolic_offset(
+                    float(fallback[(peak_y - 1) % height, peak_x]),
+                    peak,
+                    float(fallback[(peak_y + 1) % height, peak_x]),
+                )
+                return TranslationEstimate(
+                    dx=float(x_shifts[peak_x]) + offset_x,
+                    dy=float(y_shifts[peak_y]) + offset_y,
+                    peak=peak,
+                    peak_ratio=peak_ratio,
+                    confident=True,
+                )
     return TranslationEstimate(
         dx=float(x_shifts[peak_x]) + offset_x,
         dy=float(y_shifts[peak_y]) + offset_y,
@@ -345,16 +384,21 @@ def decode_luminance_crop(
     crop: tuple[int, int, int, int],
     start_s: float = 0.0,
     duration_s: float | None = None,
-    max_frames: int = DEFAULT_MAX_FRAMES,
+    max_frames: int | None = None,
 ) -> np.ndarray:
-    """Decode a bounded video window to ``(frame, y, x)`` normalized luminance.
+    """Decode a video window to ``(frame, y, x)`` normalized luminance.
 
     ``crop`` is ``(x, y, width, height)`` in source pixels. No resize or color-matrix
     assumption is hidden in this function: FFmpeg performs the source-to-gray decode.
+    The complete requested window is decoded by default. ``max_frames`` is an explicit
+    decode-truncation guard for direct callers; video analysis leaves it unset and
+    applies its own sampling cap only after the complete window is available.
     """
     x, y, width, height = crop
-    if min(width, height) <= 0 or x < 0 or y < 0 or max_frames <= 0:
-        raise ValueError("crop dimensions and max_frames must be positive")
+    if min(width, height) <= 0 or x < 0 or y < 0:
+        raise ValueError("crop dimensions must be positive and its origin non-negative")
+    if max_frames is not None and max_frames <= 0:
+        raise ValueError("max_frames must be positive when supplied")
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if start_s > 0.0:
         command += ["-ss", f"{start_s:.6f}"]
@@ -366,7 +410,10 @@ def decode_luminance_crop(
     command += [
         "-an", "-sn", "-dn",
         "-vf", f"crop={width}:{height}:{x}:{y},format=gray",
-        "-frames:v", str(max_frames),
+    ]
+    if max_frames is not None:
+        command += ["-frames:v", str(max_frames)]
+    command += [
         "-f", "rawvideo", "-pix_fmt", "gray", "-",
     ]
     completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
@@ -389,12 +436,12 @@ def analyze_videos(
     duration_s: float | None = None,
     max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> TrialAnalysis:
-    """Decode identical regions/windows from both clips and analyze the trial."""
+    """Decode identical regions/windows, then sample across the complete sequences."""
     reference_frames = decode_luminance_crop(
-        reference, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
+        reference, crop=crop, start_s=start_s, duration_s=duration_s
     )
     candidate_frames = decode_luminance_crop(
-        candidate, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
+        candidate, crop=crop, start_s=start_s, duration_s=duration_s
     )
     return analyze_trial(reference_frames, candidate_frames, max_frames=max_frames)
 

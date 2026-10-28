@@ -16,6 +16,7 @@ sys.path.insert(0, str(DEVICE_TESTS))
 from tc_ois_ab import (  # noqa: E402
     analyze_frame_pair,
     analyze_trial,
+    analyze_videos,
     decode_luminance_crop,
     estimate_translation,
     measure_directional_blur,
@@ -39,10 +40,10 @@ def _chart() -> np.ndarray:
 
 def _crop_pair(dx: int, dy: int) -> tuple[np.ndarray, np.ndarray]:
     chart = _chart()
-    # Both crops come from one larger chart. The candidate therefore contains
-    # the reference content moved by (dx, dy), without wrap-around or resizing.
+    # Moving the crop origin opposite the requested vector keeps the chart's
+    # content moving by +(dx, dy) inside the fixed candidate frame.
     reference = chart[48:176, 56:216]
-    candidate = chart[48 + dy : 176 + dy, 56 + dx : 216 + dx]
+    candidate = chart[48 - dy : 176 - dy, 56 - dx : 216 - dx]
     return reference, candidate
 
 
@@ -58,6 +59,20 @@ def _motion_blur(image: np.ndarray, length: int, axis: str) -> np.ndarray:
     raise ValueError(axis)
 
 
+def _write_gray_video(path: Path, frames: np.ndarray, fps: int = 2) -> None:
+    height, width = frames.shape[-2:]
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}",
+            "-r", str(fps), "-i", "-", "-frames:v", str(len(frames)),
+            "-c:v", "ffv1", str(path),
+        ],
+        input=frames.astype(np.uint8).tobytes(),
+        check=True,
+    )
+
+
 @pytest.mark.parametrize(
     ("dx", "dy"),
     [(12, -7), (-11, 6), (0, 9), (14, 0), (-4, -5)],
@@ -68,6 +83,28 @@ def test_translation_recovers_sign_and_magnitude_within_one_pixel(dx: int, dy: i
     assert estimate.dx == pytest.approx(dx, abs=1.0)
     assert estimate.dy == pytest.approx(dy, abs=1.0)
     assert estimate.confident
+
+
+def test_known_feature_motion_uses_content_coordinates() -> None:
+    reference = np.zeros((96, 128), dtype=np.float64)
+    candidate = np.zeros_like(reference)
+    reference[40:48, 50:58] = 1.0
+    # The same square moves 12 px right and 7 px up in the candidate.
+    candidate[33:41, 62:70] = 1.0
+    estimate = estimate_translation(reference, candidate)
+    assert estimate.dx == pytest.approx(12.0, abs=1.0)
+    assert estimate.dy == pytest.approx(-7.0, abs=1.0)
+
+
+def test_translation_and_directional_blur_are_measured_together() -> None:
+    reference, candidate = _crop_pair(12, -7)
+    blurred = _motion_blur(candidate, length=17, axis="x")
+    result = analyze_frame_pair(reference, blurred)
+    assert result.verdict == "JUDGEABLE"
+    assert result.translation.dx == pytest.approx(12.0, abs=1.0)
+    assert result.translation.dy == pytest.approx(-7.0, abs=1.0)
+    assert result.blur.directional
+    assert result.blur.axis_degrees == pytest.approx(0.0, abs=10.0)
 
 
 @pytest.mark.parametrize("axis", ["x", "y"])
@@ -139,3 +176,29 @@ def test_ffmpeg_decodes_requested_luminance_crop(tmp_path: Path) -> None:
     assert decoded.shape == (4, 40, 48)
     expected = frames[:, 12:52, 8:56].astype(np.float64) / 255.0
     np.testing.assert_allclose(decoded, expected, atol=1.0 / 255.0)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_duration_window_is_decoded_before_sampling(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference.mkv"
+    candidate_video = tmp_path / "candidate.mkv"
+    reference, _ = _crop_pair(0, 0)
+    candidates = [_crop_pair(dx, 0)[1] for dx in (0, 0, 0, 12)]
+    reference_frames = np.stack([reference] * 4)
+    candidate_frames = np.stack(candidates)
+    _write_gray_video(reference_video, np.rint(reference_frames * 255.0))
+    _write_gray_video(candidate_video, np.rint(candidate_frames * 255.0))
+
+    # Two samples across the complete 2 s / four-frame window are the first
+    # (0 px) and last (+12 px) frames. Decoding only the first two would read 0.
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "JUDGEABLE"
+    assert len(result.frames) == 2
+    assert result.dx == pytest.approx(6.0, abs=1.0)
+    assert result.dy == pytest.approx(0.0, abs=1.0)
