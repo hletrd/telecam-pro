@@ -1380,9 +1380,14 @@ class CameraEngine internal constructor(
             currentSessionGeneration = cameraSessionGeneration.get(),
             preflightSessionGeneration = preflightSessionGeneration,
         )
-        val reprojectedRasterRequiresReopen = newerVideoPipelineSurvives &&
-            before.videoMode && videoSize != before.previewStreamSize
-        val restoreSession = restoredSessionGeneration != null && !reprojectedRasterRequiresReopen
+        val reprojectedVideoIntent = if (newerVideoPipelineSurvives && before.videoMode) {
+            selection?.let { sel -> caps?.let { routeCaps -> resolveCurrentVideoIntent(sel, routeCaps, videoSize) } }
+        } else {
+            null
+        }
+        val reprojectedSessionRequiresReopen = newerVideoPipelineSurvives && before.videoMode &&
+            (reprojectedVideoIntent == null || reprojectedVideoIntent != controller?.videoSessionIntent)
+        val restoreSession = restoredSessionGeneration != null && !reprojectedSessionRequiresReopen
         if (restoreSession) {
             // The remaining zoom effects execute from the frozen packet after unlock.
             zoomInteractionState = ZoomInteractionState()
@@ -1438,9 +1443,10 @@ class CameraEngine internal constructor(
                 restored.route == CameraRoute.FRONT,
             ),
             restoreSession = restoreSession,
-            // The outgoing session still owns its accepted raster. Reconfigure the surviving codec/
-            // Gamma packet before Ready or REC; never publish a UHD delivered size over an 8K stream.
-            reopenRequired = reprojectedRasterRequiresReopen,
+            // The outgoing session still owns its accepted graph. Reconfigure the surviving codec/
+            // Gamma/rate packet before Ready or REC whenever the COMPLETE resolved intent differs;
+            // an unchanged raster alone cannot prove that the retained controller is current.
+            reopenRequired = reprojectedSessionRequiresReopen,
             opticsPublication = opticsPublication,
             readyPublication = readyPublication,
         )
@@ -3650,9 +3656,13 @@ class CameraEngine internal constructor(
         if (targetIntent.streamSize != videoSize || targetIntent.frameRate != videoFrameRate) {
             applyVideoIntent(targetIntent)
         } else {
-            // Codec/Gamma can change without changing the Camera2 source shape. Replace only those
-            // two fields in the accepted controller's frozen REC intent; route/RAW/raster/rate cannot.
-            controller?.updateVideoSessionIntentForAcceptedPipeline(targetIntent)
+            // Codec/Gamma/bitrate can change without changing the Camera2 source shape. Replace only
+            // codec/Gamma in the accepted controller's frozen REC intent; route/RAW/raster/rate cannot.
+            // The accepted recovery packet must advance with the SAME accepted-session update, or a
+            // later extended-raster refusal would restore the pre-update codec or bitrate.
+            if (controller?.updateVideoSessionIntentForAcceptedPipeline(targetIntent) == true) {
+                installAcceptedVideoGraphLocked()
+            }
         }
     }
 
@@ -4450,7 +4460,8 @@ class CameraEngine internal constructor(
             rawWanted = before.rawWanted
             rawLogEnabled = intent.rawLog
             openGate = before.openGate
-            requestedVideoSize = before.requestedVideoSize
+            // Keep the operator's current explicit request (including the extended size that just
+            // failed). Accepted-graph recovery changes the delivered stream, never retry identity.
             publishVideoPipelineLocked(before.videoPipeline)
             videoFrameRate = intent.frameRate
             videoSize = intent.streamSize
@@ -4880,6 +4891,13 @@ class CameraEngine internal constructor(
             if (requestChanged) requestedVideoSizeDirectWrites++
             // An explicit retry clears ONLY the identical refused graph. PHOTO's next-Video Gamma,
             // not its active SDR transfer, names the tuple that returning to VIDEO must retry.
+            val retryRefusedGraph = selection?.let {
+                extendedVideoRasterRefusals.blocks(
+                    rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode),
+                    s,
+                    videoProjectionTransfer(),
+                )
+            } == true
             selection?.let {
                 extendedVideoRasterRefusals.clearForExplicitRetry(
                     rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode),
@@ -4887,8 +4905,13 @@ class CameraEngine internal constructor(
                     videoProjectionTransfer(),
                 )
             }
+            // A no-capped-answer refusal leaves the requested/delivered size unchanged and no live
+            // accepted session. Its identical explicit retry is still NEW work. Before the refusal
+            // (and during the retry's own open) the latch is clear, so an in-flight same-size tap
+            // remains ownership-inert exactly as before.
+            val retryNeedsAttempt = retryRefusedGraph && acceptedCameraSession == null
             val apply = currentIntent != null &&
-                (videoSize != s || videoFrameRate != currentIntent.frameRate)
+                (videoSize != s || videoFrameRate != currentIntent.frameRate || retryNeedsAttempt)
             if (apply) {
                 commitVideoIntentLocked(currentIntent)
                 publishVideoIntentEffectsLocked(currentIntent)

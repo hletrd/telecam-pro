@@ -516,10 +516,98 @@ class ExtendedVideoRasterRecoveryTest {
         assertEquals(uhd, chooseVideoSize(fixture.engine))
     }
 
-    private fun videoIntent(size: Size) = VideoSessionIntent(
+    @Test
+    fun `accepted codec recovery keeps the same-shape update and the explicit failed request`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "transfer", ColorTransfer.SDR)
+        setField(fixture.engine, "requestedVideoTransfer", ColorTransfer.SDR)
+        setField(fixture.engine, "requestedVideoSize", uhd)
+        setField(fixture.engine, "videoSize", uhd)
+        setField(fixture.engine, "previewStreamSize", uhd)
+        setField(fixture.engine, "previewReady", true)
+        fixture.controller.stageVideoSessionIntentForOpen(videoIntent(uhd, transfer = ColorTransfer.SDR))
+        commitReady(fixture)
+        val avc = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "accepted-avc",
+            mime = MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { true },
+        )
+
+        fixture.engine.setVideoPipeline(listOf(avc), ColorTransfer.SDR)
+        assertEquals("precondition: the accepted controller carries AVC", VideoCodec.AVC, fixture.controller.videoSessionIntent?.codec)
+        failExtendedAttempt(fixture)
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(VideoCodec.AVC, field(fixture.engine, "videoCodec"))
+        assertEquals(listOf(avc), field(fixture.engine, "videoEncoderCandidates"))
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        assertEquals("recovery must not relabel the operator's explicit retry", eightK, fixture.engine.currentRequestedVideoSize())
+    }
+
+    @Test
+    fun `accepted bitrate recovery keeps the same-shape update`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "transfer", ColorTransfer.SDR)
+        setField(fixture.engine, "requestedVideoTransfer", ColorTransfer.SDR)
+        setField(fixture.engine, "bitrateLevel", BitrateLevel.LOW)
+        setField(fixture.engine, "requestedVideoSize", uhd)
+        setField(fixture.engine, "videoSize", uhd)
+        setField(fixture.engine, "previewStreamSize", uhd)
+        setField(fixture.engine, "previewReady", true)
+        fixture.controller.stageVideoSessionIntentForOpen(videoIntent(uhd, transfer = ColorTransfer.SDR))
+        commitReady(fixture)
+
+        fixture.engine.setBitrateLevel(BitrateLevel.HIGH)
+        failExtendedAttempt(fixture)
+
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+
+        assertEquals(BitrateLevel.HIGH, field(fixture.engine, "bitrateLevel"))
+        assertEquals(uhd, field(fixture.engine, "videoSize"))
+        assertEquals(eightK, fixture.engine.currentRequestedVideoSize())
+    }
+
+    @Test
+    fun `identical retry after no capped answer starts one attempt but an in-flight tap stays inert`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK)))
+        var publications = 0
+        fixture.engine.onVideoSizeChosen = { _, _ -> publications++ }
+
+        assertTrue(fixture.engine.setVideoResolution(eightK))
+        assertEquals("a same-size tap during the original open owns nothing new", 0, publications)
+        fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+        assertEquals(0, publications)
+
+        assertTrue(fixture.engine.setVideoResolution(eightK))
+
+        assertEquals("the explicit retry must publish one new resolved attempt", 1, publications)
+        assertEquals(eightK, fixture.engine.currentRequestedVideoSize())
+        val latch = field(fixture.engine, "extendedVideoRasterRefusals") as ExtendedVideoRasterRefusalLatch
+        assertFalse(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
+    }
+
+    private fun failExtendedAttempt(fixture: Fixture) {
+        setField(fixture.engine, "requestedVideoSize", eightK)
+        setField(fixture.engine, "requestedVideoSizeDirectWrites", 2L)
+        setField(fixture.engine, "videoSize", eightK)
+        setField(fixture.engine, "previewStreamSize", eightK)
+        setField(fixture.engine, "cameraReady", false)
+        registerOwnership(fixture)
+    }
+
+    private fun videoIntent(
+        size: Size,
+        codec: VideoCodec = VideoCodec.HEVC,
+        transfer: ColorTransfer = ColorTransfer.MAKER_LOG,
+    ) = VideoSessionIntent(
         route = route,
-        codec = VideoCodec.HEVC,
-        transfer = ColorTransfer.MAKER_LOG,
+        codec = codec,
+        transfer = transfer,
         rawLog = false,
         openGate = false,
         streamSize = size,
