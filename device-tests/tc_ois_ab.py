@@ -119,6 +119,28 @@ def _parabolic_offset(left: float, center: float, right: float) -> float:
     return float(np.clip(0.5 * (left - right) / denominator, -1.0, 1.0))
 
 
+def _correlation_main_lobe(
+    correlation: np.ndarray,
+    allowed: np.ndarray,
+    peak_y: int,
+    peak_x: int,
+) -> np.ndarray:
+    """Return the peak-connected half-height region, including broad blur lobes."""
+    eligible = allowed & (correlation >= correlation[peak_y, peak_x] * 0.5)
+    component = np.zeros(correlation.shape, dtype=bool)
+    component[peak_y, peak_x] = True
+    while True:
+        neighbors = np.zeros(correlation.shape, dtype=bool)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx or dy:
+                    neighbors |= np.roll(np.roll(component, dy, axis=0), dx, axis=1)
+        new = eligible & neighbors & ~component
+        if not np.any(new):
+            return component
+        component |= new
+
+
 def estimate_translation(
     reference: np.ndarray,
     candidate: np.ndarray,
@@ -197,29 +219,32 @@ def estimate_translation(
                 int(np.argmax(fallback_search)), fallback.shape
             )
             fallback_peak = float(fallback[fallback_y, fallback_x])
-            fallback_dy = (yy - fallback_y + height // 2) % height - height // 2
-            fallback_dx = (xx - fallback_x + width // 2) % width - width // 2
-            sidelobes = allowed & ((np.abs(fallback_dx) > 8) | (np.abs(fallback_dy) > 8))
-            # With max_shift <= 8 the exclusion can cover the entire search
-            # space. An empty population is no confidence evidence, not an
-            # infinite peak ratio produced by the -inf initializer.
-            if np.any(sidelobes):
+            # Exclude the peak-connected half-height lobe, not a fixed pixel
+            # radius: a 31 px motion kernel still has one true lobe, while an
+            # actually independent secondary peak remains eligible as a veto.
+            main_lobe = _correlation_main_lobe(fallback, allowed, fallback_y, fallback_x)
+            sidelobes = allowed & ~main_lobe
+            # A tiny search space can be entirely main lobe. An empty
+            # population is no confidence evidence, not an infinite peak ratio.
+            if fallback_peak >= PHASE_PEAK_FLOOR and np.any(sidelobes):
                 second = float(fallback[sidelobes].max())
                 fallback_ratio = fallback_peak / max(second, 1.0e-9)
-                if fallback_peak >= PHASE_PEAK_FLOOR and fallback_ratio >= PHASE_PEAK_RATIO_FLOOR:
-                    offset_x = _parabolic_offset(
-                        float(fallback[fallback_y, (fallback_x - 1) % width]),
-                        fallback_peak,
-                        float(fallback[fallback_y, (fallback_x + 1) % width]),
-                    )
-                    offset_y = _parabolic_offset(
-                        float(fallback[(fallback_y - 1) % height, fallback_x]),
-                        fallback_peak,
-                        float(fallback[(fallback_y + 1) % height, fallback_x]),
-                    )
+                if fallback_ratio >= PHASE_PEAK_RATIO_FLOOR:
+                    # The correlation maximum can sit on either edge of a
+                    # long blur plateau. Its half-height lobe is centered on
+                    # the translation even when the individual peak is not.
+                    lobe_y, lobe_x = np.nonzero(main_lobe)
+                    unwrapped_x = (lobe_x - fallback_x + width // 2) % width - width // 2
+                    unwrapped_y = (lobe_y - fallback_y + height // 2) % height - height // 2
+                    center_x = float(x_shifts[fallback_x]) + (
+                        float(unwrapped_x.min()) + float(unwrapped_x.max())
+                    ) / 2.0
+                    center_y = float(y_shifts[fallback_y]) + (
+                        float(unwrapped_y.min()) + float(unwrapped_y.max())
+                    ) / 2.0
                     return TranslationEstimate(
-                        dx=float(x_shifts[fallback_x]) + offset_x,
-                        dy=float(y_shifts[fallback_y]) + offset_y,
+                        dx=center_x,
+                        dy=center_y,
                         peak=fallback_peak,
                         peak_ratio=fallback_ratio,
                         confident=True,
@@ -398,9 +423,10 @@ def decode_luminance_crop(
 
     ``crop`` is ``(x, y, width, height)`` in source pixels. No resize or color-matrix
     assumption is hidden in this function: FFmpeg performs the source-to-gray decode.
-    The complete requested window is decoded by default. ``max_frames`` is an explicit
-    decode-truncation guard for direct callers; video analysis leaves it unset and
-    applies its own sampling cap only after the complete window is available.
+    With ``max_frames`` set, decoding still covers the complete requested window but
+    retains only a bounded online sample, including its first and last frames. The
+    sampling stride doubles as needed; no full-window byte stream or float64 buffer is
+    constructed. ``None`` is an explicitly unbounded direct-decode request.
     """
     x, y, width, height = crop
     if min(width, height) <= 0 or x < 0 or y < 0:
@@ -418,20 +444,61 @@ def decode_luminance_crop(
     command += [
         "-an", "-sn", "-dn",
         "-vf", f"crop={width}:{height}:{x}:{y},format=gray",
-    ]
-    if max_frames is not None:
-        command += ["-frames:v", str(max_frames)]
-    command += [
         "-f", "rawvideo", "-pix_fmt", "gray", "-",
     ]
-    completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
-    if completed.returncode != 0:
-        message = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"FFmpeg luminance decode failed: {message}")
     frame_bytes = width * height
-    if not completed.stdout or len(completed.stdout) % frame_bytes:
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    selected: list[tuple[int, np.ndarray]] = []
+    last: tuple[int, np.ndarray] | None = None
+    stride = 1
+    index = 0
+    try:
+        assert process.stdout is not None
+        while True:
+            payload = process.stdout.read(frame_bytes)
+            if not payload:
+                break
+            if len(payload) != frame_bytes:
+                raise RuntimeError("FFmpeg returned a partial luminance frame")
+            frame = np.frombuffer(payload, dtype=np.uint8).reshape(height, width)
+            if max_frames is None:
+                selected.append((index, frame))
+            elif max_frames == 1:
+                if index == 0:
+                    selected.append((index, frame))
+            else:
+                last = (index, frame)
+                if index == 0 or index % stride == 0:
+                    selected.append((index, frame))
+                    if len(selected) > max_frames - 1:
+                        # Reserve one slot for the final frame. Retaining every
+                        # other grid point keeps full-window coverage bounded.
+                        stride *= 2
+                        selected = [item for item in selected if item[0] % stride == 0]
+            index += 1
+        if max_frames is not None and max_frames > 1 and last is not None:
+            if not selected or selected[-1][0] != last[0]:
+                selected.append(last)
+        returncode = process.wait(timeout=120)
+        assert process.stderr is not None
+        stderr = process.stderr.read()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+    if returncode != 0:
+        message = stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg luminance decode failed: {message}")
+    if not selected:
         raise RuntimeError("FFmpeg returned no complete luminance frames")
-    frames = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(-1, height, width)
+    frames = np.stack([frame for _, frame in selected])
     return frames.astype(np.float64) / 255.0
 
 
@@ -448,10 +515,10 @@ def analyze_videos(
     if max_frames <= 0:
         raise ValueError("max_frames must be positive")
     reference_frames = decode_luminance_crop(
-        reference, crop=crop, start_s=start_s, duration_s=duration_s
+        reference, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
     )
     candidate_frames = decode_luminance_crop(
-        candidate, crop=crop, start_s=start_s, duration_s=duration_s
+        candidate, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
     )
     return analyze_trial(reference_frames, candidate_frames, max_frames=max_frames)
 

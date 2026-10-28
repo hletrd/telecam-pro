@@ -106,6 +106,18 @@ def test_fallback_refuses_when_no_independent_sidelobes_exist(size: int, max_shi
     assert not estimate.confident
 
 
+def test_rejected_fallback_returns_phase_estimator_coordinates() -> None:
+    rng = np.random.default_rng(9116)
+    reference = rng.random((16, 16))
+    unrelated = rng.random((16, 16))
+    estimate = estimate_translation(reference, unrelated, max_shift=7)
+    assert not estimate.confident
+    # Direct windowed phase correlation places this rejected peak at
+    # (0.2054, -0.0254); the rejected fallback's integer peak is (2, -5).
+    assert estimate.dx == pytest.approx(0.2054023014, abs=1.0e-8)
+    assert estimate.dy == pytest.approx(-0.0254232767, abs=1.0e-8)
+
+
 def test_translation_and_directional_blur_are_measured_together() -> None:
     reference, candidate = _crop_pair(12, -7)
     blurred = _motion_blur(candidate, length=17, axis="x")
@@ -115,6 +127,16 @@ def test_translation_and_directional_blur_are_measured_together() -> None:
     assert result.translation.dy == pytest.approx(-7.0, abs=1.0)
     assert result.blur.directional
     assert result.blur.axis_degrees == pytest.approx(0.0, abs=10.0)
+
+
+def test_long_motion_blur_keeps_true_translation_lobe() -> None:
+    reference, candidate = _crop_pair(12, -7)
+    blurred = _motion_blur(candidate, length=31, axis="x")
+    result = analyze_frame_pair(reference, blurred)
+    assert result.verdict == "JUDGEABLE"
+    assert result.translation.dx == pytest.approx(12.0, abs=1.0)
+    assert result.translation.dy == pytest.approx(-7.0, abs=1.0)
+    assert result.blur.directional
 
 
 @pytest.mark.parametrize("axis", ["x", "y"])
@@ -193,15 +215,7 @@ def test_ffmpeg_decodes_requested_luminance_crop(tmp_path: Path) -> None:
     video = tmp_path / "chart.mkv"
     yy, xx = np.mgrid[:80, :96]
     frames = np.stack([(xx + 2 * yy + frame) % 256 for frame in range(4)]).astype(np.uint8)
-    subprocess.run(
-        [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "gray", "-s", "96x80", "-r", "2",
-            "-i", "-", "-frames:v", "4", "-c:v", "ffv1", str(video),
-        ],
-        input=frames.tobytes(),
-        check=True,
-    )
+    _write_gray_video(video, frames, fps=2)
     decoded = decode_luminance_crop(video, crop=(8, 12, 48, 40))
     assert decoded.shape == (4, 40, 48)
     expected = frames[:, 12:52, 8:56].astype(np.float64) / 255.0
@@ -232,3 +246,25 @@ def test_duration_window_is_decoded_before_sampling(tmp_path: Path) -> None:
     assert len(result.frames) == 2
     assert result.dx == pytest.approx(6.0, abs=1.0)
     assert result.dy == pytest.approx(0.0, abs=1.0)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_long_window_decode_retains_bounded_full_window_samples(tmp_path: Path) -> None:
+    video = tmp_path / "sixty-seconds.mkv"
+    frames = np.zeros((1800, 48, 64), dtype=np.uint8)
+    frames[-1].fill(255)
+    _write_gray_video(video, frames, fps=30)
+
+    decoded = decode_luminance_crop(
+        video,
+        crop=(0, 0, 64, 48),
+        duration_s=60.0,
+        max_frames=7,
+    )
+    assert decoded.ndim == 3
+    assert 1 < decoded.shape[0] <= 7
+    assert decoded.shape[1:] == (48, 64)
+    assert decoded[0, 0, 0] == 0.0
+    # The final marker proves sampling reached the end of the 60 s window;
+    # the seven-frame result bounds retained decoded data independently of it.
+    assert decoded[-1, 0, 0] == 1.0
