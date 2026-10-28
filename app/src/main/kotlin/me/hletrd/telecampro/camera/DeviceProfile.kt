@@ -104,10 +104,10 @@ internal data class DeviceProfile(
     /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
     val makerLogPipeline: Boolean = false,
     /**
-     * Standalone TC + 0x80b5 maker VIDEO, measured on the exact PMA110 with the physical converter:
-     * real OEM O-Log2/HDR colour, lower residual motion than stock TC without directional blur, and
-     * upright preview/encoder output after accounting for this source's pixel-level 180° pre-rotation
-     * (FIELD_CHECKS A30). CPH2841 and PMA120 stay false until separately measured; GENERIC stays false.
+     * Standalone TC + 0x80b5 maker VIDEO. The accepted-source rotation and colour paths are measured,
+     * but production admission is CLOSED pending one fixed ISO across every route in the five-trial
+     * stabilization A/B (the first set used 12414/12700/9100 and therefore did not satisfy it).
+     * CPH2841, PMA120 and GENERIC remain false.
      */
     val makerLogStandaloneTeleVideo: Boolean = false,
     /**
@@ -170,7 +170,6 @@ internal data class DeviceProfile(
             nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
-            makerLogStandaloneTeleVideo = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             previewStabilizedStillMaxExposureNs = PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS,

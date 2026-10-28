@@ -1191,16 +1191,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   product take has no PTS interval above 33.367 ms. The previous SDK-only/impossibility claims
   were disproved; neither this result nor the gain ratio is a certified total dynamic-range test.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
-  work with it too"; standalone product route measured and promoted 2026-10-29).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
-  mode offers 1080p/4K at 30/60 fps and no O-Log2). On exact PMA110 the selected product route is now
-  standalone camera 4 + VIDEO 0x80b5: the mounted five-trial A/B measured lower residual displacement
-  than stock TC with no directional blur, five stock-O-Log2 colour windows matched within 0.82 decoded
-  RGB codes, and preview plus 4K Main10 files are upright (FIELD_CHECKS A30). `makerLogStandaloneTeleVideo`
-  is true only there; CPH2841/PMA120 explicitly keep it false and retain the logical route. Earlier
-  route facts remain: standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like
-  gamma. The standalone OEM source's pixels arrive 180° pre-rotated while its SurfaceTexture matrix is
-  identical to ordinary 0x80b4, so accepted source truth (`sourcePreRotated`, never maker intent) removes
-  the duplicate afocal correction before Ready/REC; stabilization is not inferred from that rotation or
+  work with it too"; standalone route measured, production admission pending matched ISO).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
+  mode offers 1080p/4K at 30/60 fps and no O-Log2). Standalone camera 4 + VIDEO 0x80b5 carries the real
+  OEM pipeline and measured strong stabilization, but `makerLogStandaloneTeleVideo` is `false` on every
+  profile: the first A/B used ISO 12414 / 12700 / 9100 across stock / ordinary / standalone, so it did
+  not satisfy the required one-fixed-ISO protocol and cannot promote the route. The accepted rotation
+  and colour evidence is retained (FIELD_CHECKS A30); a new matched set is required. Earlier route facts
+  remain: standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. The
+  standalone OEM source's pixels arrive 180° pre-rotated while its SurfaceTexture matrix is identical
+  to ordinary 0x80b4, so accepted source truth (`sourcePreRotated`, never maker intent) removes the
+  duplicate afocal correction before Ready/REC; stabilization is not inferred from that rotation or
   from `original.zoomRatio`. On profiles WITHOUT standalone admission, Video + Log (maker)
   opens the LOGICAL camera with the native protocol
   (`makerLogTeleRouteWanted` / `teleRouteCameraId`, used by EVERY TELE door — startup/reopen, mode,

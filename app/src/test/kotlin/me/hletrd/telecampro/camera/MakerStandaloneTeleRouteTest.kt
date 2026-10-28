@@ -62,9 +62,8 @@ class MakerStandaloneTeleRouteTest {
         assertEquals(ColorTransfer.SLOG3, effectiveRecordingTransfer(ColorTransfer.MAKER_LOG, makerLogAccepted = false))
     }
 
-    @Test fun `standalone maker video is admitted only on the measured PMA110`() {
-        assertTrue(DeviceProfile.resolve("PMA110").makerLogStandaloneTeleVideo)
-        for (model in listOf("CPH2841", "PMA120", "SM-F741N")) {
+    @Test fun `standalone maker video stays closed pending the matched-ISO protocol`() {
+        for (model in listOf("PMA110", "CPH2841", "PMA120", "SM-F741N")) {
             assertFalse(model, DeviceProfile.resolve(model).makerLogStandaloneTeleVideo)
         }
         assertFalse(DeviceProfile.GENERIC.makerLogStandaloneTeleVideo)
