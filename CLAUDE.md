@@ -1601,9 +1601,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   same stock-shaped session CRASHED the provider inside configure (tombstone_29: SIGTRAP in
   `com.qti.node.gme.so` `QTIGMEWrapper::AlgoUninit` during pipeline teardown, ~80 ms in; the provider
   restarts on its own). The Galaxy Z Flip6 HAL refuses the same trick cleanly (CHI
-  `CreateUsecaseObject failed` for its third-party shooting mode). Every failed guess at stock's
-  private stream set costs a provider crash here, so the door stays shut: only a size the camera
-  ADVERTISES is a product path. The capability-gated
+  `CreateUsecaseObject failed` for its third-party shooting mode). OPEN, not closed (2026-10-28
+  round 2): with `CPU_READ_OFTEN | RENDERSCRIPT` (0x100003, non-flexible without the encoder bit) and
+  stock's exact stream set — its vendor stream use cases ARE in cam 2's `availableStreamUseCases` —
+  the plain third-party path CONFIGURES and previews at 30 fps with no crash, but a still into the
+  8160×6128 RAW10 is lost (`wasImageCaptured`, buffers lost, no sensor-mode switch). Adding the
+  `is.sdk.camera.package` + `is.from.extension` pair selects the full OEM path, which then stalls
+  on the first frame and aborts in `OUsecaseDefault::WaitPendingBuffer` even with only advertised
+  streams — that path needs stock's in-app side. Stock itself is LIGHT-GATED: at ISO ~1600 its
+  50 MP shutter took a binned ZSL YUV, not the full-res RAW, so its real full-res capture request
+  is still unrecorded (next step: a bright-light stock shot under `cmd media.camera watch`).
+  Each wrong guess can cost a provider crash. The capability-gated
   Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
   firmware or a different device advertises a hi-res size; do not expect it here and do not
   re-probe it. **Never pipe `dumpsys media.camera` into an early-exiting reader** (`| grep -m1`,
