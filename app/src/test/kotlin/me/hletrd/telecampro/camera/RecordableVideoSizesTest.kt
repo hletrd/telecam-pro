@@ -8,6 +8,7 @@ import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.EncoderSelection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,6 +79,39 @@ class RecordableVideoSizesTest {
         assertFalse(59.94 in projected8kRates)
         assertEquals(listOf(eightK, uhd), projected.availableVideoSizes)
         assertTrue(uhd !in projected.extendedVideoSizeRates)
+    }
+
+    @Test
+    fun `extended exact format probe uses the selected bitrate`() {
+        val lowOnly = candidates(
+            EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_BIT_RATE) <= 60_000_000
+            },
+        )
+        val highOnly = candidates(
+            EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_BIT_RATE) >= 100_000_000
+            },
+        )
+        val exactNtscLowOnly = candidates(
+            EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_BIT_RATE) == 59_660_018
+            },
+        )
+        val raw = capsWith(sizes = listOf(eightK, uhd))
+
+        assertNotNull(projectedLegalVideoRate(
+            raw, eightK, exactNtscLowOnly, ColorTransfer.SDR, VideoCodec.HEVC,
+            raw.sensorOrientation, contentRotation = 0, bitrateLevel = BitrateLevel.LOW,
+        ))
+        assertNotNull(projectedLegalVideoRate(
+            raw, eightK, lowOnly, ColorTransfer.SDR, VideoCodec.HEVC,
+            raw.sensorOrientation, contentRotation = 0, bitrateLevel = BitrateLevel.LOW,
+        ))
+        assertNull(projectedLegalVideoRate(
+            raw, eightK, highOnly, ColorTransfer.SDR, VideoCodec.HEVC,
+            raw.sensorOrientation, contentRotation = 0, bitrateLevel = BitrateLevel.LOW,
+        ))
     }
 
     @Test

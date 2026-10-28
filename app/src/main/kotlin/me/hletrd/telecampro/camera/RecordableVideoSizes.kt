@@ -30,6 +30,7 @@ private fun projectedExtendedEncoderRates(
     codec: VideoCodec,
     sensorOrientation: Int,
     contentRotation: Int,
+    bitrateLevel: BitrateLevel,
 ): Set<Double> {
     val (encoderWidth, encoderHeight) = RotationMath.encoderSurfaceSize(
         size.width, size.height, sensorOrientation, contentRotation,
@@ -44,8 +45,11 @@ private fun projectedExtendedEncoderRates(
                 height = encoderHeight,
                 encoderRate = nominalRate,
                 captureRate = 0.0,
-                bitRate = videoBitRate(
-                    encoderWidth, encoderHeight, nominalRate, BitrateLevel.HIGH.bpp, codec,
+                // KEY_FRAME_RATE stays nominal for the platform probe, but bitrate is the EXACT
+                // recorder value: NTSC rates use the 1001 grid, not their rounded capability label.
+                bitRate = frozenRecordingBitRate(rate.encoderRate, bitrateLevel, codec)(
+                    encoderWidth,
+                    encoderHeight,
                 ),
                 transfer = transfer,
             )
@@ -64,12 +68,13 @@ internal fun projectedLegalVideoRates(
     codec: VideoCodec,
     sensorOrientation: Int,
     contentRotation: Int,
+    bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
 ): List<VideoFrameRate> {
     if (!requiresExtendedVideoProof(size.width, size.height)) {
         return VideoFrameRate.availableFor(caps, size, codec)
     }
     val encoderRates = projectedExtendedEncoderRates(
-        size, candidates, transfer, codec, sensorOrientation, contentRotation,
+        size, candidates, transfer, codec, sensorOrientation, contentRotation, bitrateLevel,
     )
     if (encoderRates.isEmpty()) return emptyList()
     val projected = caps.copy(
@@ -87,8 +92,9 @@ fun projectedLegalVideoRate(
     codec: VideoCodec,
     sensorOrientation: Int,
     contentRotation: Int,
+    bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
 ): VideoFrameRate? = projectedLegalVideoRates(
-    caps, size, candidates, transfer, codec, sensorOrientation, contentRotation,
+    caps, size, candidates, transfer, codec, sensorOrientation, contentRotation, bitrateLevel,
 ).firstOrNull()
 
 /**
@@ -103,6 +109,7 @@ fun projectRecordableVideoSizes(
     rawLog: Boolean,
     transfer: ColorTransfer = ColorTransfer.SDR,
     contentRotation: Int = 0,
+    bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
 ): CameraCaps {
     val codec = candidates.firstOrNull()?.codec ?: VideoCodec.HEVC
     fun encoderRates(sizes: List<Size>): Map<Size, Set<Double>> =
@@ -111,7 +118,7 @@ fun projectRecordableVideoSizes(
                 return@mapNotNull null
             }
             val rates = projectedExtendedEncoderRates(
-                size, candidates, transfer, codec, raw.sensorOrientation, contentRotation,
+                size, candidates, transfer, codec, raw.sensorOrientation, contentRotation, bitrateLevel,
             )
             if (rates.isEmpty()) null else size to rates
         }.toMap()

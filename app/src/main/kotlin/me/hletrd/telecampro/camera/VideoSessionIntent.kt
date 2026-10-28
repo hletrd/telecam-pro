@@ -16,6 +16,7 @@ data class VideoSessionRequest(
     val frameRate: VideoFrameRate,
     val rawRequiresStandalone: Boolean,
     val contentRotation: Int,
+    val bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
 )
 
 /**
@@ -67,6 +68,7 @@ fun resolveVideoSessionIntent(
             codec = requested.codec,
             sensorOrientation = caps.sensorOrientation,
             contentRotation = requested.contentRotation,
+            bitrateLevel = requested.bitrateLevel,
         )
         val resolvedRate = if (rate in legalRates) {
             rate

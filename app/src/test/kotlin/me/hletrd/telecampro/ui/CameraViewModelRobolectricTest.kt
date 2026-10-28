@@ -25,6 +25,8 @@ import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.ExtendedVideoRasterRefusal
+import me.hletrd.telecampro.camera.ExtendedVideoRasterRefusalLatch
 import me.hletrd.telecampro.camera.EngineCallbackKey
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
@@ -36,6 +38,7 @@ import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.TeleSelection
+import me.hletrd.telecampro.camera.rawLogRouteKey
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
@@ -1909,6 +1912,140 @@ class CameraViewModelRobolectricTest {
         assertEquals(extrasBefore, currentExtras(v))
         assertNull(e.currentRequestedVideoSize())
         assertEquals(uhd, engineField("videoSize").get(e))
+    }
+
+    @Test fun `PHOTO explicit retry clears the retained next-Video Gamma refusal tuple`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val route = TeleSelection("test", null, 23f)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+            availableVideoSizes = listOf(eightK, uhd),
+        )
+        val encoder8k = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-8k-hlg",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { true },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("selection").set(e, route)
+        engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(e, listOf(encoder8k))
+        val latch = engineField("extendedVideoRasterRefusals").get(e) as ExtendedVideoRasterRefusalLatch
+        val routeKey = rawLogRouteKey(route.logicalId, route.physicalId, false)
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, eightK, ColorTransfer.HLG))
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.HLG))
+
+        assertTrue(e.setVideoResolution(eightK))
+
+        assertFalse("the HLG next-Video graph must really retry", latch.blocks(routeKey, eightK, ColorTransfer.HLG))
+    }
+
+    @Test fun `resolution request revalidates when a pipeline change wins the probe race`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+            availableVideoSizes = listOf(eightK, uhd),
+        )
+        val probeEntered = CountDownLatch(1)
+        val releaseProbe = CountDownLatch(1)
+        val initialEncoder = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-initially-legal",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport {
+                probeEntered.countDown()
+                releaseProbe.await(2, TimeUnit.SECONDS)
+                true
+            },
+        )
+        val rejectingEncoder = initialEncoder.copy(
+            codecName = "encoder-now-illegal",
+            formatSupport = EncoderFormatSupport { false },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(e, listOf(initialEncoder))
+        engineField("requestedVideoSize").set(e, null)
+        engineField("requestedVideoSizeDirectWrites").setLong(e, 0L)
+        val accepted = AtomicReference<Boolean>()
+        val picker = Thread { accepted.set(e.setVideoResolution(eightK)) }
+        picker.start()
+        assertTrue(probeEntered.await(2, TimeUnit.SECONDS))
+
+        e.setVideoPipeline(listOf(rejectingEncoder), ColorTransfer.HLG)
+        releaseProbe.countDown()
+        picker.join(2_000)
+
+        assertFalse("a stale successful probe cannot admit the old packet", accepted.get())
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(0L, engineField("requestedVideoSizeDirectWrites").getLong(e))
+    }
+
+    @Test fun `live bitrate changes reproject and restore the retained extended request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val route = TeleSelection("test", null, 23f)
+        val raw = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK, uhd))
+        val lowOnly = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-low-bitrate-only",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_BIT_RATE) <= 60_000_000
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("selection").set(e, route)
+        engineField("caps").set(e, raw)
+        engineField("bitrateLevel").set(e, me.hletrd.telecampro.camera.BitrateLevel.LOW)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = engineField("capsCache").get(e)
+            as java.util.concurrent.ConcurrentHashMap<String, me.hletrd.telecampro.camera.CameraCaps>
+        rawCache["test:null"] = raw
+        e.setVideoPipeline(listOf(lowOnly), ColorTransfer.SDR)
+        assertTrue("precondition: LOW admits the explicit 8K request", e.setVideoResolution(eightK))
+
+        val generationBeforeHigh = engineField("videoPipelinePublicationGeneration").get(e) as java.util.concurrent.atomic.AtomicLong
+        val highGenerationBefore = generationBeforeHigh.get()
+        e.setBitrateLevel(me.hletrd.telecampro.camera.BitrateLevel.HIGH)
+
+        assertTrue("bitrate owns the projection generation", generationBeforeHigh.get() > highGenerationBefore)
+        assertEquals(
+            listOf(uhd),
+            (engineField("caps").get(e) as me.hletrd.telecampro.camera.CameraCaps).availableVideoSizes,
+        )
+        assertEquals(uhd, engineField("videoSize").get(e))
+        assertEquals(eightK, e.currentRequestedVideoSize())
+
+        e.setBitrateLevel(me.hletrd.telecampro.camera.BitrateLevel.LOW)
+
+        assertEquals(eightK, engineField("videoSize").get(e))
+        assertEquals(eightK, e.currentRequestedVideoSize())
     }
 
     @Test fun `codec reconciliation falls back from 8K without relabeling the request`() {

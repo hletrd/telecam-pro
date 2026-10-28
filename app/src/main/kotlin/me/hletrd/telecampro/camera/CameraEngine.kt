@@ -685,6 +685,7 @@ class CameraEngine internal constructor(
         val candidates: List<EncoderSelection>,
         val requestedTransfer: ColorTransfer,
         val activeTransfer: ColorTransfer,
+        val bitrateLevel: BitrateLevel,
     )
 
     private fun currentVideoPipelineSelection(): VideoPipelineSelection = VideoPipelineSelection(
@@ -692,6 +693,7 @@ class CameraEngine internal constructor(
         candidates = videoEncoderCandidates,
         requestedTransfer = requestedVideoTransfer,
         activeTransfer = transfer,
+        bitrateLevel = bitrateLevel,
     )
 
     /** Posts one transfer to the live GL owner and mirrors that exact command into host evidence. */
@@ -711,6 +713,7 @@ class CameraEngine internal constructor(
             rawLog = rawLogWanted(sel, raw),
             transfer = videoProjectionTransfer(),
             contentRotation = previewRotationDegrees(),
+            bitrateLevel = bitrateLevel,
         )
 
     /**
@@ -737,6 +740,7 @@ class CameraEngine internal constructor(
             videoEncoderCandidates = selection.candidates
             requestedVideoTransfer = selection.requestedTransfer
             transfer = selection.activeTransfer
+            bitrateLevel = selection.bitrateLevel
             reprojectRouteCapsFromRaw()
             videoPipelinePublicationGeneration.incrementAndGet()
         }
@@ -3344,6 +3348,7 @@ class CameraEngine internal constructor(
                         .distinctBy { it.codecName },
                     requestedTransfer = resolvedTransfer,
                     activeTransfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR,
+                    bitrateLevel = bitrateLevel,
                 ),
             )
             lensChoice = resolvedLens
@@ -3532,6 +3537,7 @@ class CameraEngine internal constructor(
             candidates = normalizedCandidates,
             requestedTransfer = resolved,
             activeTransfer = activeTransfer,
+            bitrateLevel = bitrateLevel,
         )
         // Session-shape boundary (SDR / native log / 10-bit), against the installed route's caps.
         val nativeLogSupported = nativeLogCurveSupported(caps)
@@ -4000,7 +4006,17 @@ class CameraEngine internal constructor(
     fun setVideoEncoders(candidates: List<EncoderSelection>) {
         setVideoPipeline(candidates, requestedVideoTransfer)
     }
-    fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
+    @Synchronized
+    fun setBitrateLevel(b: BitrateLevel) {
+        if (bitrateLevel == b) return
+        val generationBefore = videoPipelinePublicationGeneration.get()
+        // Bitrate travels in the versioned pipeline packet, so an older optics rollback cannot
+        // restore its projection while retaining the newer level.
+        publishVideoPipelineLocked(currentVideoPipelineSelection().copy(bitrateLevel = b))
+        if (videoPipelinePublicationGeneration.get() != generationBefore) {
+            publishReprojectedVideoCapabilities()
+        }
+    }
 
     /**
      * Selects the video frame rate. Shipping UI and settings restore exclude high-speed rates because
@@ -4062,22 +4078,37 @@ class CameraEngine internal constructor(
         if (openGate == enabled) return true
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
-        val makerBefore = makerLogWanted()
-        val sel = selection
-        val targetIntent = sel?.let {
+        val initialSelection = selection
+        val targetIntent = initialSelection?.let {
             resolveCurrentVideoIntent(it, caps ?: return@let null, projectVideoSize(it, caps, enabled), gate = enabled)
         }
-        if (sel != null && targetIntent == null) {
+        if (initialSelection != null && targetIntent == null) {
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
         synchronized(this) {
+            // Revalidate the current pipeline after the first probe, exactly like setVideoResolution.
+            // Only a legal resolved graph may move Open Gate; ViewModel persistence follows this true.
+            val currentSelection = selection
+            val currentIntent = currentSelection?.let {
+                resolveCurrentVideoIntent(
+                    it,
+                    caps ?: return@let null,
+                    projectVideoSize(it, caps, enabled),
+                    gate = enabled,
+                )
+            }
+            if (currentSelection != null && currentIntent == null) return false
+            val makerBefore = makerLogWanted()
             // Share the extended-refusal ownership monitor: an older fallback packet either finishes
             // before this aspect intent or sees the new Open Gate/delivered-size truth and stays inert.
             openGate = enabled
             remapMakerRouteBoundary(makerBefore, makerLogWanted())
+            if (currentIntent != null) {
+                commitVideoIntentLocked(currentIntent)
+                publishVideoIntentEffectsLocked(currentIntent)
+            }
         }
-        if (targetIntent != null) applyVideoIntent(targetIntent)
         return true
     }
 
@@ -4644,33 +4675,51 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
-        val sel = selection
         val routeCaps = caps
-        val targetIntent = routeCaps?.let {
-            val route = sel ?: TeleSelection(it.logicalId, it.physicalId, it.equivalentFocalMm)
+        val initialIntent = routeCaps?.let {
+            val route = selection ?: TeleSelection(it.logicalId, it.physicalId, it.equivalentFocalMm)
             resolveCurrentVideoIntent(route, it, s)
         }
-        if (routeCaps != null && targetIntent == null) return false
-        // Remember the user's pick so lens switches and the initial open don't silently re-derive
-        // the largest size over it — chooseVideoSize honors this request whenever the current lens
-        // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
-        // flip or a lens without that mode).
-        synchronized(this) {
+        if (routeCaps != null && initialIntent == null) return false
+
+        // A pipeline packet may change while the first exact-format probe is in flight. Re-resolve
+        // against CURRENT caps/candidates inside the ownership monitor before any request write.
+        val targetIntent = synchronized(this) {
+            val currentCaps = caps
+            val currentOffered = currentCaps?.let {
+                if (openGate) it.openGateVideoSizes else it.availableVideoSizes
+            }
+            if (currentOffered != null && s !in currentOffered) return false
+            val currentIntent = currentCaps?.let {
+                val route = selection ?: TeleSelection(it.logicalId, it.physicalId, it.equivalentFocalMm)
+                resolveCurrentVideoIntent(route, it, s)
+            }
+            if (currentCaps != null && currentIntent == null) return false
+            // Remember the user's pick so lens switches and the initial open don't silently re-derive
+            // the largest size over it — chooseVideoSize honors this request whenever the current lens
+            // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
+            // flip or a lens without that mode).
             requestedVideoSize = s
             requestedVideoSizeDirectWrites++
-            // An explicit retry clears ONLY the identical refused graph. Selecting another raster,
-            // route, or Gamma leaves any prior refusal available to protect later automatic reopens.
+            // An explicit retry clears ONLY the identical refused graph. PHOTO's next-Video Gamma,
+            // not its active SDR transfer, names the tuple that returning to VIDEO must retry.
             selection?.let {
                 extendedVideoRasterRefusals.clearForExplicitRetry(
                     rawLogRouteKey(it.logicalId, it.physicalId, teleconverterMode),
                     s,
-                    transfer,
+                    videoProjectionTransfer(),
                 )
             }
+            val apply = currentIntent != null &&
+                (videoSize != s || videoFrameRate != currentIntent.frameRate)
+            if (apply) {
+                commitVideoIntentLocked(currentIntent)
+                publishVideoIntentEffectsLocked(currentIntent)
+            }
+            currentIntent
         }
         if (targetIntent != null) {
-            if (videoSize == s && videoFrameRate == targetIntent.frameRate) return true
-            applyVideoIntent(targetIntent)
+            return true
         } else {
             // Pre-capability selections retain the legacy direct write; the first route open resolves
             // the complete intent before Camera2. A resolved refusal returned above instead.
@@ -4704,21 +4753,32 @@ class CameraEngine internal constructor(
             frameRate = videoFrameRate,
             rawRequiresStandalone = activeDeviceProfile().rawRequiresStandalone,
             contentRotation = previewRotationDegrees(),
+            bitrateLevel = bitrateLevel,
         ),
         caps = routeCaps,
         candidates = videoEncoderCandidates,
     )
 
-    private fun applyVideoIntent(intent: VideoSessionIntent) {
-        // Rate, exposure cadence, maker-route eligibility, and delivered raster commit as one packet
-        // BEFORE the size publication/reopen. The same immutable intent reaches Camera2 and REC.
+    /** Engine-monitor-only resolved-state commit; its non-blocking UI/GL publications stay ordered. */
+    private fun commitVideoIntentLocked(intent: VideoSessionIntent) {
+        check(Thread.holdsLock(this)) { "video intent commit requires the Engine monitor" }
         val makerBefore = makerLogWanted()
+        videoFrameRate = intent.frameRate
+        controls = controls.copy(fps = intent.frameRate.fps)
+        videoSize = intent.streamSize
+        remapMakerRouteBoundary(makerBefore, makerLogWanted())
+    }
+
+    private fun applyVideoIntent(intent: VideoSessionIntent) {
         synchronized(this) {
-            videoFrameRate = intent.frameRate
-            controls = controls.copy(fps = intent.frameRate.fps)
-            videoSize = intent.streamSize
-            remapMakerRouteBoundary(makerBefore, makerLogWanted())
+            commitVideoIntentLocked(intent)
+            publishVideoIntentEffectsLocked(intent)
         }
+    }
+
+    /** Commit + effects are one ownership boundary: no newer intent can publish between the two. */
+    private fun publishVideoIntentEffectsLocked(intent: VideoSessionIntent) {
+        check(Thread.holdsLock(this)) { "video intent effects require the Engine monitor" }
         onVideoSizeChosen?.invoke(intent.streamSize, null)
         // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
         // size takes effect on the stream when the user switches to VIDEO (setVideoMode reopens).
@@ -5163,6 +5223,7 @@ class CameraEngine internal constructor(
         var preflightSessionGeneration: Long? = null
         fun invalidateForPreflight(): Long = preflightSessionGeneration
             ?: invalidateCameraReady().also { preflightSessionGeneration = it }
+        val preflightPipelineGeneration = videoPipelinePublicationGeneration.get()
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
@@ -5325,7 +5386,7 @@ class CameraEngine internal constructor(
                         ownsTransaction = ownsOpticsTransaction(transaction),
                         paused = paused,
                         recording = recorder != null,
-                    )
+                    ) || videoPipelinePublicationGeneration.get() != preflightPipelineGeneration
                 ) {
                     null
                 } else {
@@ -5351,7 +5412,15 @@ class CameraEngine internal constructor(
             }
             if (candidatePublication == null) {
                 next.close()
-                startupTraceOwnership.revoke(startupTraceOwner)
+                if (ownsOpticsTransaction(transaction) &&
+                    videoPipelinePublicationGeneration.get() != preflightPipelineGeneration
+                ) {
+                    // Codec/Gamma/bitrate changed during preflight. Do not install its stale caps,
+                    // size or open intent; re-resolve the same owned optics transaction instead.
+                    reconfigureCamera(overrideId, transaction, startup, startupTraceOwner)
+                } else {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                }
                 return@execute
             }
             val controllerTraceOwner = startupTraceOwnership.claimController(startupTraceOwner)
