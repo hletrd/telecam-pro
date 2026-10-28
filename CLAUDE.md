@@ -1585,11 +1585,25 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   media.camera` (116k lines, full characteristics for all 7 HAL devices): every camera's
   `pixelArraySize`/`activeArraySize` IS the binned ~12.5 MP readout (4080×3064 / 4096×3072), the
   `ULTRA_HIGH_RESOLUTION_SENSOR` capability appears nowhere, `pixelArraySizeMaximumResolution` has
-  no values (key-index mention only), and no stream configuration anywhere exceeds 20 MP. The
-  200 MP full-res path lives behind the stock app's private CameraUnit stack. The capability-gated
+  no values (key-index mention only), and no stream configuration anywhere exceeds 20 MP.
+  **Stock's route and the gate that closes it (captured 2026-10-28, preview only):** stock
+  HASSELBLAD HI-RES opens standalone camera 2 in operation mode 0x8001 with
+  `com.oplus.camera.mode = "high_pixel_mode"` and `camera.is.from.main.menu = 1`, previews in the
+  BINNED sensor mode (4080×3064), and configures unadvertised RAW10 ImageReaders — 8160×6128 for
+  50 MP, plus 16320×12256 for 200 MP — that receive buffers only at the shutter, then develops them
+  itself. The identical session from a third-party app fails in CAMERASERVER, before the HAL:
+  `roundBufferDimensionNearest: No configurations for format 37 width 8160, height 6128`. AOSP's
+  `createSurfaceFromGbp` rounds every SW_READ / HW_TEXTURE / HW_COMPOSER consumer (every
+  ImageReader and SurfaceTexture) to an ADVERTISED size unless the client is privileged, and OPLUS's
+  libcameraservice carries a `Bypass roundBufferDimensionNearest for privilegedClient` path for
+  `com.oplus.camera` only. So no session parameter, vendor key or operation mode can open those
+  sizes to this app; only a size the camera ADVERTISES can. The capability-gated
   Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
   firmware or a different device advertises a hi-res size; do not expect it here and do not
-  re-probe without cause. On a capable device: hi-res rides the PREPENDED ladder rung (RAW forced
+  re-probe it. **Never pipe `dumpsys media.camera` into an early-exiting reader** (`| grep -m1`,
+  `| head`): the QTI provider writes its part of the dump into the same fd and dies of SIGPIPE —
+  no tombstone, and the next `openCamera` sees "unknown device" while it restarts (cost two provider
+  restarts on 2026-10-28). Dump to a file, then grep it. On a capable device: hi-res rides the PREPENDED ladder rung (RAW forced
   off on that one attempt; a rejected hi-res session falls back to full-with-RAW), fast commits
   compare intent against the CONFIGURED session (`hiResConfigured`), the still saves via the
   passthrough-JPEG lane (pixels verbatim, no 200 MP decode; the shot's composed EXIF APP1, with
