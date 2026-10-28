@@ -19,7 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import select
 import subprocess
+import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -78,6 +81,13 @@ class TrialAnalysis:
     directional_blur_fraction: float
     median_attenuation: float
     frames: tuple[FrameAnalysis, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedWindow:
+    frames: np.ndarray
+    selected_indices: tuple[int, ...]
+    source_frame_count: int
 
 
 def _luminance(image: np.ndarray) -> np.ndarray:
@@ -411,14 +421,15 @@ def analyze_trial(
     )
 
 
-def decode_luminance_crop(
+def _decode_luminance_window(
     video: str | Path,
     *,
     crop: tuple[int, int, int, int],
     start_s: float = 0.0,
     duration_s: float | None = None,
     max_frames: int | None = None,
-) -> np.ndarray:
+    timeout_s: float = 120.0,
+) -> _DecodedWindow:
     """Decode a video window to ``(frame, y, x)`` normalized luminance.
 
     ``crop`` is ``(x, y, width, height)`` in source pixels. No resize or color-matrix
@@ -433,6 +444,8 @@ def decode_luminance_crop(
         raise ValueError("crop dimensions must be positive and its origin non-negative")
     if max_frames is not None and max_frames <= 0:
         raise ValueError("max_frames must be positive when supplied")
+    if timeout_s <= 0.0:
+        raise ValueError("timeout_s must be positive")
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if start_s > 0.0:
         command += ["-ss", f"{start_s:.6f}"]
@@ -447,16 +460,47 @@ def decode_luminance_crop(
         "-f", "rawvideo", "-pix_fmt", "gray", "-",
     ]
     frame_bytes = width * height
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    deadline = time.monotonic() + timeout_s
+    stderr_parts: list[bytes] = []
+
+    def drain_stderr() -> None:
+        assert process.stderr is not None
+        while chunk := process.stderr.read(65536):
+            stderr_parts.append(chunk)
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
     selected: list[tuple[int, np.ndarray]] = []
     last: tuple[int, np.ndarray] | None = None
     stride = 1
     index = 0
-    try:
+
+    def read_frame() -> bytes | None:
         assert process.stdout is not None
+        payload = bytearray()
+        while len(payload) < frame_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError(f"FFmpeg luminance decode exceeded {timeout_s:.3f} seconds")
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            if not ready:
+                raise TimeoutError(f"FFmpeg luminance decode exceeded {timeout_s:.3f} seconds")
+            chunk = process.stdout.read(frame_bytes - len(payload))
+            if not chunk:
+                return bytes(payload) if payload else None
+            payload.extend(chunk)
+        return bytes(payload)
+
+    try:
         while True:
-            payload = process.stdout.read(frame_bytes)
-            if not payload:
+            payload = read_frame()
+            if payload is None:
                 break
             if len(payload) != frame_bytes:
                 raise RuntimeError("FFmpeg returned a partial luminance frame")
@@ -479,18 +523,27 @@ def decode_luminance_crop(
         if max_frames is not None and max_frames > 1 and last is not None:
             if not selected or selected[-1][0] != last[0]:
                 selected.append(last)
-        returncode = process.wait(timeout=120)
-        assert process.stderr is not None
-        stderr = process.stderr.read()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError(f"FFmpeg luminance decode exceeded {timeout_s:.3f} seconds")
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(f"FFmpeg luminance decode exceeded {timeout_s:.3f} seconds") from error
+        stderr_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if stderr_thread.is_alive():
+            raise TimeoutError(f"FFmpeg luminance decode exceeded {timeout_s:.3f} seconds")
+        stderr = b"".join(stderr_parts)
     except BaseException:
         if process.poll() is None:
             process.kill()
         process.wait()
+        stderr_thread.join(timeout=1.0)
         raise
     finally:
         if process.stdout is not None:
             process.stdout.close()
-        if process.stderr is not None:
+        if process.stderr is not None and not stderr_thread.is_alive():
             process.stderr.close()
 
     if returncode != 0:
@@ -498,8 +551,32 @@ def decode_luminance_crop(
         raise RuntimeError(f"FFmpeg luminance decode failed: {message}")
     if not selected:
         raise RuntimeError("FFmpeg returned no complete luminance frames")
-    frames = np.stack([frame for _, frame in selected])
-    return frames.astype(np.float64) / 255.0
+    frames = np.stack([frame for _, frame in selected]).astype(np.float64) / 255.0
+    return _DecodedWindow(
+        frames=frames,
+        selected_indices=tuple(index for index, _ in selected),
+        source_frame_count=index,
+    )
+
+
+def decode_luminance_crop(
+    video: str | Path,
+    *,
+    crop: tuple[int, int, int, int],
+    start_s: float = 0.0,
+    duration_s: float | None = None,
+    max_frames: int | None = None,
+    timeout_s: float = 120.0,
+) -> np.ndarray:
+    """Public array-returning wrapper around the bounded streaming decoder."""
+    return _decode_luminance_window(
+        video,
+        crop=crop,
+        start_s=start_s,
+        duration_s=duration_s,
+        max_frames=max_frames,
+        timeout_s=timeout_s,
+    ).frames
 
 
 def analyze_videos(
@@ -510,17 +587,30 @@ def analyze_videos(
     start_s: float = 0.0,
     duration_s: float | None = None,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    timeout_s: float = 120.0,
 ) -> TrialAnalysis:
-    """Decode identical regions/windows, then sample across the complete sequences."""
+    """Decode identical regions/windows, then sample matched source indices."""
     if max_frames <= 0:
         raise ValueError("max_frames must be positive")
-    reference_frames = decode_luminance_crop(
-        reference, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
+    reference_window = _decode_luminance_window(
+        reference, crop=crop, start_s=start_s, duration_s=duration_s,
+        max_frames=max_frames, timeout_s=timeout_s,
     )
-    candidate_frames = decode_luminance_crop(
-        candidate, crop=crop, start_s=start_s, duration_s=duration_s, max_frames=max_frames
+    candidate_window = _decode_luminance_window(
+        candidate, crop=crop, start_s=start_s, duration_s=duration_s,
+        max_frames=max_frames, timeout_s=timeout_s,
     )
-    return analyze_trial(reference_frames, candidate_frames, max_frames=max_frames)
+    if reference_window.source_frame_count != candidate_window.source_frame_count:
+        return TrialAnalysis(
+            "UNJUDGEABLE", "FRAME_COUNT_MISMATCH", math.nan, math.nan,
+            False, 0.0, math.nan, (),
+        )
+    if reference_window.selected_indices != candidate_window.selected_indices:
+        return TrialAnalysis(
+            "UNJUDGEABLE", "SAMPLE_INDEX_MISMATCH", math.nan, math.nan,
+            False, 0.0, math.nan, (),
+        )
+    return analyze_trial(reference_window.frames, candidate_window.frames, max_frames=max_frames)
 
 
 def _parse_crop(value: str) -> tuple[int, int, int, int]:

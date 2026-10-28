@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -249,6 +251,46 @@ def test_duration_window_is_decoded_before_sampling(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_dropped_source_frame_is_not_hidden_by_endpoint_sampling(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference-dropped.mkv"
+    candidate_video = tmp_path / "candidate-dropped.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video(reference_video, frames)
+    _write_gray_video(candidate_video, np.stack([frames[0], frames[1], frames[3]]))
+
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "FRAME_COUNT_MISMATCH"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
+def test_mismatched_duration_is_not_hidden_by_endpoint_sampling(tmp_path: Path) -> None:
+    reference_video = tmp_path / "reference-duration.mkv"
+    candidate_video = tmp_path / "candidate-duration.mkv"
+    reference, _ = _crop_pair(0, 0)
+    frames = np.rint(np.stack([reference] * 4) * 255.0)
+    _write_gray_video(reference_video, frames, fps=2)
+    _write_gray_video(candidate_video, frames[:2], fps=2)
+
+    result = analyze_videos(
+        reference_video,
+        candidate_video,
+        crop=(0, 0, 160, 128),
+        duration_s=2.0,
+        max_frames=2,
+    )
+    assert result.verdict == "UNJUDGEABLE"
+    assert result.reason == "FRAME_COUNT_MISMATCH"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required for decode coverage")
 def test_long_window_decode_retains_bounded_full_window_samples(tmp_path: Path) -> None:
     video = tmp_path / "sixty-seconds.mkv"
     frames = np.zeros((1800, 48, 64), dtype=np.uint8)
@@ -268,3 +310,24 @@ def test_long_window_decode_retains_bounded_full_window_samples(tmp_path: Path) 
     # The final marker proves sampling reached the end of the 60 s window;
     # the seven-frame result bounds retained decoded data independently of it.
     assert decoded[-1, 0, 0] == 1.0
+
+
+def test_stalled_decoder_hits_whole_operation_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ffmpeg = fake_bin / "ffmpeg"
+    fake_ffmpeg.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    os.chmod(fake_ffmpeg, 0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="decode"):
+        decode_luminance_crop(
+            "ignored.mkv",
+            crop=(0, 0, 64, 48),
+            timeout_s=0.05,
+        )
+    assert time.monotonic() - started < 5.0
