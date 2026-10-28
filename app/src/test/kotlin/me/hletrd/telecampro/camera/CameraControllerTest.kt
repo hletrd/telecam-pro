@@ -3,6 +3,7 @@ package me.hletrd.telecampro.camera
 import android.util.Size
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -14,6 +15,56 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class CameraControllerTest {
     private val eightK = Size(7680, 4320)
+
+    @Test
+    fun `standalone maker admission is explicit and never replaces logical admission`() {
+        fun admitted(
+            makerLog: Boolean = true,
+            makerPipeline: Boolean = true,
+            logicalMultiCamera: Boolean = false,
+            standaloneMakerVideo: Boolean = true,
+            standaloneVideoAdmitted: Boolean = true,
+            teleconverterMode: Boolean = true,
+            physicalId: String? = null,
+            lensFacingFront: Boolean = false,
+        ) = makerLogRequestAdmitted(
+            makerLog, makerPipeline, logicalMultiCamera, standaloneMakerVideo,
+            standaloneVideoAdmitted, teleconverterMode, physicalId, lensFacingFront,
+        )
+
+        assertTrue(admitted())
+        assertFalse(admitted(standaloneVideoAdmitted = false))
+        assertFalse(admitted(standaloneMakerVideo = false))
+        assertFalse(admitted(logicalMultiCamera = true))
+        assertFalse(admitted(teleconverterMode = false))
+        assertFalse(admitted(makerLog = false))
+        assertFalse(admitted(makerPipeline = false))
+        assertFalse(admitted(physicalId = "4"))
+        assertFalse(admitted(lensFacingFront = true))
+        assertTrue(admitted(standaloneMakerVideo = false, logicalMultiCamera = true))
+    }
+
+    @Test
+    fun `neither maker route writes the conflicting Hasselblad mode 40 hint`() {
+        assertFalse(applyHasselbladMode40(teleconverter = true, standaloneMakerVideo = true, logicalMaker = false))
+        assertFalse(applyHasselbladMode40(teleconverter = true, standaloneMakerVideo = false, logicalMaker = true))
+        assertTrue(applyHasselbladMode40(teleconverter = true, standaloneMakerVideo = false, logicalMaker = false))
+        assertFalse(applyHasselbladMode40(teleconverter = false, standaloneMakerVideo = false, logicalMaker = false))
+    }
+
+    @Test
+    fun `standalone TC original zoom keeps the converter multiplied value`() {
+        assertEquals(4.286f * 2f, originalZoomHintForStandaloneTc(2f, 4.286f), 0f)
+        assertEquals(4.286f, originalZoomHintForStandaloneTc(0.5f, 4.286f), 0f)
+    }
+
+    @Test
+    fun `standalone maker profile admission requires debug and a maker profile`() {
+        assertTrue(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = false, probeEnabled = true).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.PMA110, debugBuild = true, probeEnabled = false).makerLogStandaloneTeleVideo)
+        assertFalse(debugStandaloneMakerVideoProfile(DeviceProfile.GENERIC, debugBuild = true, probeEnabled = true).makerLogStandaloneTeleVideo)
+    }
 
     @Test
     fun `a soft extended-raster rejection is one refusal instead of another session shape`() {

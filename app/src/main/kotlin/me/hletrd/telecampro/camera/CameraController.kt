@@ -165,6 +165,8 @@ class CameraController internal constructor(
     private var makerLogRequested = false
     private var makerLogRefused = false
     private var makerLogAttempt = false
+    // Standalone TC + 0x80b5 route truth, retained after refusal so the retry cannot fall back in place.
+    @Volatile private var standaloneMakerVideo = false
     private var pendingMakerConfirmation: ((CameraCaptureSession, TotalCaptureResult) -> Unit)? = null
     @Volatile var makerLogConfigured = false
         private set
@@ -435,10 +437,9 @@ class CameraController internal constructor(
     // Face Priority AF frames (FacePriority.kt). Camera-thread callback, at most 10 Hz and only on a
     // MATERIAL change ([FaceReadoutGate]); an empty frame clears the overlay. Never drives a request.
     @Volatile var onFaces: ((FaceFrame) -> Unit)? = null
-    // Maker TC route refused (MakerLog.kt): the maker attempt failed or never applied on the logical
-    // camera, and this controller will NOT configure an ordinary session there. The engine marks the
-    // maker route refused and reopens the ordinary TC route (standalone host tele + 0x80b4). Camera
-    // thread; identity-gated by the engine like every controller callback.
+    // Maker TC route refused (MakerLog.kt): the maker attempt failed or never applied. Neither the
+    // logical nor the standalone probe controller falls back in place; the Engine latches the refusal
+    // and reopens ordinary standalone TC + S-Log3. Camera thread, identity-gated by the Engine.
     @Volatile var onMakerLogTeleRefused: (() -> Unit)? = null
     // Extended-raster configure refusal (ExtendedVideoRasterRecovery.kt): route, accepted stream size
     // and the open's optics generation. The configure gate makes this exactly once per rejected open;
@@ -474,6 +475,12 @@ class CameraController internal constructor(
         // accepted REC packet consume this same object rather than re-reading independent Engine fields.
         videoSessionIntent: VideoSessionIntent?,
         makerLog: Boolean = false,
+        // Engine-resolved standalone TC + 0x80b5 route truth. No default: forgetting it would either
+        // refuse the probe or, worse, pair standalone camera truth with the logical maker session.
+        standaloneMakerVideo: Boolean,
+        // The exact debug/profile admission resolved by the Engine, kept separate from route truth so
+        // an unadmitted standalone request cannot configure 0x80b5 merely by naming that route.
+        standaloneMakerVideoAdmitted: Boolean,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
         // its TC-local zoom on the logical wire — the main lens, not the tele the converter is on.
@@ -527,8 +534,17 @@ class CameraController internal constructor(
                 if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
             )
         }
-        this.makerLogRequested = makerLog && deviceProfile.makerLogPipeline && caps.isLogicalMultiCamera &&
-            this.selection.physicalId == null && !caps.lensFacingFront
+        this.standaloneMakerVideo = standaloneMakerVideo
+        this.makerLogRequested = makerLogRequestAdmitted(
+            makerLog = makerLog,
+            makerPipeline = deviceProfile.makerLogPipeline,
+            logicalMultiCamera = caps.isLogicalMultiCamera,
+            standaloneMakerVideo = standaloneMakerVideo,
+            standaloneVideoAdmitted = standaloneMakerVideoAdmitted,
+            teleconverterMode = teleconverterMode,
+            physicalId = this.selection.physicalId,
+            lensFacingFront = caps.lensFacingFront,
+        )
         this.makerLogRefused = false
         this.makerLogConfigured = false
         this.makerLogFailed = false
@@ -855,7 +871,12 @@ class CameraController internal constructor(
         // fills with `pro_video_log_mode`, and the measured maker session is stock PRO VIDEO, which
         // never carries the Hasselblad mode. The converter's TC context was not demonstrated to change
         // anything even on its own route (FIELD_CHECKS C3).
-        if (teleconverterMode && makerTeleRoute == null) {
+        if (applyHasselbladMode40(
+                teleconverter = teleconverterMode,
+                standaloneMakerVideo = standaloneMakerVideo,
+                logicalMaker = makerTeleRoute != null,
+            )
+        ) {
             runCatching {
                 set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
             }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
@@ -874,8 +895,10 @@ class CameraController internal constructor(
         val route = makerTeleRoute
         return if (route != null) {
             makerTeleWireZoom(ratio, route)
+        } else if (teleconverterMode) {
+            originalZoomHintForStandaloneTc(ratio, teleconverterMagnification)
         } else {
-            ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
+            ratio.coerceAtLeast(1f)
         }
     }
 
@@ -1020,15 +1043,12 @@ class CameraController internal constructor(
         makerLogConfigured = false
         val useMakerLog = makerLogRequested && !makerLogRefused
         makerLogAttempt = useMakerLog
-        // The maker TC route never falls back IN PLACE. Every maker refusal below (configure failure,
-        // session-parameter rejection, a source that never confirms) re-enters here with the maker
-        // half refused; the non-TC route then rebuilds an ordinary session on this same logical
-        // camera, but with the converter declared that would be the logical camera's own lens choice
-        // plus the TC ladder's 0x80b4 on a camera it was never measured on. The ordinary TC route is a
-        // different camera, so hand the decision back to the engine and configure nothing.
-        if (makerTeleRoute != null && !useMakerLog) {
+        // Neither maker TC route falls back IN PLACE. The logical route must move to the standalone
+        // host; the standalone 0x80b5 probe must move to ordinary TC + S-Log3 with the refusal latched
+        // in the Engine, not silently retry 0x80b4 on this same controller and leave maker intent live.
+        if ((makerTeleRoute != null || standaloneMakerVideo) && !useMakerLog) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                android.util.Log.i(TAG, "MakerTele: maker session refused on the logical camera; reopening the ordinary TC route")
+                android.util.Log.i(TAG, "MakerTele: maker session refused; reopening the ordinary standalone TC route")
             }
             onMakerLogTeleRefused?.invoke()
             return
@@ -1194,7 +1214,8 @@ class CameraController internal constructor(
             // EIS; device-measured 2026-10-26, RAW-only on camera 4 under 0x80b4 failed configure
             // with -38 and left the camera device in its ERROR state.
             vendorOperationMode = plan.useVendorOperationMode && rawBridge == null,
-            makerLogOperationMode = useMakerLog,
+            standaloneMakerVideoOperationMode = useMakerLog && standaloneMakerVideo,
+            makerLogOperationMode = useMakerLog && !standaloneMakerVideo,
             outputs = configs,
             callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
@@ -1242,7 +1263,11 @@ class CameraController internal constructor(
                             if (closed || callbackSession !== s) return@confirmation
                             val confirmed = runCatching {
                                 makerLogSourceConfirmed(
-                                    MakerLogProtocol.SESSION_TYPE,
+                                    sessionTypeFor(
+                                        standaloneMakerVideo = standaloneMakerVideo,
+                                        logicalMaker = !standaloneMakerVideo,
+                                        ordinaryTc = false,
+                                    ),
                                     result.get(CaptureResult.Key(MakerLogProtocol.OPERATION_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.LOG_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.GAMMA_INFO, IntArray::class.java)),
@@ -1488,11 +1513,16 @@ class CameraController internal constructor(
     @android.annotation.SuppressLint("WrongConstant")
     private fun regularOrVendorSessionConfiguration(
         vendorOperationMode: Boolean,
+        standaloneMakerVideoOperationMode: Boolean,
         makerLogOperationMode: Boolean,
         outputs: List<OutputConfiguration>,
         callback: CameraCaptureSession.StateCallback,
     ): SessionConfiguration = SessionConfiguration(
-        if (makerLogOperationMode) MakerLogProtocol.SESSION_TYPE else if (vendorOperationMode) VENDOR_TC_SESSION_TYPE else SessionConfiguration.SESSION_REGULAR,
+        sessionTypeFor(
+            standaloneMakerVideo = standaloneMakerVideoOperationMode,
+            logicalMaker = makerLogOperationMode,
+            ordinaryTc = vendorOperationMode,
+        ),
         outputs,
         executor,
         callback,
@@ -3617,8 +3647,6 @@ class CameraController internal constructor(
         // native acquisition; it is never interpreted as permission to reopen over the old graph.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
-        // The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type.
-        const val VENDOR_TC_SESSION_TYPE = 0x80b4
         // White-balance observation pacing (observeWhiteBalance): the route transform is a slow
         // fact, read once a second; while priming, 10 Hz so the AUTO detour ends within a frame
         // or three of AWB converging. A route that never converges stops priming after 3 s.

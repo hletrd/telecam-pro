@@ -19,6 +19,8 @@ import android.os.Bundle
  * settings)" switch, measured on the POCO X3 GT 2026-10-27), and a wanted STATE rather than a toggle
  * keeps a repeated or late command from inverting the take. `--ez debug_shutter true` presses the
  * Photo shutter once, for the same devices' still profiling.
+ * `--ez debug_standalone_maker_video true|false` explicitly enters or leaves the standalone TC
+ * 0x80b5 maker-video measurement probe; it has no release or GENERIC-profile effect.
  */
 class DebugCameraControlActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,11 +47,14 @@ internal fun debugCameraControlCommand(intent: Intent?): DebugCameraControlComma
     val record = intent.takeIf { it.hasExtra(EXTRA_DEBUG_RECORD) }
         ?.getBooleanExtra(EXTRA_DEBUG_RECORD, false)
     val shutterPresses = if (intent.getBooleanExtra(EXTRA_DEBUG_SHUTTER, false)) 1 else 0
+    val standaloneMakerVideo = intent.takeIf { it.hasExtra(EXTRA_DEBUG_STANDALONE_MAKER_VIDEO) }
+        ?.getBooleanExtra(EXTRA_DEBUG_STANDALONE_MAKER_VIDEO, false)
     return DebugCameraControlCommand(
         zslSpike = zslSpike,
         zoomRatio = zoom,
         record = record,
         shutterPresses = shutterPresses,
+        standaloneMakerVideo = standaloneMakerVideo,
     )
 }
 
@@ -57,3 +62,4 @@ internal const val EXTRA_ZSL_SPIKE = "zsl_spike"
 internal const val EXTRA_DEBUG_ZOOM = "debug_zoom"
 internal const val EXTRA_DEBUG_RECORD = "debug_record"
 internal const val EXTRA_DEBUG_SHUTTER = "debug_shutter"
+internal const val EXTRA_DEBUG_STANDALONE_MAKER_VIDEO = "debug_standalone_maker_video"

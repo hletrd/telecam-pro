@@ -10,8 +10,10 @@ internal data class DebugCameraControlCommand(
     val record: Boolean? = null,
     /** Photo shutter presses still to deliver. A COUNT, so presses merged before consumption all fire. */
     val shutterPresses: Int = 0,
+    /** Explicitly enter/leave the standalone TC + 0x80b5 maker-video probe; null leaves admission alone. */
+    val standaloneMakerVideo: Boolean? = null,
 ) {
-    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0
+    val isEmpty: Boolean get() = zslSpike == null && zoomRatio == null && record == null && shutterPresses == 0 && standaloneMakerVideo == null
 
     fun mergedWith(newer: DebugCameraControlCommand): DebugCameraControlCommand =
         DebugCameraControlCommand(
@@ -19,6 +21,7 @@ internal data class DebugCameraControlCommand(
             zoomRatio = newer.zoomRatio ?: zoomRatio,
             record = newer.record ?: record,
             shutterPresses = shutterPresses + newer.shutterPresses,
+            standaloneMakerVideo = newer.standaloneMakerVideo ?: standaloneMakerVideo,
         )
 }
 

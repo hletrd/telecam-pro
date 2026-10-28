@@ -67,6 +67,7 @@ class DebugCameraControlSecurityTest {
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
             .putExtra(EXTRA_DEBUG_RECORD, true)
             .putExtra(EXTRA_DEBUG_SHUTTER, true)
+            .putExtra(EXTRA_DEBUG_STANDALONE_MAKER_VIDEO, true)
         val controller = Robolectric.buildActivity(DebugCameraControlActivity::class.java, intent)
             .create()
         try {
@@ -76,8 +77,15 @@ class DebugCameraControlSecurityTest {
             assertFalse(started.hasExtra(EXTRA_DEBUG_ZOOM))
             assertFalse(started.hasExtra(EXTRA_DEBUG_RECORD))
             assertFalse(started.hasExtra(EXTRA_DEBUG_SHUTTER))
+            assertFalse(started.hasExtra(EXTRA_DEBUG_STANDALONE_MAKER_VIDEO))
             assertEquals(
-                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f, record = true, shutterPresses = 1),
+                DebugCameraControlCommand(
+                    zslSpike = true,
+                    zoomRatio = 3f,
+                    record = true,
+                    shutterPresses = 1,
+                    standaloneMakerVideo = true,
+                ),
                 DebugCameraControlMailbox.consume(),
             )
         } finally {
@@ -95,6 +103,7 @@ class DebugCameraControlSecurityTest {
             .putExtra(EXTRA_DEBUG_ZOOM, 3f)
             .putExtra(EXTRA_DEBUG_RECORD, true)
             .putExtra(EXTRA_DEBUG_SHUTTER, true)
+            .putExtra(EXTRA_DEBUG_STANDALONE_MAKER_VIDEO, true)
         val controller = Robolectric.buildActivity(MainActivity::class.java, intent).create()
         try {
             val vm = ViewModelProvider(controller.get())[me.hletrd.telecampro.ui.CameraViewModel::class.java]
@@ -126,6 +135,17 @@ class DebugCameraControlSecurityTest {
             DebugCameraControlMailbox.consume(),
         )
         assertFalse(DebugCameraControlMailbox.publish(DebugCameraControlCommand()))
+    }
+
+    @Test fun `standalone maker probe commands merge by newest wanted state`() {
+        DebugCameraControlMailbox.consume()
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(standaloneMakerVideo = true)))
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(zoomRatio = 3f)))
+        assertTrue(DebugCameraControlMailbox.publish(DebugCameraControlCommand(standaloneMakerVideo = false)))
+        assertEquals(
+            DebugCameraControlCommand(zoomRatio = 3f, standaloneMakerVideo = false),
+            DebugCameraControlMailbox.consume(),
+        )
     }
 
     @Test fun `shutter presses merged before consumption all fire`() {

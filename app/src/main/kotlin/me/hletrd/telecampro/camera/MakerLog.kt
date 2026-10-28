@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.camera
 
+import android.hardware.camera2.params.SessionConfiguration
+
 /** Measured OPPO PRO VIDEO protocol. These are names, never firmware-specific numeric tag IDs. */
 internal object MakerLogProtocol {
     const val SESSION_TYPE = 0x830b
@@ -20,8 +22,23 @@ internal object MakerLogProtocol {
     const val CAPTURE_TYPE = "com.oplus.burst.capture.type"
 }
 
+/** Ordinary standalone TC session type; separate from both maker protocols. */
+internal const val VENDOR_TC_SESSION_TYPE = 0x80b4
+
 /** Standalone TC maker VIDEO session type. Reserved for an explicitly admitted debug probe. */
 internal const val MAKER_VIDEO_SESSION_TYPE = 0x80b5
+
+/** One operation-mode choice; maker modes take precedence over the ordinary TC ladder rung. */
+internal fun sessionTypeFor(
+    standaloneMakerVideo: Boolean,
+    logicalMaker: Boolean,
+    ordinaryTc: Boolean,
+): Int = when {
+    standaloneMakerVideo -> MAKER_VIDEO_SESSION_TYPE
+    logicalMaker -> MakerLogProtocol.SESSION_TYPE
+    ordinaryTc -> VENDOR_TC_SESSION_TYPE
+    else -> SessionConfiguration.SESSION_REGULAR
+}
 
 /**
  * PMA110's measured [DeviceProfile.makerLogTeleMaxWireZoom], device-measured in THIS route on
@@ -63,6 +80,50 @@ fun makerLogOffered(
 
 internal fun makerLogSessionWanted(video: Boolean, transfer: ColorTransfer, offered: Boolean): Boolean =
     video && transfer == ColorTransfer.MAKER_LOG && offered
+
+/**
+ * Defensive open-time admission. The established logical route is unchanged; the standalone route
+ * additionally requires TC, standalone (non-logical) camera truth and its own explicit admission.
+ */
+internal fun makerLogRequestAdmitted(
+    makerLog: Boolean,
+    makerPipeline: Boolean,
+    logicalMultiCamera: Boolean,
+    standaloneMakerVideo: Boolean,
+    standaloneVideoAdmitted: Boolean,
+    teleconverterMode: Boolean,
+    physicalId: String?,
+    lensFacingFront: Boolean,
+): Boolean {
+    if (!makerLog || !makerPipeline || physicalId != null || lensFacingFront) return false
+    return if (standaloneMakerVideo) {
+        standaloneVideoAdmitted && teleconverterMode && !logicalMultiCamera
+    } else {
+        logicalMultiCamera
+    }
+}
+
+/** Mode 40 shares its key with pro_video_log_mode, so neither maker route may write it. */
+internal fun applyHasselbladMode40(
+    teleconverter: Boolean,
+    standaloneMakerVideo: Boolean,
+    logicalMaker: Boolean,
+): Boolean = teleconverter && !standaloneMakerVideo && !logicalMaker
+
+/** Standalone TC zoom is already lens-local; only the converter's magnification multiplies it. */
+internal fun originalZoomHintForStandaloneTc(localZoom: Float, magnification: Float): Float =
+    localZoom.coerceAtLeast(1f) * magnification
+
+/** The probe can augment a maker-capable profile in debug only; release and GENERIC stay byte-identical. */
+internal fun debugStandaloneMakerVideoProfile(
+    profile: DeviceProfile,
+    debugBuild: Boolean,
+    probeEnabled: Boolean,
+): DeviceProfile = if (debugBuild && probeEnabled && profile.makerLogPipeline) {
+    profile.copy(makerLogStandaloneTeleVideo = true)
+} else {
+    profile
+}
 
 /** The session carrying TC + maker Log. The standalone choice needs separate measured admission. */
 enum class MakerTeleSessionRoute { LOGICAL_MAKER, STANDALONE_VIDEO }

@@ -329,6 +329,7 @@ class MainActivity : ComponentActivity() {
         if (!BuildConfig.DEBUG) return
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
+        command.standaloneMakerVideo?.let(vm::debugSetStandaloneMakerVideoProbe)
         command.zoomRatio?.let(vm::debugApplyZoom)
         command.record?.let(vm::debugSetRecording)
         repeat(command.shutterPresses) { vm.debugPressShutter() }

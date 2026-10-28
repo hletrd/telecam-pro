@@ -1556,9 +1556,15 @@ class CameraEngine internal constructor(
     // Measured per-device HAL quirks (multi-device 2026-08-01). Resolved once; PMA110 keeps every
     // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
     private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
+    // Explicit DUMP-protected debug probe only. activeDeviceProfile() re-checks BuildConfig.DEBUG and
+    // maker-profile support on every read, so release and GENERIC never inherit this admission.
+    @Volatile private var debugStandaloneMakerVideoProbe = false
 
-    private fun activeDeviceProfile(): DeviceProfile =
-        deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL)
+    private fun activeDeviceProfile(): DeviceProfile = debugStandaloneMakerVideoProfile(
+        deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL),
+        debugBuild = me.hletrd.telecampro.BuildConfig.DEBUG,
+        probeEnabled = debugStandaloneMakerVideoProbe,
+    )
 
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
         runCatching {
@@ -1632,13 +1638,17 @@ class CameraEngine internal constructor(
         )?.also { makerTeleHostCache[logicalId] = it }
 
     /**
-     * The camera the TELE route opens: the standalone host tele (the ordinary TC route, 0x80b4), or
-     * the LOGICAL camera when the converter rides the maker pipeline ([makerLogTeleRouteWanted]). One
-     * resolver for every door (startup/reopen, mode, lens/TC, recall), so none of them can reopen the
-     * other TC route's camera.
+     * The camera the TELE route opens: the standalone host tele (ordinary TC, or the explicitly
+     * admitted standalone 0x80b5 probe), or the LOGICAL camera on the measured maker TC route.
+     * One resolver for every door (startup/reopen, mode, lens/TC, recall), so none of them can reopen
+     * the other TC route's camera.
      */
     private fun teleRouteCameraId(): String? =
-        if (makerLogTeleRouteWanted()) cachedLogicalBack() else cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+        if (makerLogTeleRouteWanted() && makerTeleSessionRouteWanted() == MakerTeleSessionRoute.LOGICAL_MAKER) {
+            cachedLogicalBack()
+        } else {
+            cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+        }
 
     @Volatile private var lensInventoryPublished = false
 
@@ -3053,6 +3063,8 @@ class CameraEngine internal constructor(
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                 makerLog = makerLogWanted() && !makerLogRefused,
+                standaloneMakerVideo = standaloneMakerTeleVideoFor(sel),
+                standaloneMakerVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
                 // Re-derived from the installed selection: [caps] already carry this route's span.
                 makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
@@ -3702,6 +3714,21 @@ class CameraEngine internal constructor(
             return
         }
         ctrl.setZslSpike(enabled)
+    }
+
+    /** Explicitly retries or leaves the standalone 0x80b5 probe through one ordinary optics reopen. */
+    internal fun setStandaloneMakerVideoProbe(enabled: Boolean) {
+        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
+        synchronized(this) {
+            if (debugStandaloneMakerVideoProbe == enabled || recorder != null) return
+            debugStandaloneMakerVideoProbe = enabled
+            // A debug toggle is an explicit route selection, so it may retry a refused probe.
+            makerLogRefused = false
+            overrideId = userCameraPin
+        }
+        // Bare-door token: a preflight failure keeps the newest debug intent and uses bounded retry,
+        // never a rollback to the old accepted camera while this new admission remains installed.
+        reopenForSession()
     }
 
     fun setAeMetering(enabled: Boolean) {
@@ -5693,6 +5720,8 @@ class CameraEngine internal constructor(
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                     makerLog = makerLogWanted() && !makerLogRefused,
+                    standaloneMakerVideo = standaloneMakerTeleVideoFor(sel),
+                    standaloneMakerVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
                     makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     videoSessionIntent = openVideoIntent,
@@ -5908,10 +5937,17 @@ class CameraEngine internal constructor(
         // proven rear standalone path.
         if (activeCameraRoute == CameraRoute.FRONT) return cachedFront()
         if (activeCameraRoute == CameraRoute.EXTERNAL) return cachedExternal()
-        // TC + maker Log opens the LOGICAL camera (teleRouteCameraId); every other TC case keeps
-        // the historical fall-through onto the TELE3X band's standalone id, byte-identical.
+        // TC + maker Log follows makerTeleSessionRouteWanted(): the measured logical route, or the
+        // standalone host for the debug 0x80b5 probe. Every other TC case keeps the historical
+        // fall-through onto the TELE3X band's standalone id, byte-identical.
         val id = overrideId
-            ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else if (makerLogTeleRouteWanted()) cachedLogicalBack() else null)
+            ?: (if (!teleconverterMode) {
+                resolveNonTeleId(lensChoice)
+            } else if (makerLogTeleRouteWanted() && makerTeleSessionRouteWanted() == MakerTeleSessionRoute.LOGICAL_MAKER) {
+                cachedLogicalBack()
+            } else {
+                null
+            })
             ?: cachedIdForFocal(lensChoice.targetEquivMm)
             ?: return null
         return CameraSelector2.select(manager, id)
@@ -9347,13 +9383,24 @@ class CameraEngine internal constructor(
     ))
 
     /**
-     * Whether TELE opens the LOGICAL camera for the maker pipeline instead of the standalone host
-     * tele: the converter is on, maker Log is wanted on this route, and no refusal is latched (a
-     * refused or failed maker attempt reopens the ordinary TC route — standalone host + 0x80b4 —
-     * until the operator selects Log (maker) again, which clears [makerLogRefused]).
+     * Whether a maker TC session is wanted and unrefused. [makerTeleSessionRouteWanted] then chooses
+     * the measured logical route or the explicitly admitted standalone 0x80b5 probe; a refusal moves
+     * TELE back to ordinary standalone TC + 0x80b4 until an explicit selection retries maker Log.
      */
     private fun makerLogTeleRouteWanted(): Boolean =
         teleconverterMode && makerLogWanted() && !makerLogRefused
+
+    private fun makerTeleSessionRouteWanted(): MakerTeleSessionRoute = makerTeleSessionRoute(
+        tc = teleconverterMode,
+        maker = makerLogTeleRouteWanted(),
+        standaloneVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
+    )
+
+    /** Accepted open-route truth for the standalone 0x80b5 probe, never inferred from maker intent alone. */
+    private fun standaloneMakerTeleVideoFor(sel: TeleSelection): Boolean {
+        if (makerTeleSessionRouteWanted() != MakerTeleSessionRoute.STANDALONE_VIDEO) return false
+        return sel.physicalId == null && sel.logicalId == cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+    }
 
     /**
      * The maker TC route for an opened selection, or null: TC on and the selection IS the logical back
@@ -9366,7 +9413,8 @@ class CameraEngine internal constructor(
         if (!teleconverterMode || activeCameraRoute != CameraRoute.BACK) return null
         if (sel.physicalId != null || sel.logicalId != cachedLogicalBack()) return null
         val ceiling = deviceProfile.makerLogTeleMaxWireZoom ?: return null
-        return MakerTeleRoute(
+        return makerTeleLogicalWireRoute(
+            sessionRoute = MakerTeleSessionRoute.LOGICAL_MAKER,
             wireZoomScale = makerTeleWireZoomScale(acceptedOpticalPresets, zoomPresets),
             wireZoomCeiling = ceiling,
             hostPhysicalId = cachedMakerTeleHost(sel.logicalId),
