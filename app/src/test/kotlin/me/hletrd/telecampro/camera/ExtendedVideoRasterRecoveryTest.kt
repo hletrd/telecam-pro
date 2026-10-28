@@ -591,6 +591,79 @@ class ExtendedVideoRasterRecoveryTest {
         assertFalse(latch.blocks(routeKey, eightK, ColorTransfer.MAKER_LOG))
     }
 
+    @Test
+    fun `identical retry supersedes queued no capped recovery as one extended open`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "started", true)
+        setField(fixture.engine, "overrideId", "0")
+        setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK)))
+        val manager = app.getSystemService(CameraManager::class.java)
+        val characteristics = ShadowCameraCharacteristics.newCameraCharacteristics()
+        shadowOf(characteristics).set(
+            CameraCharacteristics.LENS_FACING,
+            CameraCharacteristics.LENS_FACING_BACK,
+        )
+        shadowOf(manager).addCamera("0", characteristics)
+        val texture = android.graphics.SurfaceTexture(0)
+        val surface = android.view.Surface(texture)
+        val owners = checkNotNull(field(fixture.engine, "glOwners"))
+        val gl = checkNotNull(owners.javaClass.getDeclaredMethod("current").invoke(owners))
+        setField(gl, "inputSurface", surface)
+        val executor = field(fixture.engine, "setupExecutor") as java.util.concurrent.ExecutorService
+        val blockerStarted = CountDownLatch(1)
+        val releaseBlocker = CountDownLatch(1)
+        executor.execute {
+            blockerStarted.countDown()
+            releaseBlocker.await(5, TimeUnit.SECONDS)
+        }
+        assertTrue(blockerStarted.await(5, TimeUnit.SECONDS))
+        val controllerSequence = CameraController::class.java.getDeclaredField("controllerSequence")
+            .apply { isAccessible = true }
+            .get(null) as AtomicLong
+        val controllersBefore = controllerSequence.get()
+        try {
+            fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
+            val recoveryQueued = CountDownLatch(1)
+            val recoveryThread = java.util.concurrent.atomic.AtomicReference<Thread>()
+            fixture.engine.onCameraReadyChange = {
+                if (!it.ready) {
+                    recoveryThread.set(Thread.currentThread())
+                    recoveryQueued.countDown()
+                }
+            }
+            assertTrue("the delayed no-capped recovery must be queued behind the setup blocker", recoveryQueued.await(3, TimeUnit.SECONDS))
+            val scheduler = recoveryThread.get()
+            val recoveryQueueDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (scheduler.state == Thread.State.RUNNABLE && System.nanoTime() < recoveryQueueDeadline) Thread.yield()
+            assertTrue(
+                "the scheduler must finish queueing recovery before the explicit retry",
+                scheduler.state == Thread.State.WAITING || scheduler.state == Thread.State.TIMED_WAITING,
+            )
+
+            assertTrue(fixture.engine.setVideoResolution(eightK))
+            assertTrue("a repeated tap during the retry open is also accepted as inert", fixture.engine.setVideoResolution(eightK))
+            releaseBlocker.countDown()
+            val drained = CountDownLatch(1)
+            executor.execute { drained.countDown() }
+            assertTrue(drained.await(5, TimeUnit.SECONDS))
+            val reconfiguresDrained = CountDownLatch(1)
+            executor.execute { reconfiguresDrained.countDown() }
+            assertTrue(reconfiguresDrained.await(5, TimeUnit.SECONDS))
+
+            assertEquals(
+                "exactly one retry controller may be constructed",
+                1L,
+                controllerSequence.get() - controllersBefore,
+            )
+        } finally {
+            releaseBlocker.countDown()
+            setField(fixture.engine, "started", false)
+            setField(fixture.engine, "controller", CameraController(app))
+            surface.release()
+            texture.release()
+        }
+    }
+
     private fun failExtendedAttempt(fixture: Fixture) {
         setField(fixture.engine, "requestedVideoSize", eightK)
         setField(fixture.engine, "requestedVideoSizeDirectWrites", 2L)

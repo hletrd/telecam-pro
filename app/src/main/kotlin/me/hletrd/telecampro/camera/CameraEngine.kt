@@ -4575,9 +4575,10 @@ class CameraEngine internal constructor(
                 invalidateCameraReady()
                 onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
                 // No accepted/capped answer is still an owned recovery failure, never a terminal
-                // park. The latched graph prevents another extended attempt; preflight then takes
-                // the post-mutation bounded retry/terminal path if no recordable graph exists.
-                scheduleCameraRecovery(refused)
+                // park. Freeze this post-mutation generation: an identical explicit retry takes a
+                // newer one, so delayed recovery can never resolve the retry's cleared latch and
+                // become a second extended attempt.
+                scheduleCameraRecoveryOwned(refused, currentOpticsReconfiguration())
                 return
             }
             val effects = extendedRasterRecoveryEffectsLocked()
@@ -4596,6 +4597,13 @@ class CameraEngine internal constructor(
      * delay so the provider has time to restart. The attempt counter resets on the next successful open.
      */
     private fun scheduleCameraRecovery(failedController: CameraController) {
+        scheduleCameraRecoveryOwned(failedController, frozenRecovery = null)
+    }
+
+    private fun scheduleCameraRecoveryOwned(
+        failedController: CameraController,
+        frozenRecovery: OpticsReconfiguration?,
+    ) {
         if (!nativeAcquisitionMayProceed() || !started || paused || recorder != null) return
         if (controller !== failedController) return
         synchronized(this) {
@@ -4625,7 +4633,11 @@ class CameraEngine internal constructor(
             timelapseScheduler.schedule(
                 {
                     if (nativeAcquisitionMayProceed() && controller === failedController) {
-                        reopenForSession(failedController)
+                        if (frozenRecovery == null) {
+                            reopenForSession(failedController)
+                        } else {
+                            reopenForSession(failedController, frozenRecovery)
+                        }
                     }
                 },
                 CAMERA_RECOVERY_DELAY_MS,
@@ -4908,8 +4920,11 @@ class CameraEngine internal constructor(
             // A no-capped-answer refusal leaves the requested/delivered size unchanged and no live
             // accepted session. Its identical explicit retry is still NEW work. Before the refusal
             // (and during the retry's own open) the latch is clear, so an in-flight same-size tap
-            // remains ownership-inert exactly as before.
+            // remains ownership-inert exactly as before. A retry owns a NEW optics generation:
+            // no-capped recovery froze the old one, so its queued/started reopen cannot also resolve
+            // this cleared latch and construct a second extended session.
             val retryNeedsAttempt = retryRefusedGraph && acceptedCameraSession == null
+            if (retryNeedsAttempt) beginOpticsTransaction { }
             val apply = currentIntent != null &&
                 (videoSize != s || videoFrameRate != currentIntent.frameRate || retryNeedsAttempt)
             if (apply) {
