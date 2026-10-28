@@ -1,11 +1,13 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.graphics.SurfaceTexture
 import android.media.MediaFormat
 import android.os.Looper
 import android.util.Range
 import android.util.Rational
 import android.util.Size
+import android.view.Surface
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.hletrd.telecampro.camera.CameraController
@@ -218,6 +220,46 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(listOf(uhd), viewModel.state.value.caps?.availableVideoSizes)
         assertEquals(uhd, viewModel.state.value.videoResolution)
         assertEquals("raw camera truth is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
+    }
+
+    @Test
+    fun `post-mutation recovery with no resolvable video intent enters bounded retry`() {
+        val (_, engine) = createAccepted(CaptureMode.VIDEO)
+        val eightK = Size(7680, 4320)
+        val raw = rollbackCaps().copy(availableVideoSizes = listOf(eightK))
+        setField(engine, "selection", TeleSelection("test", null, 23f))
+        setField(engine, "caps", raw)
+        setField(engine, "requestedVideoSize", null)
+        setField(engine, "started", true)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = field(engine, "capsCache")
+            as java.util.concurrent.ConcurrentHashMap<String, CameraCaps>
+        rawCache["test:null"] = raw
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val owners = checkNotNull(field(engine, "glOwners"))
+        val gl = checkNotNull(owners.javaClass.getDeclaredMethod("current").invoke(owners))
+        setField(gl, "inputSurface", surface)
+        val retrying = CountDownLatch(1)
+        engine.onStatus = {
+            if (it?.message == CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING) retrying.countDown()
+        }
+        val desired = CameraEngine::class.java.getDeclaredMethod("currentOpticsReconfiguration")
+            .apply { isAccessible = true }.invoke(engine)
+        val transaction = checkNotNull(field(checkNotNull(desired), "transaction"))
+
+        CameraEngine::class.java.getDeclaredMethod(
+            "reconfigureCamera",
+            String::class.java,
+            transaction.javaClass,
+            Boolean::class.javaPrimitiveType,
+            Class.forName("me.hletrd.telecampro.camera.StartupTrace\$Owner"),
+        ).apply { isAccessible = true }.invoke(engine, "test", transaction, false, null)
+
+        assertTrue("the unresolved intent must reach BARE_RETRY", retrying.await(2, TimeUnit.SECONDS))
+        setField(engine, "started", false)
+        surface.release()
+        texture.release()
     }
 
     @Test

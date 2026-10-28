@@ -306,8 +306,9 @@ class ExtendedVideoRasterRecoveryTest {
     }
 
     @Test
-    fun `a refusal with no admissible smaller raster enters owned failure recovery`() {
+    fun `a refusal with no capped answer enters owned bounded recovery`() {
         val fixture = extendedFixture()
+        setField(fixture.engine, "started", true)
         setField(fixture.engine, "caps", ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK)))
         var status: CameraStatus? = null
         fixture.engine.onStatus = { status = it }
@@ -315,6 +316,30 @@ class ExtendedVideoRasterRecoveryTest {
         fixture.controller.onExtendedVideoRasterRefused?.invoke(routeKey, eightK, 7L)
 
         assertEquals(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE, status?.message)
+        assertEquals(1, field(fixture.engine, "cameraRecoveryAttempts"))
+        assertTrue(field(fixture.engine, "recoveryScheduledFor") === fixture.controller)
+        setField(fixture.engine, "controller", CameraController(app))
+    }
+
+    @Test
+    fun `a fatal refusal with no capped answer still schedules owned recovery`() {
+        val fixture = extendedFixture()
+        setField(fixture.engine, "started", true)
+        setField(fixture.engine, "caps", null)
+
+        handleFailure(
+            fixture.engine,
+            fixture.controller,
+            ExtendedVideoRasterConfigureFatalException(
+                routeKey,
+                eightK,
+                IllegalStateException("device fatal"),
+            ),
+        )
+
+        assertEquals(1, field(fixture.engine, "cameraRecoveryAttempts"))
+        assertTrue(field(fixture.engine, "recoveryScheduledFor") === fixture.controller)
+        setField(fixture.engine, "controller", CameraController(app))
     }
 
     @Test

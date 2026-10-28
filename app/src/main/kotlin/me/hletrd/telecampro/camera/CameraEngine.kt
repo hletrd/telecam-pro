@@ -4382,7 +4382,6 @@ class CameraEngine internal constructor(
         }
         if (extendedRecoveryUnavailable) {
             onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
-            return
         }
         extendedRecoveryEffects?.let {
             publishExtendedRasterRecoveryEffectsIfCurrent(failedController, it, glOwners.current())
@@ -4564,6 +4563,10 @@ class CameraEngine internal constructor(
             if (!applyExtendedRasterRecoveryLocked()) {
                 invalidateCameraReady()
                 onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                // No accepted/capped answer is still an owned recovery failure, never a terminal
+                // park. The latched graph prevents another extended attempt; preflight then takes
+                // the post-mutation bounded retry/terminal path if no recordable graph exists.
+                scheduleCameraRecovery(refused)
                 return
             }
             val effects = extendedRasterRecoveryEffectsLocked()
@@ -5495,8 +5498,15 @@ class CameraEngine internal constructor(
                         cameraSessionGeneration.get(),
                     )
                 } else {
-                    startupTraceOwnership.revoke(startupTraceOwner)
-                    onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+                    // A post-mutation recovery token cannot restore the rejected session. Its
+                    // unresolved intent follows the same bounded retry/terminal owner as every
+                    // other bare preflight failure instead of parking Not-Ready after one status.
+                    handlePreflightFailure(
+                        transaction,
+                        recoverColdPreflight,
+                        invalidateForPreflight(),
+                        startupTraceOwner,
+                    )
                 }
                 return@execute
             }
