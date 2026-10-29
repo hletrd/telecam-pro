@@ -1801,6 +1801,19 @@ coverage 99.83%, all 204 + 21 + 195 Python tests, 168 documentation checks and `
 Evidence: `.context/tc-maker-stabilization-2026-10-28/final-admission/` (APK/install hashes, preview,
 30× and recording screenshots, metadata dump, logcat, clip, frame, ffprobe and decode result).
 
+**Actual Log pixels versus Rec.709 (2026-10-29).** A same-scene Rec.709 control on the admitted APK,
+with no ISO/WB adjustment, is 2160×3840 HEVC Main / `yuv420p`, BT.709 limited, 1349 frames /
+44.966667 s, and decodes cleanly. Raw 3-second luma frames compare O-Log2's actual 10-bit codes with
+the Rec.709 8-bit codes scaled ×4 only to share an axis (no fitted exposure or colour transform).
+Full-frame O-Log2 p1/p5/p10/p50 are **194/196/197/202**, versus **0/4/4/8** for Rec.709; the upper
+dark region's p1/p50/p90 are **195/202/208**, versus **4/8/16**. O-Log2 therefore has a clearly
+lifted black and compressed shadow response in the FILE, not merely a gamma-tag echo or flat preview.
+Its full-frame standard deviation is 50.787 versus 64.561, and the power-strip region's is 9.854
+versus 13.415. The O-Log2 frame carries **707 distinct Y10 levels** (minimum 186, maximum 894), with
+**75.0375%** of samples having nonzero low two bits; Rec.709 has 256 levels. This closes the actual-
+profile/black-level and real-ten-bit requirements. Pixel statistics and raw frames:
+`.context/tc-maker-stabilization-2026-10-28/final-admission/pixel-log/`.
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)

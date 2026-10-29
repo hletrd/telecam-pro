@@ -1114,7 +1114,9 @@ On exact PMA110, TC + Log (maker) opens the standalone tele camera with video op
 `0x80b5`; CPH2841, PMA120 and GENERIC keep the pre-existing routes below. The accepted path carries
 the real OEM O-Log2/HDR/DRC/WB pipeline and has mounted-converter simultaneous-operation evidence
 (FIELD_CHECKS A30): real 1024-entry gamma, HDR mode 1, unequal DRC/conversion gains, upright preview
-and file, TC-local zoom/readouts and clean 2160×3840 Main10. Its five-trial residual displacement
+and file, TC-local zoom/readouts and clean 2160×3840 Main10. A Rec.709 pixel A/B proves the actual
+O-Log2 profile rather than a tag echo: full-frame p1/p50 luma 194/202 versus 0/8 (Rec.709 ×4), with
+707 distinct Y10 levels and 75.04% nonzero low two bits. Its five-trial residual displacement
 stayed below stock TC in every trial, with no directional-blur vote; the routes used different actual
 ISO values, so this is strong measured stabilization, NOT an exposure-matched ranking or a numeric
 4.3× OIS-gain claim. Five aligned stock-versus-standalone colour windows matched within 0.82 decoded

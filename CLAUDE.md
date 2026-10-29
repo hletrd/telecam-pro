@@ -1195,7 +1195,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   mode offers 1080p/4K at 30/60 fps and no O-Log2). Standalone camera 4 + VIDEO 0x80b5 carries the real
   OEM pipeline and measured strong stabilization. Mounted-converter evidence proves simultaneous
   operation: accepted real 1024-entry OEM gamma, HDRFeatureMode 1, unequal DRC/conversion gains,
-  upright preview and Main10 file, TC-local zoom/readouts and clean decode. The owner narrowed the
+  upright preview and Main10 file, TC-local zoom/readouts and clean decode. A same-scene Rec.709 A/B
+  proves the actual profile in the FILE: O-Log2 full-frame p1/p50 luma is 194/202 versus 0/8 (Rec.709
+  scaled ×4), with 707 distinct Y10 levels and 75.04% nonzero low two bits — lifted black and real
+  ten-bit codes, not a gamma-tag echo (FIELD_CHECKS A30). The owner narrowed the
   completion scope to that simultaneous-operation proof; no further stock bare-Log ISO/EV matching is
   required. `makerLogStandaloneTeleVideo` is therefore `true` ONLY on exact PMA110; CPH2841, PMA120
   and GENERIC stay false. The five-trial A/B used actual ISO 12414 / 12700 / 9100 across stock /
