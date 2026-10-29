@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-29):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-29):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -1681,7 +1681,7 @@ Local evidence:
 `.context/8k-oem-2026-10-28/evidence/` (immutable build receipts, full logcat, dumpsys, UI state and
 installed-hash checks).
 
-### A30. Standalone TC OEM Log 0x80b5 — ◐ HALF DONE 2026-10-29 (matched-ISO protocol pending)
+### A30. Standalone TC OEM Log 0x80b5 — ✅ PASSED 2026-10-29 (simultaneous-operation scope)
 
 PMA110 `PMA110_17.0.0.106(CN01)`, unlocked `172.30.50.127:44715`, immutable debug
 `69687fb3173e-5c90fd61` (source `69687fb3`; APK SHA-256
@@ -1773,12 +1773,15 @@ with a clean full decode and upright 3-second frame. TC-local 30× produced wire
 ordinary `0x80b4` with the truthful `SLOG3` readout and upright preview; restoring 30 fps returned to
 `0x80b5`. No fatal fault was induced.
 
-**Protocol demotion (2026-10-29):** the product-path take above proves route mechanics only, not
-promotion eligibility. Stock TC / ordinary TC / standalone OEM used ISO 12414 / 12700 / 9100, so the
-required one-fixed-ISO A/B was not satisfied; within-route static controls cannot waive that mismatch.
-`makerLogStandaloneTeleVideo` is therefore `false` again on every profile. The accepted rotation and
-colour evidence is retained, the debug standalone command/admission stays removed, and a new matched
-set is required before any production claim. Sensor mode remains **50**, not 48. Local evidence:
+**Scope resolution and production admission (2026-10-29).** The owner narrowed completion to proof of
+simultaneous TC + OEM Log operation, explicitly without another stock bare-Log exposure-matching or
+stabilization protocol. The retained mounted-converter evidence above satisfies that scope, so exact
+PMA110 sets `makerLogStandaloneTeleVideo=true`; CPH2841, PMA120 and GENERIC remain false. The earlier
+one-fixed-ISO demotion is therefore historical, not an open admission gate. The five trials still used
+actual ISO 12414 / 12700 / 9100 across stock TC / ordinary TC / standalone OEM: they demonstrate the
+measured strong stabilization and no directional-blur vote, but are NOT an exposure-matched ranking
+and assign no numeric 4.3× OIS gain. Colour parity is limited to the five aligned windows of the
+measured scene, not a universal gamut certificate. Sensor mode remains **50**, not 48. Local evidence:
 `.context/tc-maker-stabilization-2026-10-28/task4/` (route/matrix logs, all 20 trial clips, static
 controls, analyzer JSON, stock colour parity, product watch/clip and installed hashes).
 

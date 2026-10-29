@@ -1191,12 +1191,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   product take has no PTS interval above 33.367 ms. The previous SDK-only/impossibility claims
   were disproved; neither this result nor the gain ratio is a certified total dynamic-range test.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
-  work with it too"; standalone route measured, production admission pending matched ISO).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
+  work with it too"; exact-PMA110 standalone production route proven 2026-10-29).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
   mode offers 1080p/4K at 30/60 fps and no O-Log2). Standalone camera 4 + VIDEO 0x80b5 carries the real
-  OEM pipeline and measured strong stabilization, but `makerLogStandaloneTeleVideo` is `false` on every
-  profile: the first A/B used ISO 12414 / 12700 / 9100 across stock / ordinary / standalone, so it did
-  not satisfy the required one-fixed-ISO protocol and cannot promote the route. The accepted rotation
-  and colour evidence is retained (FIELD_CHECKS A30); a new matched set is required. Earlier route facts
+  OEM pipeline and measured strong stabilization. Mounted-converter evidence proves simultaneous
+  operation: accepted real 1024-entry OEM gamma, HDRFeatureMode 1, unequal DRC/conversion gains,
+  upright preview and Main10 file, TC-local zoom/readouts and clean decode. The owner narrowed the
+  completion scope to that simultaneous-operation proof; no further stock bare-Log ISO/EV matching is
+  required. `makerLogStandaloneTeleVideo` is therefore `true` ONLY on exact PMA110; CPH2841, PMA120
+  and GENERIC stay false. The five-trial A/B used actual ISO 12414 / 12700 / 9100 across stock /
+  ordinary / standalone, so it is NOT an exposure-matched ranking or a numeric 4.3× OIS-gain claim;
+  standalone |dx| remained below stock TC in every trial with no directional-blur vote. Five aligned
+  colour windows matched within 0.816 decoded RGB codes for that scene only (FIELD_CHECKS A30).
+  Sensor mode 50 is accepted; mode 48 is not required. Earlier route facts
   remain: standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. The
   standalone OEM source's pixels arrive 180° pre-rotated while its SurfaceTexture matrix is identical
   to ordinary 0x80b4, so accepted source truth (`sourcePreRotated`, never maker intent) removes the

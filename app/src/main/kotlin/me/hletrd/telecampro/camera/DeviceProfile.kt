@@ -104,10 +104,10 @@ internal data class DeviceProfile(
     /** Direct Camera2 extension route measured on PMA110: factory O-Log2 in a 10-bit PRIVATE stream. */
     val makerLogPipeline: Boolean = false,
     /**
-     * Standalone TC + 0x80b5 maker VIDEO. The accepted-source rotation and colour paths are measured,
-     * but production admission is CLOSED pending one fixed ISO across every route in the five-trial
-     * stabilization A/B (the first set used 12414/12700/9100 and therefore did not satisfy it).
-     * CPH2841, PMA120 and GENERIC remain false.
+     * Standalone TC + 0x80b5 maker VIDEO, validated on exact PMA110 with the physical converter:
+     * accepted OEM gamma/HDR/DRC, upright preview and Main10 file, TC-local zoom/readouts, and the
+     * measured converter-strength stabilization. Production admission follows that simultaneous-
+     * operation proof (FIELD_CHECKS A30), not stock bare-Log exposure parity. Siblings stay false.
      */
     val makerLogStandaloneTeleVideo: Boolean = false,
     /**
@@ -170,6 +170,7 @@ internal data class DeviceProfile(
             nativeLogCurveMeasured = true,
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
+            makerLogStandaloneTeleVideo = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             previewStabilizedStillMaxExposureNs = PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS,
@@ -189,11 +190,12 @@ internal data class DeviceProfile(
         /**
          * Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL].
          * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
-         * the WHOLE PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT
-         * measured there. A CPH2841 report that contradicts a flag reopens that flag for it.
+         * the PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT measured
+         * there — except the exact-PMA110 standalone maker-video admission below. A CPH2841 report
+         * that contradicts another flag reopens that flag for it.
          *
          * PMA120, the Find X9 Ultra satellite edition (same device codename and camera hardware),
-         * follows the same owner reasoning as CPH2841 (2026-10-15) and takes the whole PMA110 set.
+         * follows the same owner reasoning and the same standalone-admission exception.
          *
          * Every other model takes [GENERIC]: no PMA110 HAL workaround is extended to hardware it was
          * never measured on. (The per-phone maker-log table that mapped OPPO / OnePlus / Xiaomi models
