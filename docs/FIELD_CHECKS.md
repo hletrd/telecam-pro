@@ -1785,6 +1785,22 @@ measured scene, not a universal gamut certificate. Sensor mode remains **50**, n
 `.context/tc-maker-stabilization-2026-10-28/task4/` (route/matrix logs, all 20 trial clips, static
 controls, analyzer JSON, stock colour parity, product watch/clip and installed hashes).
 
+**Final admitted build (2026-10-29).** Immutable debug `88044e8accbb-2b9c201c` (source `88044e8a`;
+APK SHA-256 `427435762300e4a5e8a317d35a77d9ad1c974c548027b9fdfe02b310a364c9c4`, matching the
+installed path before and after the take) opens camera 4 at fallback 0 with `makerLog=true`, operation
+mode 32949, a real 1024-entry gamma beginning `754 982 1225 …`, `HDRFeatureMode=1`, DRC 5.99999714,
+unequal conversion gains 6.02352953 / 1.0 and sensor mode 50. Accepted source truth changes the
+preview rotation to `sourcePreRotated=true previewDeg=0`; the same mounted-converter field is upright
+in the preview and recorded frame. The standalone rail/readout checks show 13× / 30× / 60×, with the
+30× pill reading `30.0×`; 13× was restored. `VID_TELECAM_F1_1793279404414_0000000001.mp4` is
+2160×3840 HEVC Main10, BT.2020 full / `bt2020-10`, AAC-LC 48 kHz stereo, **1053 frames / 35.100 s** at
+exactly 30 fps, every PTS delta 0.033333–0.033334 s, with a clean full decode and
+`EncoderClock placed=1046 dropped=0 filled=7`. No S-Log3/logical fallback, lens switch or unhandled
+camera error occurred. The full clean host gate passed, including debug build/tests/lint, Partition-A
+coverage 99.83%, all 204 + 21 + 195 Python tests, 168 documentation checks and `:app:lintRelease`.
+Evidence: `.context/tc-maker-stabilization-2026-10-28/final-admission/` (APK/install hashes, preview,
+30× and recording screenshots, metadata dump, logcat, clip, frame, ffprobe and decode result).
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)
