@@ -1904,6 +1904,14 @@ source; the immutable-build check is below).**
   sessions), so the file is the evidence. Stock 8K runs under the OSENSE_ACTION_CAMERA_VIDEO_8K30 perf
   scene; a third-party session gets the generic one.
 
+**Immutable build:** debug `63ffcedffef1-15587f25` (commit `63ffcedf`, APK SHA-256
+`e1a1fbae27b556fa4c0b28547cec100652dd66fe84912b66cdd76453ccf2ea97`; installed path hash matched),
+battery already 45.3 °C and charging. 1× take: 437 frames / 14.57 s, 118.7 Mb/s, `placed=428
+dropped=0 filled=9` (longest fill burst 83 ms), `audio0-video0=621.1ms` anchored. TELE: `operation_mode:
+0x80a9`, sensor mode 44, `Session configured (oem8k=true, camera=4, vstab=1)`, 447 frames / 14.90 s,
+`placed=440 dropped=0 filled=7`, `audio0-video0=676.5ms` anchored. Both files HEVC Main 4320×7680
+BT.709 30/1 with no PTS gap above 33.334 ms.
+
 **Open:** a lit, textured scene on each lens (8K detail against the 4K route, colour against the 4K
 SDR route, upright orientation in an external player — every frame so far was dim: Y 22–35); a clap
 take for A/V sync; a soak unplugged from a cool start, and what the holes are.
