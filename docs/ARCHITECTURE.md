@@ -1163,7 +1163,7 @@ ColorOS 16 shares the named configure-stage protocol but this integration is dev
 See CLAUDE.md's stock Log entry for the service/presence trap and evidence limits.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
-**Maker vendor seam — EXPERIMENTAL vivo (2026-10-28, UNMEASURED; FIELD_CHECKS A29).** The maker
+**Maker vendor seam — EXPERIMENTAL vivo (2026-10-28, UNMEASURED; FIELD_CHECKS A31).** The maker
 pipeline is per vendor: `resolveMakerLogVendor` answers OPPO wherever `DeviceProfile.makerLogPipeline`
 holds (PMA110 byte-identical, whatever else is set), else vivo only when the persisted Setup opt-in
 (`SettingsStore.vivoMakerLogExperimental`, default OFF, outside the remembered blob and MR banks) is
