@@ -1079,16 +1079,22 @@ internal fun logEiOffsetSettingVisible(transfer: ColorTransfer, nativeLogCurveSu
 internal val LOG_EI_OFFSET_OPTIONS: List<Int> = (0..me.hletrd.telecampro.camera.LOG_EI_OFFSET_MAX_STOPS).toList()
 
 /**
- * Caption for a session with NO still reader. Only an ACCEPTED HLG10 session earns the trade wording.
+ * Caption for a session with NO still reader. Only an ACCEPTED HLG10 or OEM 8K session earns the
+ * trade wording.
  *
- * Keyed on accepted-session truth ([me.hletrd.telecampro.camera.PhotoSessionOutputs.hlg]), not the
- * request (AGG3-17, closing the AGG2-35 residual): a 10-bit request that fell down the ladder to the
- * 8-bit preview-only rung has neither stills nor 10 bits, so it reads "Still capture unavailable".
+ * Keyed on accepted-session truth ([me.hletrd.telecampro.camera.PhotoSessionOutputs.hlg] /
+ * [me.hletrd.telecampro.camera.PhotoSessionOutputs.oemEightK]), not the request (AGG3-17, closing the
+ * AGG2-35 residual): a 10-bit request that fell down the ladder to the 8-bit preview-only rung has
+ * neither stills nor 10 bits, so it reads "Still capture unavailable"; a refused 8K raster reopens
+ * smaller with its still readers, so it never reaches this caption at all.
  */
 @StringRes
-internal fun noStillOutputCaption(hlgSessionAccepted: Boolean): Int =
-    if (hlgSessionAccepted) R.string.output_10_bit_video_stills_off
-    else R.string.status_still_capture_unavailable
+internal fun noStillOutputCaption(hlgSessionAccepted: Boolean, eightKSessionAccepted: Boolean = false): Int =
+    when {
+        hlgSessionAccepted -> R.string.output_10_bit_video_stills_off
+        eightKSessionAccepted -> R.string.output_8k_video_stills_off
+        else -> R.string.status_still_capture_unavailable
+    }
 
 /**
  * HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously.

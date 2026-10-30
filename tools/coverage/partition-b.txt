@@ -29,6 +29,10 @@ me/hletrd/telecampro/camera/VendorTagInspector$*
 # stubs throw on the host). Its gate, tenBitNativeLogBridgeSupported, stays a host-tested A function.
 me/hletrd/telecampro/camera/P010InputBridge
 me/hletrd/telecampro/camera/P010InputBridge$*
+# OEM 8K bridge: the same ImageReader/ImageWriter/HandlerThread/Handler glue as the P010 bridge.
+# Its route/packet gates and size injection (OemEightKVideo.kt) stay host-tested A functions.
+me/hletrd/telecampro/camera/OemEightKInputBridge
+me/hletrd/telecampro/camera/OemEightKInputBridge$*
 # EXPERIMENTAL RAW log developer: ImageReader/HandlerThread/EGL14/GLES30 glue, RawDevelopProfile's
 # CameraCharacteristics reads, and the CaptureRequest.Builder key helper (android.jar stubs throw on
 # the host). Its colour/geometry math (RawDevelopMath) and gates (RawLog) stay host-tested A.

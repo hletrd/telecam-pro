@@ -237,6 +237,13 @@ data class CameraCaps(
      */
     val extendedVideoSizeRates: Map<Size, Set<Double>> = emptyMap(),
     /**
+     * Camera-side parent rates for an extended size the camera does NOT advertise but a
+     * [DeviceProfile] measured (PMA110's OEM 8K raster, [withOemEightKVideoSize]). The encoder
+     * projection only tries these rates for that size; an advertised size has no entry and keeps the
+     * ordinary fixed-range gate. Route-projection only, never part of the camera cache.
+     */
+    val measuredExtendedVideoFps: Map<Size, Set<Int>> = emptyMap(),
+    /**
      * TONEMAP_AVAILABLE_TONE_MAP_MODES. Read for the native-log decision
      * ([nativeLogCurveSupported]): a caller-programmed CONTRAST_CURVE is what lets the ISP encode
      * S-Log3 itself instead of its stock tone curve. Every PMA110 camera (HAL 0–5) advertises

@@ -111,6 +111,17 @@ internal data class DeviceProfile(
      */
     val makerLogStandaloneTeleVideo: Boolean = false,
     /**
+     * The OEM 8K video route ([OEM_8K_VIDEO_SIZE], OemEightKVideo.kt): standalone main or 3× tele,
+     * vendor operation mode 0x80A9, the SDK/extension tag pair on session parameters and every
+     * repeating request, and the 8K stream bridged into GL through a non-flexible PRIVATE reader
+     * ([OemEightKInputBridge]). MEASURED on exact PMA110 (ColorOS 17, 2026-10-30/31, FIELD_CHECKS
+     * A32): real sensor modes (main 29, tele resIdx 44), 29.85 / 29.89 fps sustained into 8-bit HEVC
+     * through GL, 150 s with no dropped frame; without the tag pair the HAL upscales a binned mode.
+     * The raster is unadvertised, so nothing but this flag can offer it. Siblings stay false: the
+     * route is undefined HAL behaviour on firmware it was not measured on.
+     */
+    val oemEightKVideo: Boolean = false,
+    /**
      * The highest LOGICAL-camera wire zoom measured to stay on the converter's host tele, or null
      * where Gamma = Log (maker) has not been measured with the teleconverter (it is then not offered
      * while TC is on). The maker pipeline only exists on the logical camera, which crosses physical
@@ -171,6 +182,7 @@ internal data class DeviceProfile(
             tenBitNativeLogBridge = true,
             makerLogPipeline = true,
             makerLogStandaloneTeleVideo = true,
+            oemEightKVideo = true,
             makerLogTeleMaxWireZoom = MAKER_LOG_TELE_MAX_WIRE_ZOOM_PMA110,
             awbPresetModesIgnored = true,
             previewStabilizedStillMaxExposureNs = PMA110_PREVIEW_STABILIZED_STILL_MAX_EXPOSURE_NS,
@@ -191,11 +203,11 @@ internal data class DeviceProfile(
          * Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL].
          * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
          * the PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT measured
-         * there — except the exact-PMA110 standalone maker-video admission below. A CPH2841 report
-         * that contradicts another flag reopens that flag for it.
+         * there — except the exact-PMA110 standalone maker-video and OEM 8K admissions below. A
+         * CPH2841 report that contradicts another flag reopens that flag for it.
          *
          * PMA120, the Find X9 Ultra satellite edition (same device codename and camera hardware),
-         * follows the same owner reasoning and the same standalone-admission exception.
+         * follows the same owner reasoning and the same two exact-PMA110 exceptions.
          *
          * Every other model takes [GENERIC]: no PMA110 HAL workaround is extended to hardware it was
          * never measured on. (The per-phone maker-log table that mapped OPPO / OnePlus / Xiaomi models
@@ -205,7 +217,7 @@ internal data class DeviceProfile(
             val key = model?.trim()?.uppercase()
             return when (key) {
                 "PMA110" -> PMA110
-                "CPH2841", "PMA120" -> PMA110.copy(makerLogStandaloneTeleVideo = false)
+                "CPH2841", "PMA120" -> PMA110.copy(makerLogStandaloneTeleVideo = false, oemEightKVideo = false)
                 else -> GENERIC
             }
         }

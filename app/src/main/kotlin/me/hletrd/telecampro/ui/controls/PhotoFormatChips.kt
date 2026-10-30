@@ -113,7 +113,7 @@ internal fun photoFormatChipModel(
         reconfiguring -> R.string.status_camera_reconfiguring.takeIf { reopenInProgress }
         // Same reasoning as the Ready-publication status: in VIDEO an accepted 10-bit session drops
         // the still readers by design, so the row says what it BOUGHT rather than what it lost.
-        !outputs.processed && !rawAvailable -> noStillOutputCaption(outputs.hlg)
+        !outputs.processed && !rawAvailable -> noStillOutputCaption(outputs.hlg, outputs.oemEightK)
         // BEFORE the "switching" line: on a route that structurally cannot carry RAW (front, hi-res,
         // 10-bit video) nothing is switching. The DNG request itself survives as intent.
         // AGG5-52 / UX5-4: this branch runs only on a READY session, where the route move DNG

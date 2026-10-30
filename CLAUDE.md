@@ -934,14 +934,33 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   APV into MP4 errored the encoder mid-drain (device-verified). That is a DEVICE/firmware observation,
   not a platform rule — the official MediaMuxer reference lists APV-in-MP4 as supported from SDK 36 —
   so the exclusion stays, and re-enabling APV on any device needs a measurement first. Resolutions come from
-  the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
-  wide; PMA110 tops out at 4K UHD in the UI. A rate is offered when the camera advertises its
+  the selected camera's `StreamConfigurationMap`, with the automatic selector capped at 3840 pixels
+  wide; PMA110's one larger size is the profile-admitted OEM 8K raster (next bullet), offered only
+  as an explicit pick. A rate is offered when the camera advertises its
   rounded parent as a FIXED AE target-fps range AND (on spec devices) the selected size's advertised
   SurfaceTexture minimum frame duration sustains it (2026-10-05; until then only the defensive 8K
   ≤30 cap looked at size, although this bullet claimed size gating). PMA110's TELE advertises a
   33.3 ms minimum for 3840×2160 yet records ~60 fps there, so `DeviceProfile.
   videoMinFrameDurationsUnderstated` skips that gate on the PMA110 profile. High-speed 120 fps is
   excluded because its constrained session crashes this HAL.
+- **8K is PMA110's OEM 0x80A9 route, Rec. 709 / HEVC only, through GL (device-measured 2026-10-30/31;
+  `OemEightKVideo.kt`, `docs/FIELD_CHECKS.md` A32).** No camera advertises 7680×4320. The HAL's own
+  8K usecase is operation mode 0x80A9 ("8K SINGLE 30FPS EIS2 VIDEO") on the standalone main (2) and
+  3× tele (4) only, and it needs `com.oplus.is.sdk.camera.package = [1]` + `com.oplus.is.from.extension
+  = 1` on the session parameters AND every repeating request: without the pair the same session
+  configures, records and plays, but the sensor runs a binned mode (main 47, tele resIdx 42) and the
+  file is UPSCALED — check the sensor mode (`ProcessSensorModeUpdate`: main 29 = 8160×4592, tele 44 =
+  8192×4608), never the file size. The stream must reach a NON-flexible consumer or cameraserver
+  rounds it to an advertised size: `OemEightKInputBridge` is a PRIVATE reader with GPU_SAMPLED_IMAGE |
+  VIDEO_ENCODE usage, bridged into the GL input like the P010 bridge, as the session's ONLY output.
+  Three traps the app absorbs: (1) that encoder usage makes cameraserver stamp the frames MONOTONIC,
+  so the output takes `TIMESTAMP_BASE_SENSOR` (the first take logged audio0−video0 = 67 432 s, the
+  phone's time in suspend, and lost the A/V anchor); (2) the HAL reports its 8K EIS ON whatever is
+  requested, so the request asks ON and the OSD names Standard; (3) ten-bit does not hold at 8K
+  (Main10 27.5–28.6 fps, the encoder's RGBA→10-bit conversion; the P010 EGL target is refused), so
+  HLG/Log/RAW Log/OEM Log stay 4K and a Gamma change drops the delivered size to 4K while keeping the
+  8K request. The earlier OEM-Log 8K attempt (0x830b, A29) crashed the HAL: a different graph. Exact
+  PMA110 only (`DeviceProfile.oemEightKVideo`); no stills in the session.
 - **The SENSOR cannot be asked for an NTSC rate, so the FILE is retimed onto the exact grid (device-
   measured 2026-10-05 and 2026-10-26; grid since 2026-10-26, owner decision "29.97, 59.94 and 23.976
   are the standard").** Encoder PTS USED TO BE the SurfaceTexture sensor timestamps, so a file's frame

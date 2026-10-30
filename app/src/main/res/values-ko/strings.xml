@@ -345,6 +345,7 @@
     <string name="output_raw_unavailable">RAW 사용 불가</string>
     <string name="output_processed_unavailable_dng_only">HEIF/JPEG 사용 불가 · DNG만 가능</string>
     <string name="output_10_bit_video_stills_off">10비트 동영상 · 사진 꺼짐</string>
+    <string name="output_8k_video_stills_off">8K 동영상 · 사진 꺼짐</string>
     <string name="stabilization_ois_eis">OIS+EIS</string>
     <string name="stabilization_ois_eis_crop">OIS+EIS · 크롭</string>
     <string name="video_tone_mapped_source">카메라에서 이미 톤 매핑된 스트림에 적용됩니다</string>

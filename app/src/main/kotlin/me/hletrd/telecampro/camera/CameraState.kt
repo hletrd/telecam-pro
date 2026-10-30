@@ -1744,6 +1744,12 @@ data class PhotoSessionOutputs(
      * readouts name it "experimental, unverified" and GL applies no inverse curve to it.
      */
     val makerLogVendor: MakerLogVendor? = null,
+    /**
+     * True only when the ACCEPTED session is the OEM 8K route (OemEightKVideo.kt): its one stream is
+     * the 8K bridge, so it carries no still reader by construction and the Output row names that
+     * trade, like an accepted HLG10 session.
+     */
+    val oemEightK: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }
@@ -2289,6 +2295,14 @@ data class CameraUiState(
     val waveformData: WaveformData? = null,
 ) {
     val reviewOpen: Boolean get() = openReview != null
+
+    /**
+     * The stabilization the OSD names: the operator's setting, except on an accepted OEM 8K session,
+     * whose 0x80A9 graph reports its EIS ON whatever the request (OemEightKVideo.kt) — the tag must
+     * not claim STAB OFF over a stabilized file.
+     */
+    val osdVideoStabMode: VideoStabMode
+        get() = if (photoSessionOutputs.oemEightK) VideoStabMode.STANDARD else videoStabMode
 
     /**
      * Whether "Camera reconfiguring…" is TRUE now (AGG6-9) — the one predicate the Output row, the

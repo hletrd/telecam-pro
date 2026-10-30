@@ -249,12 +249,17 @@ class CameraController internal constructor(
     private var rawLogStream: android.util.Size? = null
     private var rawLogBridge: RawLogBridge? = null
     private var rawLogRefused = false
+    // OEM 8K video (OemEightKVideo.kt): the Engine's per-open route answer, re-checked in open()
+    // against the profile and the intent's raster. Its session is built by [configureOemEightK], never
+    // by the ladder, and its bridge is per configure attempt like the P010 one.
+    private var oemEightKVideo = false
+    private var oemEightKBridge: OemEightKInputBridge? = null
     // The RAW log session's gyro EIS (RawLog.kt RawEisConfig), null = off. Written by the engine from
     // any thread (synchronously, so the next configure sees it), read on the camera thread.
     @Volatile private var rawEis: RawEisConfig? = null
-    // The surface the CURRENT session's repeating request targets: the RAW log bridge's RAW reader or
-    // the P010 bridge's reader when one configured, else the GL input Surface itself. Camera-thread
-    // confined.
+    // The surface the CURRENT session's repeating request targets: the RAW log bridge's RAW reader,
+    // the P010 bridge's or the OEM 8K bridge's reader when one configured, else the GL input Surface
+    // itself. Camera-thread confined.
     private var cameraOutputSurface: Surface? = null
     // Log EI offset (NativeLogCurve.kt): the curve for the ACHIEVED factor the repeating request's
     // wire carries, rebuilt only when that factor moves (camera-thread confined). k = 1 reuses
@@ -496,6 +501,10 @@ class CameraController internal constructor(
         // The exact debug/profile admission resolved by the Engine, kept separate from route truth so
         // an unadmitted standalone request cannot configure 0x80b5 merely by naming that route.
         standaloneMakerVideoAdmitted: Boolean,
+        // Engine-resolved OEM 8K route truth ([oemEightKSessionWanted]). No default, the route-term
+        // rule: an open path that forgot it would put the unadvertised raster on the ordinary ladder,
+        // where cameraserver rounds it to an advertised size or the HAL upscales a binned mode.
+        oemEightKVideo: Boolean,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
         // its TC-local zoom on the logical wire — the main lens, not the tele the converter is on.
@@ -586,6 +595,11 @@ class CameraController internal constructor(
         this.extendedVideoRasterSize = intentToOpen?.streamSize?.takeIf {
             requiresExtendedVideoProof(it.width, it.height)
         }
+        // Re-checked here, like the maker admission: the profile, a standalone back camera, and the
+        // intent actually resolved onto the OEM raster (a fallback size never takes the 8K session).
+        this.oemEightKVideo = oemEightKVideo && deviceProfile.oemEightKVideo &&
+            intentToOpen?.streamSize == OEM_8K_VIDEO_SIZE && this.selection.physicalId == null &&
+            !caps.lensFacingFront && !this.makerLogRequested && highSpeedFps == 0
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -778,6 +792,9 @@ class CameraController internal constructor(
         // published to let the EIS subtract it. With OIS off the EIS model is exact.
         if (rawLogBridge != null && rawEis != null) {
             CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        } else if (oemEightKVideo) {
+            // 0x80A9 runs its own 8K EIS and reports it ON whatever is requested.
+            OEM_8K_VIDEO_STAB_MODE
         } else {
             videoStabHalMode
         }
@@ -853,6 +870,15 @@ class CameraController internal constructor(
         return makerTeleRoute?.let { route -> makerTeleWireZoom(local, route) } ?: local
     }
 
+    /**
+     * The OEM 8K tag pair (OemEightKVideo.kt), on the session parameters AND every repeating request:
+     * the measured probe carried both, and without them the same 0x80A9 session upscales a binned mode.
+     */
+    private fun CaptureRequest.Builder.applyOemEightKParameters() {
+        set(CaptureRequest.Key(MakerLogProtocol.SDK_PACKAGE, ByteArray::class.java), byteArrayOf(1))
+        set(CaptureRequest.Key(MakerLogProtocol.FROM_EXTENSION, Int::class.javaObjectType), 1)
+    }
+
     /** OEM session protocol; every key is repeated on the recording request. */
     private fun CaptureRequest.Builder.applyMakerLogParameters() {
         set(CaptureRequest.Key(MakerLogProtocol.SDK_PACKAGE, ByteArray::class.java), byteArrayOf(1))
@@ -914,6 +940,9 @@ class CameraController internal constructor(
     private fun CaptureRequest.Builder.applyTeleconverterHints() {
         // Measured-on-PMA110 vendor request hints stay off any other vendor's HAL (DeviceProfile).
         if (!deviceProfile.vendorOplusRequestHints) return
+        // Nor on the OEM 8K session: its measured requests carried only the SDK/extension pair, and
+        // `com.oplus.camera.mode` is a mode selector the 0x80A9 graph was never measured with.
+        if (oemEightKVideo) return
         val effectiveZoom = originalZoomHint(controls.zoomRatio)
         // Not on the maker TC route: `com.oplus.camera.mode` is the SAME key the maker protocol
         // fills with `pro_video_log_mode`, and the measured maker session is stock PRO VIDEO, which
@@ -1082,10 +1111,14 @@ class CameraController internal constructor(
         // it before this attempt connects either a new bridge or the camera stream to that Surface.
         closeP010Bridge()
         closeRawLogBridge()
+        closeOemEightKBridge()
 
         // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
+        // The OEM 8K route is one measured graph, not a ladder: every refusal goes through the
+        // extended-raster door (a smaller raster, same Gamma, reopened by the Engine).
+        if (oemEightKVideo) { configureOemEightK(camera, preview, onReady, onError); return }
 
         pendingMakerConfirmation = null
         vivoEchoProbe = null
@@ -1577,6 +1610,137 @@ class CameraController internal constructor(
         owned.close()
     }
 
+    /** Releases the current attempt's [OemEightKInputBridge], if any. Camera-thread confined. */
+    private fun closeOemEightKBridge() {
+        val owned = oemEightKBridge ?: return
+        oemEightKBridge = null
+        cameraOutputSurface = null
+        owned.close()
+    }
+
+    /**
+     * The OEM 8K session (OemEightKVideo.kt): standalone main/tele, operation mode 0x80A9, the 8K bridge
+     * as its ONLY output, and the SDK/extension pair on the session parameters and the repeating
+     * request. There is no separate preview stream: GL draws the finder from the same texture, and the
+     * HAL ran its real 8K mode at full rate with that one stream (a CPU-read YUV second stream was
+     * classified as a ZSL snapshot stream and cost ~25 % of frames). Every refusal — bridge, session
+     * parameters, configure — goes through the extended-raster door, so the Engine reopens a smaller
+     * raster with the same Gamma; nothing falls back to the ordinary ladder AT 8K, where the raster
+     * would be rounded or upscaled from a binned mode while looking like success.
+     */
+    @android.annotation.SuppressLint("WrongConstant") // 0x80A9: the HAL's own 8K operation mode
+    private fun configureOemEightK(camera: CameraDevice, preview: Surface, onReady: Ready, onError: ErrorCb) {
+        pendingMakerConfirmation = null
+        vivoEchoProbe = null
+        makerLogConfigured = false
+        makerLogAttempt = false
+        val attemptToken = configureGate.begin()
+        val routeKey = rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode)
+        // Called only after this attempt's gate claim, exactly once.
+        fun refuse(failure: Throwable?, deviceFatal: Boolean = false) {
+            when (
+                val rejection = classifyExtendedVideoRasterConfigureRejection(
+                    routeKey = routeKey,
+                    extendedSize = extendedVideoRasterSize ?: OEM_8K_VIDEO_SIZE,
+                    opticsGeneration = diagnosticOpticsGeneration,
+                    failure = failure,
+                    deviceFatal = deviceFatal,
+                )
+            ) {
+                is ExtendedVideoRasterConfigureRejection.Soft -> onExtendedVideoRasterRefused?.invoke(
+                    rejection.routeKey,
+                    rejection.size,
+                    rejection.opticsGeneration,
+                )
+                is ExtendedVideoRasterConfigureRejection.Fatal -> onError.onError(rejection.failure)
+                null -> onError.onError(failure ?: IllegalStateException("OEM 8K session refused"))
+            }
+        }
+        val bridge = runCatching {
+            OemEightKInputBridge.create(preview, OEM_8K_VIDEO_SIZE.width, OEM_8K_VIDEO_SIZE.height)
+        }.getOrElse { failure ->
+            if (BuildConfig.DEBUG) Log.w(TAG, "OEM 8K bridge refused: ${failure.message}")
+            if (configureGate.claim(attemptToken)) refuse(failure)
+            return
+        }
+        oemEightKBridge = bridge
+        cameraOutputSurface = bridge.cameraSurface
+        wbShape = WbSessionShape.OEM_8K
+        wbPriming = false
+        // The SENSOR timestamp base, explicitly: the reader's VIDEO_ENCODE usage makes cameraserver
+        // treat it as an encoder consumer and stamp it CLOCK_MONOTONIC by default, while results, the
+        // audio anchor and the gyro log all run on the sensor's REALTIME clock (device-measured
+        // 2026-10-31: the first 8K take logged audio0-video0 = 67432 s — the phone's time in suspend —
+        // and the A/V anchor fell back to the unanchored timeline).
+        val outputConfig = OutputConfiguration(bridge.cameraSurface).apply {
+            setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_SENSOR)
+        }
+        val sessionConfig = SessionConfiguration(
+            OEM_8K_SESSION_TYPE,
+            listOf(outputConfig),
+            executor,
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) {
+                    if (closed) { runCatching { s.close() }; return }
+                    if (!configureGate.claim(attemptToken)) { runCatching { s.close() }; return }
+                    session = s
+                    StartupTrace.mark(startupTraceOwner, "onConfigured")
+                    hlgConfigured = false
+                    nativeLogConfigured = false
+                    tenBitNativeLogConfigured = false
+                    rawLogConfigured = false
+                    if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                        android.util.Log.i(TAG, "Session configured (oem8k=true, camera=${selection.logicalId}, vstab=${sessionVideoStabMode()})")
+                    }
+                    val deliverReady = { onReady.onReady(PhotoSessionOutputs(oemEightK = true)) }
+                    when (sessionStartDelivery(startPreview())) {
+                        SessionStartDelivery.READY -> realFrameReadyGate.arm(s, deliverReady)
+                        SessionStartDelivery.ERROR -> {
+                            realFrameReadyGate.cancel()
+                            onError.onError(IllegalStateException("repeating preview request failed"))
+                        }
+                    }
+                }
+                override fun onConfigureFailed(s: CameraCaptureSession) {
+                    if (closed) return
+                    if (!configureGate.claim(attemptToken)) return
+                    if (BuildConfig.DEBUG) Log.w(TAG, "OEM 8K session configure failed; reopening smaller")
+                    refuse(null)
+                }
+            },
+        )
+        // The tag pair is what selects the real sensor mode. A session configured without it records
+        // an upscaled binned mode that looks like success, so a parameter failure refuses 8K instead of
+        // falling back to a plain session the way the ladder's session parameters do.
+        val parameters = runCatching {
+            val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            sp.applyVideoStab()
+            sp.applyOemEightKParameters()
+            sessionConfig.setSessionParameters(sp.build())
+        }
+        parameters.exceptionOrNull()?.let { failure ->
+            if (configureGate.claim(attemptToken)) refuse(failure)
+            return
+        }
+        StartupTrace.mark(startupTraceOwner, "createCaptureSession")
+        val sessionAdmitted = runNativeAcquisition {
+            runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+                // Camera2 also posts onConfigureFailed for this attempt; the throw always runs first.
+                if (!configureGate.claim(attemptToken)) return@onFailure
+                Log.e(TAG, "createCaptureSession threw for the OEM 8K session: ${failure.message}")
+                refuse(failure, deviceFatal = configureFailureIsDeviceFatal(failure))
+            }
+        }
+        if (!sessionAdmitted) {
+            onError.onError(
+                NativeAcquisitionRefusedException(
+                    NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                    "Native acquisition refused before camera session",
+                ),
+            )
+        }
+    }
+
     /**
      * The regular-ladder [SessionConfiguration], with the WrongConstant suppression scoped to the
      * one value it is justified for (AGG4-81): TC mode passes the STOCK APP's vendor operation_mode
@@ -1772,7 +1936,9 @@ class CameraController internal constructor(
         ) != null
         var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
-            val builder = camera.createCaptureRequest(if (makerLogAttempt) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
+            // The maker and OEM 8K sessions repeat the RECORD template, as their measured graphs did.
+            val template = if (makerLogAttempt || oemEightKVideo) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW
+            val builder = camera.createCaptureRequest(template).apply {
                 // The RAW log or P010 bridge's reader when one configured, else the GL input Surface.
                 addTarget(cameraOutputSurface ?: preview)
                 // The RAW developer applies the frame's own lens-shading map (RAW is pre-shading).
@@ -1817,6 +1983,8 @@ class CameraController internal constructor(
                     // gains (Feature 2 = ThirdAPK). Keep configure-time and ordinary requests clean.
                     set(CaptureRequest.Key(MakerLogProtocol.CAPTURE_TYPE, Int::class.javaObjectType), 1)
                 }
+                // The cached fast-path builders ARE this builder, so zoom/sensor submits keep the pair.
+                if (oemEightKVideo) applyOemEightKParameters()
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
@@ -3626,6 +3794,7 @@ class CameraController internal constructor(
                         // the writer frees the GL input Surface for the next controller's producer.
                         releaseOwned { closeP010Bridge() }
                         releaseOwned { closeRawLogBridge() }
+                        releaseOwned { closeOemEightKBridge() }
                         session = null
                         device = null
                         jpegReader = null

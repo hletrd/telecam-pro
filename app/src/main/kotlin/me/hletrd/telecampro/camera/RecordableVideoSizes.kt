@@ -31,12 +31,16 @@ private fun projectedExtendedEncoderRates(
     sensorOrientation: Int,
     contentRotation: Int,
     bitrateLevel: BitrateLevel,
+    // [CameraCaps.measuredExtendedVideoFps] for [size]: an unadvertised raster tries only the
+    // parent rates measured on it. Null = an advertised size, every standard rate ≤30 is tried.
+    measuredCameraFps: Set<Int>?,
 ): Set<Double> {
     val (encoderWidth, encoderHeight) = RotationMath.encoderSurfaceSize(
         size.width, size.height, sensorOrientation, contentRotation,
     )
     return VideoFrameRate.entries.asSequence()
         .filter { it.fps <= 30 && !it.highSpeed }
+        .filter { measuredCameraFps == null || it.fps in measuredCameraFps }
         .filter { rate ->
             val nominalRate = rate.recordableCapabilityRate
             val format = ColorProfiles.videoFormat(
@@ -75,6 +79,7 @@ internal fun projectedLegalVideoRates(
     }
     val encoderRates = projectedExtendedEncoderRates(
         size, candidates, transfer, codec, sensorOrientation, contentRotation, bitrateLevel,
+        caps.measuredExtendedVideoFps[size],
     )
     if (encoderRates.isEmpty()) return emptyList()
     val projected = caps.copy(
@@ -119,6 +124,7 @@ fun projectRecordableVideoSizes(
             }
             val rates = projectedExtendedEncoderRates(
                 size, candidates, transfer, codec, raw.sensorOrientation, contentRotation, bitrateLevel,
+                raw.measuredExtendedVideoFps[size],
             )
             if (rates.isEmpty()) null else size to rates
         }.toMap()

@@ -721,10 +721,17 @@ class CameraEngine internal constructor(
     /** The transfer whose encoder format the next Video session would actually configure. */
     private fun videoProjectionTransfer(): ColorTransfer = if (videoMode) transfer else requestedVideoTransfer
 
-    /** Projects one route's RAW camera sizes through the active exact encoder/Gamma packet. */
+    /**
+     * Projects one route's RAW camera sizes through the active exact encoder/Gamma packet. On the
+     * OEM 8K route the unadvertised raster joins the RAW list first (OemEightKVideo.kt) and must then
+     * pass the same exact-encoder proof as any extended size.
+     */
     private fun projectRouteCaps(sel: TeleSelection, routeRaw: CameraCaps, raw: CameraCaps): CameraCaps =
         projectRecordableVideoSizes(
-            raw = routeRaw,
+            raw = withOemEightKVideoSize(
+                routeRaw,
+                oemEightKRouteAdmittedFor(sel) && oemEightKPacketAdmitted(videoProjectionTransfer(), videoCodec),
+            ),
             candidates = videoEncoderCandidates,
             rawLog = rawLogWanted(sel, raw),
             transfer = videoProjectionTransfer(),
@@ -3110,6 +3117,7 @@ class CameraEngine internal constructor(
                 makerLogVendor = makerLogVendorNow().takeIf { makerLogWanted() && !makerLogRefused },
                 standaloneMakerVideo = standaloneMakerTeleVideoFor(sel),
                 standaloneMakerVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
+                oemEightKVideo = oemEightKSessionWanted(oemEightKRouteAdmittedFor(sel), latestOpenVideoIntent),
                 // Re-derived from the installed selection: [caps] already carry this route's span.
                 makerTeleRoute = makerTeleRouteFor(sel),
                 rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
@@ -5789,6 +5797,7 @@ class CameraEngine internal constructor(
                     makerLogVendor = makerLogVendorNow().takeIf { makerLogWanted() && !makerLogRefused },
                     standaloneMakerVideo = standaloneMakerTeleVideoFor(sel),
                     standaloneMakerVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
+                    oemEightKVideo = oemEightKSessionWanted(oemEightKRouteAdmittedFor(sel), openVideoIntent),
                     makerTeleRoute = makerTele,
                     rawLogStream = rawLogStreamFor(sel, c, previewStreamSize),
                     videoSessionIntent = openVideoIntent,
@@ -9494,6 +9503,23 @@ class CameraEngine internal constructor(
         maker = makerLogTeleRouteWanted(),
         standaloneVideoAdmitted = activeDeviceProfile().makerLogStandaloneTeleVideo,
     )
+
+    /**
+     * Whether [sel] is a route the OEM 8K mode exists on (OemEightKVideo.kt): the measured profile, the
+     * BACK route, and the standalone main or 3× tele — resolved by enumerated focal, like every other
+     * route decision, so 0x80A9 can never reach the ultra-wide or the 10× periscope.
+     */
+    private fun oemEightKRouteAdmittedFor(sel: TeleSelection): Boolean {
+        val profileAdmits = activeDeviceProfile().oemEightKVideo
+        // The focal lookups touch CameraManager on a cold cache; a GENERIC profile never needs them.
+        return profileAdmits && oemEightKRouteAdmitted(
+            profileAdmits = profileAdmits,
+            backRoute = activeCameraRoute == CameraRoute.BACK,
+            standalone = sel.physicalId == null,
+            hostLens = sel.logicalId == cachedIdForFocal(LensChoice.MAIN.targetEquivMm) ||
+                sel.logicalId == cachedIdForFocal(LensChoice.TELE3X.targetEquivMm),
+        )
+    }
 
     /** Accepted open-route truth for the standalone 0x80b5 probe, never inferred from maker intent alone. */
     private fun standaloneMakerTeleVideoFor(sel: TeleSelection): Boolean {

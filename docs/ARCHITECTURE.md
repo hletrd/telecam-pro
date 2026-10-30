@@ -63,6 +63,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ExtendedVideoRasterRecovery.kt` | Gamma-preserving extended-raster refusal policy, real-frame Ready gating, REC raster matching, and per-open ownership. Configure or streaming-fatal rejection latches the exact route/size/transfer and recovers the last real-frame accepted graph, or makes one legacy capped attempt when none survives — never an automatic descending extended-size ladder. Only an identical explicit retry clears its own tuple; controller/optics/pipeline/Open-Gate/direct-size/attempted-raster ownership makes older callbacks inert. |
 | `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
+| `OemEightKVideo.kt` | PMA110's OEM 8K route rules, pure and host-tested: `OEM_8K_VIDEO_SIZE` (7680×4320, advertised by no camera), `OEM_8K_SESSION_TYPE` (0x80A9), the measured parent rate set, `withOemEightKVideoSize` (adds the raster and its rates to a route's RAW caps before the ordinary encoder projection), route/packet admission (`oemEightKRouteAdmitted`, `oemEightKPacketAdmitted`: Rec. 709 into HEVC only) and `oemEightKSessionWanted` (the open-time answer from the resolved `VideoSessionIntent`). |
+| `OemEightKInputBridge.kt` | The OEM 8K stream into GL: PRIVATE `ImageReader` with GPU_SAMPLED_IMAGE \| VIDEO_ENCODE usage (non-flexible, so cameraserver passes the unadvertised raster to the HAL unrounded) → `ImageWriter` attach → the GL input SurfaceTexture. Same thread/ownership rules as `P010InputBridge`; its output configuration takes the SENSOR timestamp base explicitly. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
 | `RawLog.kt` | EXPERIMENTAL RAW log gates, pure and host-tested: `rawLogTransfer` (every log profile — S-Log3 / S-Log3.Cine / LogC3; GL re-encodes the developer's S-Log3), `rawStreamSustains` (the RAW stream's advertised minimum frame duration against the selected rate), `rawLogSupported` (developable rear camera + the PMA110 RAW route law), `rawLogSessionWanted`, and `rawLogOffered` for Gamma = RAW Log (`VideoColorMode`, CameraState.kt). |
 | `RawDevelopMath.kt` | The RAW developer's colour and geometry math, pure and host-tested: Bayer phase, the DNG mired interpolation between the two calibrations, the ForwardMatrix path and the ColorMatrix + Bradford path (chosen by `forwardMatrixInformative`, which rejects PMA110's identical sRGB-placeholder ForwardMatrix pair), the composed camera → S-Gamut3.Cine matrix, and the even-aligned aspect/zoom crop. |
@@ -763,7 +765,8 @@ FOCUSED on device.
 `camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model and
 for CPH2841, the Find X9 Ultra's global model (owner decision 2026-10-06, inferred from shared
 hardware, NOT measured on CPH2841) and PMA120 (the satellite edition, same reasoning), except that
-those siblings explicitly withhold `makerLogStandaloneTeleVideo` until separately measured; and
+those siblings explicitly withhold `makerLogStandaloneTeleVideo` and `oemEightKVideo` until
+separately measured; and
 `GENERIC` for every other handset;
 `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on PMA110. Each PMA110 value is a MEASURED HAL deviation; GENERIC is Android-as-specified. Statements elsewhere in this document and
 in CLAUDE.md about these behaviours describe the PMA110 profile unless they say otherwise.
@@ -779,6 +782,7 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `nativeLogCurveMeasured` | `true` (the programmed S-Log3 curve measured landing scene levels where the convention puts them, 2026-10-14) | `false` (unmeasured; in one dim room the Galaxy Z Flip6 decoded a chart's white to the same ~5½-stops-under level as PMA110, 2026-10-26) | NOT a route gate — native log still runs wherever the curve is advertised (owner decision 2026-10-26). `CameraEngine.nativeLogCurveMeasured` → `CameraUiState.nativeLogCurveVerified`; false shows the one-line Caution warning under Gamma = Log on the native path (`nativeLogUnverifiedWarningVisible`) |
 | `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no pin/Open Gate, up to 30 fps; TC only where `makerLogTeleMaxWireZoom` is set; actual result confirmation gates Ready and recording source truth |
 | `makerLogStandaloneTeleVideo` | `true` only on exact PMA110 after the mounted-converter simultaneous-operation proof (FIELD_CHECKS A30); CPH2841/PMA120 explicitly `false` | `false` | `makerLogRequestAdmitted` separately requires standalone TC route truth, no physical id, and this admission before `sessionTypeFor` selects 0x80b5. Accepted source confirmation still drives the measured pre-rotated-pixel exception above; the debug-only admission remains removed |
+| `oemEightKVideo` | `true` only on exact PMA110 (ColorOS 17, measured 2026-10-30/31, FIELD_CHECKS A32: real 8K sensor modes on the main and 3× tele, 8-bit HEVC through GL with no dropped frame); CPH2841/PMA120 explicitly `false` | `false` | `CameraEngine.oemEightKRouteAdmittedFor` (BACK, standalone, main or 3× tele by enumerated focal) feeds `withOemEightKVideoSize` in `projectRouteCaps` and `oemEightKSessionWanted` for `CameraController.open(oemEightKVideo)`, which re-checks the profile and builds the 0x80A9 session in `configureOemEightK` |
 | `makerLogTeleMaxWireZoom` | `9.8` (measured 2026-10-26 on the maker TC route: wire 9.89 stayed on the host tele, every entry to 10.0 handed over to the 10× periscope for 1.6–1.9 s) | `null` (TC + Log (maker) not offered) | `makerLogOffered`'s TC term; `CameraEngine.makerTeleRouteFor` → `MakerTeleRoute.wireZoomCeiling` and the route caps' TC-local window `[1, 9.8 ÷ 3]` (≈42.6× TOTAL on the 300 mm kit) |
 | `nativeLogEiSupported` | `false` (measured: ISP output not exposure-linear under the programmed curve, 2026-10-15) | `true` (spec: linear TONEMAP_CURVE input; unmeasured) | `CameraController.repeatingNativeLogEiStops` forces wire offset 0 when false; `CameraEngine.nativeLogEiSupported` → `CameraUiState.nativeLogEiSupported` hides the Video-tab "Log EI Offset" row and the OSD " +N" |
 | `tenBitNativeLogBridge` | `true` (measured 2026-10-25: P010 + S-Log3 curve + JPEG + RAW on cam 2 and on cam 4 under 0x80b4; ten bits reach GL and the file) | `false` (unmeasured; a HAL may advertise P010 + STANDARD and still reject or mis-tag it) | `CameraEngine.tenBitNativeLogStreamFor` resolves the GL input size for `CameraController.open(tenBitNativeLogStream)` when the capability half also holds (`CameraCaps.p010StandardAdvertised`, the size in `CameraCaps.p010OutputSizes`, not FRONT); the controller builds a `P010InputBridge` on the first try of each rung and retries that rung 8-bit if it is refused. True also starts every GL generation on an RGBA1010102 EGL config |
@@ -1205,9 +1209,27 @@ raster, intersected with the camera's fixed-FPS/minimum-duration limits and the 
 ceiling. Exact 1001-grid recording rates remain intact; only platform queries use nominal rates.
 No legal rate means no selectable size and an inert explicit setter: Engine, UI, persistence, the
 current stream, and Ready remain unchanged. RAW Log additionally needs a native RAW raster at least
-as large as the requested output. PMA110 has no additional-size profile admission and remains
-4K-only; FIELD_CHECKS A29 preserves the measured OEM-Log 8K streaming fatalities and the validated
-installed 4K build facts.
+as large as the requested output.
+
+PMA110 adds ONE profile-admitted size, 7680×4320, through `DeviceProfile.oemEightKVideo`
+(`OemEightKVideo.kt`, FIELD_CHECKS A32). No camera advertises it; the HAL's own 8K usecase is the
+vendor operation mode 0x80A9 on the standalone main and 3× tele. `projectRouteCaps` adds the raster,
+with the measured parent rate 30 only (29.97 / 30 selections), to those routes' RAW caps while the
+next-Video packet is Rec. 709 into HEVC; the ordinary projection must then still prove the exact
+encoder format. Any other Gamma, the AVC codec, Open Gate, the ultra-wide, the 10× and the logical
+camera never see it, and a packet that removes it falls back like any extended size. At open,
+`oemEightKSessionWanted` hands `CameraController` a separate graph (`configureOemEightK`, never the
+ladder): session type 0x80A9, the 8K `OemEightKInputBridge` as the ONLY output (GL draws the finder
+from the same texture), and `com.oplus.is.sdk.camera.package = [1]` + `com.oplus.is.from.extension =
+1` on the session parameters and every repeating request (RECORD template). Without that pair the same
+session runs a binned sensor mode and upscales it, so a session-parameter failure is a refusal, not a
+plain-session fallback; every refusal goes through the extended-raster door above (smaller raster,
+same Gamma). The session has no still reader (`PhotoSessionOutputs.oemEightK`, "8K video · stills
+off"), stabilization is the HAL's 8K EIS, which reports ON whatever is requested, so the request asks
+for ON and the OSD names Standard (`CameraUiState.osdVideoStabMode`), and the bridge's output takes
+`TIMESTAMP_BASE_SENSOR` because its VIDEO_ENCODE usage otherwise gets MONOTONIC stamps that break the
+audio anchor. Ten-bit at 8K does not hold 30 fps, so HLG and every Log stay at 4K. FIELD_CHECKS A29
+preserves the earlier OEM-Log 8K streaming fatalities (0x830b, a different graph).
 
 Before a VIDEO reopen invalidates Ready or opens Camera2, `resolveVideoSessionIntent` resolves rate →
 RAW-Log eligibility → raster → rate to a fixed point and publishes one immutable `VideoSessionIntent`.

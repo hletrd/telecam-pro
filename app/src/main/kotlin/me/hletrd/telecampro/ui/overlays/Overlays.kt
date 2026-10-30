@@ -1074,7 +1074,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             if (!state.recordAudio) {
                 Text(stringResource(R.string.osd_mute), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
-            val stabTag = when (state.videoStabMode) {
+            val stabTag = when (state.osdVideoStabMode) {
                 // One word family for one control (UI review #7): STANDARD used to read "OIS+",
                 // borrowing the word of the SEPARATE photo "OIS OFF" tag, so across a mode flip two
                 // independent controls read as one. STEADY stays — it is the marketing-free name
@@ -1085,7 +1085,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             }
             Text(
                 stabTag,
-                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else CameraColors.StabActive,
+                color = if (state.osdVideoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else CameraColors.StabActive,
                 style = MaterialTheme.typography.labelMedium,
             )
         } else {

@@ -424,7 +424,9 @@ internal fun wbAppOwned(c: ManualControls, cap: WbCapability): Boolean = when (c
  * OPPO's measured maker session; VIVO_MAKER_LOG the experimental, unmeasured vivo one — its own key,
  * so a transform learned under vivo's (unknown) Log gamut never replays on another shape, or back.
  */
-internal enum class WbSessionShape { SDR, HLG10, VENDOR_TC, MAKER_LOG, RAW_LOG, VIVO_MAKER_LOG }
+// OEM_8K: the 0x80A9 8K graph (OemEightKVideo.kt) runs the full OEM pipeline, whose transform is
+// not assumed equal to the ordinary SDR session's.
+internal enum class WbSessionShape { SDR, HLG10, VENDOR_TC, MAKER_LOG, RAW_LOG, VIVO_MAKER_LOG, OEM_8K }
 
 /**
  * Identity of one route's colour transform: the camera opened, the session shape, and — on a logical
