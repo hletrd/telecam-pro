@@ -30,7 +30,8 @@ phone's periscope lens.
 - Manual focus tuned for near-infinity, PASM, 1/3-stop ISO, WB / Kelvin, face-priority AF, AEB,
   timelapse.
 - HEIF / JPEG / DNG. On the Find X9 Ultra, wanting RAW moves photo onto a standalone camera.
-- HEVC / H.264 up to 4K. Gamma: Off, HLG, Log (S-Log3, S-Log3.Cine or LogC3 on the ISP pipeline)
+- HEVC / H.264 up to 4K; on the Find X9 Ultra (PMA110), 8K30 HEVC in Rec. 709 on the 1× and 3×
+  lenses (no stills during an 8K take). Gamma: Off, HLG, Log (S-Log3, S-Log3.Cine or LogC3 on the ISP pipeline)
   and an experimental RAW Log that develops the same profiles in-app from the sensor RAW.
 - Peaking, zebra, false colour, histogram, waveform, loupe, Fn / My Menu / MR banks.
 

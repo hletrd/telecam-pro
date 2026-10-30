@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-29):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-31):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -27,6 +27,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
 **A31** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
+**A32** needs an 8K take of a lit, textured scene on each lens (detail against the 4K route, colour, orientation), a clap take, and a cool, unplugged 10-minute soak,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1852,6 +1853,60 @@ session for comparison (session parameters, stream format, dataspace).
    outdoors.
 6. **Low-light hand-down.** A dim room on the TC route: the active physical id must stay on the host
    tele, or the `LENS SWITCHED` tag must appear (the guard's job; record which).
+
+### A32. PMA110 OEM 8K video (0x80A9, Rec. 709): route and 10-minute take on the device — ◐ HALF DONE 2026-10-31
+
+Device `OPPO/PMA110/OP61BDL1:17/CP2A.260605.016/B.30d6865-a9327b-aae421` (`PMA110_17.0.0.106(CN01)`,
+stock Camera 7.006.119). Route found with an isolated probe on 2026-10-30/31, then implemented
+(`OemEightKVideo.kt`, `OemEightKInputBridge.kt`, `DeviceProfile.oemEightKVideo`); probe evidence in
+the private `.context/8k-2026-10-30/` (NOTES.md, probe-runs/, probe-source/).
+
+**Probe facts the product relies on.** Stock 8K is standalone camera 2 under operation mode 0x80A9
+with sensor mode 29 (8160×4592, 30 fps); its clip is HEVC Main 8-bit BT.709 7680×4320 at 29.856 fps.
+A third-party 0x80A9 session needs `com.oplus.is.sdk.camera.package = [1]` +
+`com.oplus.is.from.extension = 1` on the session parameters and every request: without them the
+main runs binned mode 47 and the tele resIdx 42 (binning 4), and the 8K file is an upscale. The 8K
+stream must be a non-flexible consumer (PRIVATE, GPU_SAMPLED_IMAGE | VIDEO_ENCODE). As the session's
+only stream, bridged into GL and drawn into an 8-bit HEVC Main encoder at 4320×7680, it held 29.85 fps
+for 150 s with 0 of 4 461 frames lost (main) and 29.89 fps on the tele. Main10 at 8K ran 27.5–28.6 fps
+(encoder RGBA→10-bit conversion), so the route is Rec. 709 only. The first probe GL timings (g01–g13)
+were invalid (a texcoord bug drew one flat colour) and were re-measured; pixel content was checked
+through bitrate and Y range, not a lit scene.
+
+**In the app (dev debug builds `e9f4e6f5`, `a96e918b`, `9651c714` of this change, uncommitted
+source; the immutable-build check is below).**
+- With Gamma = Rec. 709 and HEVC the Resolution row offers 8K on the 1× and 3× (TELE) routes with
+  FPS 29.97 / 30 only; the summary reads "HEVC · 8K · 30p · 120 Mbps". A persisted 8K request from
+  the A29 debug probe was re-admitted on its own as soon as Gamma left OEM Log.
+- TELE: `createStreamLocked 7680 x 4320`, `operation_mode: 0x80a9`, sensor mode 44 (8192×4608 NORMAL
+  2PD), `Session configured (oem8k=true, camera=4)`; all 889 sampled tele requests at resIdx 44 /
+  binning 2. 1×: camera 2, 0x80a9, sensor mode 29 (8160×4592).
+- 33 s TELE take: HEVC Main, 4320×7680, `yuv420p`, BT.709, 30/1, 996 frames / 33.2 s, 120.5 Mb/s, no
+  PTS gap above 33.334 ms; `EncoderClock placed=980 dropped=0 filled=16`. 20 s takes on each lens:
+  `placed=594 dropped=0 filled=3`.
+- The first take logged `A/V align: audio0-video0=67432240.4ms` and fell back to the unanchored
+  timeline: the reader's VIDEO_ENCODE usage made cameraserver stamp it MONOTONIC. With
+  `TIMESTAMP_BASE_SENSOR` the anchor holds: `audio0-video0=610.4ms` (TELE) and `569.8ms` (1×),
+  priming applied. The ~0.6 s is the OEM pipeline's latency (first bridged image ~420 ms after the
+  first result) plus start-up; the file opens with that much video before the first audio sample.
+- Under 0x80A9 every 3A row reported `vstab=1` while the request carried 0 (STAB OFF); the session
+  before it echoed 0. The route now always asks for ON and the OSD reads "STAB STD" there.
+- Gamma Rec. 709 → Log dropped the row and reopened 4K native log (P010, JPEG + RAW, 0x0); Log →
+  Rec. 709 reopened 8K. Photo → Video reopened the logical camera, then 8K again. "Take photo while
+  recording" is disabled during an 8K take; the Output row reads "8K video · stills off".
+- **10-minute soak, 1×, phone on AC charge, dim room (ISO 6400):** saved, 9.04 GB, 602.77 s, 18 014
+  frames. The first ~593 s have no hole beyond the clock's single-frame fills; at 593.0 s and 595.8 s
+  the stream stopped for 1.20 s and 1.17 s (holes in the file — longer than the clock's 1 s fill).
+  Battery 36.4 → 44.0 °C (≈0.76 °C/min); Android thermal status 0 throughout; the OPLUS "horae"
+  status cameraserver polls climbed 6 → 11 (horae temperature 39.1 → 47.3 °C) and reached 11 23 s
+  before the first hole. The correlation is all this shows; no log line names the cause. The app's
+  own rows for this take are missing from the log (the same process had already run several
+  sessions), so the file is the evidence. Stock 8K runs under the OSENSE_ACTION_CAMERA_VIDEO_8K30 perf
+  scene; a third-party session gets the generic one.
+
+**Open:** a lit, textured scene on each lens (8K detail against the 4K route, colour against the 4K
+SDR route, upright orientation in an external player — every frame so far was dim: Y 22–35); a clap
+take for A/V sync; a soak unplugged from a cool start, and what the holes are.
 
 ## B. Held in hand — 3 min
 
