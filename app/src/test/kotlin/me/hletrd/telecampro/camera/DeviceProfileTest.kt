@@ -34,9 +34,10 @@ class DeviceProfileTest {
     }
 
     @Test
-    fun `the global and satellite Find X9 Ultra take the whole PMA110 profile`() {
+    fun `the global and satellite Find X9 Ultra take PMA110 except unmeasured standalone maker admission`() {
+        val expected = DeviceProfile.PMA110.copy(makerLogStandaloneTeleVideo = false)
         for (model in listOf("CPH2841", "cph2841", " CPH2841 ", "PMA120", " pma120 ")) {
-            assertEquals(model, DeviceProfile.PMA110, DeviceProfile.resolve(model))
+            assertEquals(model, expected, DeviceProfile.resolve(model))
         }
     }
 
@@ -103,10 +104,14 @@ class DeviceProfileTest {
         for (model in formerMakerLogModels + unrelated) {
             assertEquals("$model", DeviceProfile.GENERIC, DeviceProfile.resolve(model))
         }
-        // Only the Find X9 Ultra codes take the PMA110 set, in any case or padding.
+        // Only the Find X9 Ultra codes take the PMA110 set, in any case or padding; the two
+        // unmeasured siblings alone keep standalone maker-video admission closed.
         for (model in listOf("PMA110", "CPH2841", "PMA120")) {
+            val expected = DeviceProfile.PMA110.copy(
+                makerLogStandaloneTeleVideo = model == "PMA110",
+            )
             for (spelling in listOf(model, model.lowercase(), " $model ")) {
-                assertEquals(spelling, DeviceProfile.PMA110, DeviceProfile.resolve(spelling))
+                assertEquals(spelling, expected, DeviceProfile.resolve(spelling))
             }
         }
     }

@@ -77,7 +77,12 @@ class DebugCameraControlSecurityTest {
             assertFalse(started.hasExtra(EXTRA_DEBUG_RECORD))
             assertFalse(started.hasExtra(EXTRA_DEBUG_SHUTTER))
             assertEquals(
-                DebugCameraControlCommand(zslSpike = true, zoomRatio = 3f, record = true, shutterPresses = 1),
+                DebugCameraControlCommand(
+                    zslSpike = true,
+                    zoomRatio = 3f,
+                    record = true,
+                    shutterPresses = 1,
+                ),
                 DebugCameraControlMailbox.consume(),
             )
         } finally {

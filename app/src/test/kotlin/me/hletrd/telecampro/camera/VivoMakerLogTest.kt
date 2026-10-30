@@ -174,8 +174,10 @@ class VivoMakerLogTest {
         assertEquals(0, captureSessionType(null, vendorOperationMode = false))
         assertEquals(0x80b4, captureSessionType(null, vendorOperationMode = true))
         // OPPO still needs its LUT before Ready: no echo-free acceptance.
-        assertFalse(makerLogSourceConfirmed(0x830b, 0, null))
-        assertTrue(makerLogSourceConfirmed(0x830b, 0, IntArray(1024) { if (it < 256) 754 + it else 0 }))
+        assertFalse(makerLogSourceConfirmed(MakerLogProtocol.SESSION_TYPE, 0x830b, 0, null))
+        assertTrue(makerLogSourceConfirmed(
+            MakerLogProtocol.SESSION_TYPE, 0x830b, 0, IntArray(1024) { if (it < 256) 754 + it else 0 },
+        ))
         // The PMA110 profile resolves OPPO and keeps the measured TC span.
         val pma110 = DeviceProfile.resolve("PMA110")
         assertTrue(pma110.makerLogPipeline)

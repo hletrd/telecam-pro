@@ -1192,14 +1192,29 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   product take has no PTS interval above 33.367 ms. The previous SDK-only/impossibility claims
   were disproved; neither this result nor the gain ratio is a certified total dynamic-range test.
   **TC + Log (maker) (owner request 2026-10-26: "we made the teleconverter work, so maker Log must
-  work with it too").** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
-  mode offers 1080p/4K at 30/60 fps and no O-Log2). The selected product route is logical 0:
-  standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. A26's
-  newer standalone 4 + VIDEO 0x80b5 probe does reach native Log/HDR, but its focus/optics behaviour
-  has not passed the matched chart check, so it is not selected. With TC on, Video + Log (maker)
+  work with it too"; exact-PMA110 standalone production route proven 2026-10-29).** Stock never pairs its own TC mode with Log (its HASSELBLAD TELECONVERTER video
+  mode offers 1080p/4K at 30/60 fps and no O-Log2). Standalone camera 4 + VIDEO 0x80b5 carries the real
+  OEM pipeline and measured strong stabilization. Mounted-converter evidence proves simultaneous
+  operation: accepted real 1024-entry OEM gamma, HDRFeatureMode 1, unequal DRC/conversion gains,
+  upright preview and Main10 file, TC-local zoom/readouts and clean decode. A same-scene Rec.709 A/B
+  proves the actual profile in the FILE: O-Log2 full-frame p1/p50 luma is 194/202 versus 0/8 (Rec.709
+  scaled ×4), with 707 distinct Y10 levels and 75.04% nonzero low two bits — lifted black and real
+  ten-bit codes, not a gamma-tag echo (FIELD_CHECKS A30). The owner narrowed the
+  completion scope to that simultaneous-operation proof; no further stock bare-Log ISO/EV matching is
+  required. `makerLogStandaloneTeleVideo` is therefore `true` ONLY on exact PMA110; CPH2841, PMA120
+  and GENERIC stay false. The five-trial A/B used actual ISO 12414 / 12700 / 9100 across stock /
+  ordinary / standalone, so it is NOT an exposure-matched ranking or a numeric 4.3× OIS-gain claim;
+  standalone |dx| remained below stock TC in every trial with no directional-blur vote. Five aligned
+  colour windows matched within 0.816 decoded RGB codes for that scene only (FIELD_CHECKS A30).
+  Sensor mode 50 is accepted; mode 48 is not required. Earlier route facts
+  remain: standalone 4 + 0x830b reported HDR 0 and standalone 4 + 0x80b4 gave an SDR-like gamma. The
+  standalone OEM source's pixels arrive 180° pre-rotated while its SurfaceTexture matrix is identical
+  to ordinary 0x80b4, so accepted source truth (`sourcePreRotated`, never maker intent) removes the
+  duplicate afocal correction before Ready/REC; stabilization is not inferred from that rotation or
+  from `original.zoomRatio`. On profiles WITHOUT standalone admission, Video + Log (maker)
   opens the LOGICAL camera with the native protocol
   (`makerLogTeleRouteWanted` / `teleRouteCameraId`, used by EVERY TELE door — startup/reopen, mode,
-  lens/TC, recall) and holds it on the host tele by zoom; the afocal 180°, TC-local zoom, focal and
+  lens/TC, recall) and holds it on the host tele by zoom; on that logical route the afocal 180°, TC-local zoom, focal and
   magnification readouts, OSD and EXIF are the ordinary TC route's, untouched. The zoom stays
   TC-LOCAL in engine, GL and UI; only the controller maps it (`MakerTeleRoute`: wire = local × the tele
   chip's unified position, 3.0 on PMA110, `makerTeleWireZoomScale`; results divided back so the GL
@@ -1229,7 +1244,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   3.0 / 6.0 / 9.8 and the plain route at unified 3× all reported physical `4`, never the main lens, no
   tag. The converter was NOT mounted on any 2026-10-26 check (owner-confirmed): it is passive glass,
   so route, session, zoom and lens-choice results stand without it; light through the glass does not.
-  **vivo OEM Log (+TC) is EXPERIMENTAL and UNMEASURED (2026-10-28, `docs/FIELD_CHECKS.md` A29).** A
+  **vivo OEM Log (+TC) is EXPERIMENTAL and UNMEASURED (2026-10-28, `docs/FIELD_CHECKS.md` A31).** A
   vendor seam (`MakerLogVendor`) adds a vivo protocol reconstructed by static analysis only, behind a
   persisted Setup opt-in (default OFF) AND the vivo session-key NAMES the back logical camera
   advertises — no model string, no DeviceProfile; OPPO's profile always wins, so PMA110 is unchanged.

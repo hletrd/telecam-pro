@@ -58,6 +58,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only (the per-phone maker-log product fact `nativeLogFlavor` was removed with those curves, 2026-10-26). `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
+| `RecordableVideoSizes.kt` | The single camera-size → recordable-size projection. Legacy sizes through 4096×3072 retain their existing admission/rate rules; an extended raster remains only when an exact active encoder candidate proves at least one standard rate ≤30 fps (and RAW Log has a large enough RAW source). `extendedVideoSizeRates` gates those extended FPS choices. CameraEngine applies this at accepted-route caps and rebuilds it from the raw cache after codec/transfer/RAW-intent/bitrate changes; projected answers never become camera truth. |
+| `VideoSessionIntent.kt` | One immutable, atomically resolved VIDEO graph: route, codec, transfer, RAW-Log answer, Open Gate, camera stream size, actually rotated encoder raster, and exact recording rate. Resolution iterates rate → RAW eligibility → raster → rate to a fixed point before Engine/UI/Camera2 state changes; an illegal extended fixed point is refused, never upscaled. |
+| `ExtendedVideoRasterRecovery.kt` | Gamma-preserving extended-raster refusal policy, real-frame Ready gating, REC raster matching, and per-open ownership. Configure or streaming-fatal rejection latches the exact route/size/transfer and recovers the last real-frame accepted graph, or makes one legacy capped attempt when none survives — never an automatic descending extended-size ladder. Only an identical explicit retry clears its own tuple; controller/optics/pipeline/Open-Gate/direct-size/attempted-raster ownership makes older callbacks inert. |
 | `MakerLog.kt` / `MakerLogSource.kt` | Native manufacturer pipeline eligibility/source confirmation and inverse-only monitor decode. Recording passes the confirmed OEM O-Log2 source through GL. Also the maker TC route's pure seams: `MakerTeleRoute` (wire scale, measured ceiling, host member), `makerTeleWireZoomScale`, `makerTeleLocalZoomWindow`, `makerTeleWireZoom` / `makerTeleLocalZoom`, and the lens guard (`makerTeleLensOffHost`, `teleconverterLensSwitchedTagVisible`). |
 | `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Also the ten-bit bridge gate (`tenBitNativeLogBridgeSupported`). Pure and host-tested. |
 | `P010InputBridge.kt` | Ten-bit native log: camera → YCBCR_P010 `ImageReader` (STANDARD profile) → `ImageWriter` zero-copy attach → the GL input SurfaceTexture, forwarding on its own thread. Built per configure attempt by `CameraController` when the engine resolved a bridge size; closed after the device in teardown so the next session can own the GL input Surface. |
@@ -125,6 +128,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `AudioLevels.kt` | Pure PCM peak/RMS aggregation, channel projection, and software-gain math shared by standby metering and recording. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log), HEVC Main SDR, and AVC 8-bit SDR. Tags encoded-output profile, color space, range, and transfer; these tags do not describe the precision of every upstream stage. `aacFormat` carries the take's AAC object type and bitrate (48 kHz; AAC-LC 256 kb/s by default since 2026-10-26, 192 before). |
 | `EncoderCaps.kt` | Scans exact AVC/HEVC components, ranks hardware first while retaining registry-stable software fallback, and carries accepted component identity into recording. The same REGULAR_CODECS walk reads each AAC encoder's profiles, bitrate range, 48 kHz support and channel count into `CodecInventory.audioOptions`. |
+| `EncoderSizeRateSupport.kt` | Exact-component size/rate query boundary retained on each `EncoderSelection` by codec. Extended recordable sizes are admitted only from this probe, never inferred from a MIME or another encoder. |
 | `AudioEncoding.kt` | The soundtrack formats a take can carry: AAC-LC / HE-AAC / HE-AAC v2 / xHE-AAC, each offered only when a regular encoder advertises it at 48 kHz (MediaMuxer's MP4 writer takes AAC and AMR only; AMR is speech-band, Opus/FLAC cannot be muxed). Pure and host-tested: inventory selection (platform `c2.android.*` first), request normalization, the HE-AAC v2 mono fallback, and the measured priming table (`c2.android.aac.encoder` LC 2048 / HE 4096 / HE v2 6144 samples, `c2.android.xheaac.encoder` 0). `AudioChannelMode` (Mono / Stereo, persisted) is a CAP on the device's own channel count (`cappedAudioChannelCount`): a mono route stays mono under Stereo. |
 | `EncoderSizeLadder.kt` | Same-aspect, even-dimension component/size configure-attempt ladder used when an advertised encoder rejects the requested portrait raster. |
 | **storage/** | |
@@ -535,14 +539,26 @@ Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientat
 **Preview (GL):**
 
 ```kotlin
-// RotationMath.previewRotationDegrees(teleconverterMode)
-val rotation = if (teleconverterMode) 180 else 0   // afocal 180° only; sensor already applied by SurfaceTexture
+// RotationMath.previewRotationDegrees(teleconverterMode, sourcePreRotated)
+val rotation = if (teleconverterMode && !sourcePreRotated) 180 else 0
+// Sensor already applied by SurfaceTexture; sourcePreRotated is ACCEPTED-source truth.
 // Then pass to FlipRenderer.setRotationDegrees(rotation)
-// Example: sensorOrientation=90, teleconverter ON -> preview rotation = 180° (sensor term NOT added)
+// Example: sensorOrientation=90, ordinary teleconverter ON -> preview rotation = 180° (sensor term NOT added)
 ```
 
+**Accepted standalone-maker source exception (PMA110, 2026-10-28/29):** ordinary TC `0x80b4`
+and standalone maker `0x80b5` report byte-identical SurfaceTexture matrices, while the latter's pixels
+arrive rotated 180° relative to the ordinary source. Engine and GL both still requested the afocal
+180°, so the duplicate correction inverted preview AND encoder. `CameraController.sourcePreRotated`
+requires standalone intent AND accepted `makerLogConfigured`; `commitOpticsReady` re-pushes rotation
+from that proof before Ready/REC, and `RotationMath.previewRotationDegrees` returns 0 only for this
+source. A refused/fallback session therefore restores the ordinary afocal correction rather than
+inheriting the maker value. This is pixel-level source behavior, not a SurfaceTexture-matrix or lost-
+state workaround, and no extra 180° is added to compensate.
+
 **Key insight**: The camera SurfaceTexture transform (applied via `stMatrix` in `FlipRenderer.draw`) 
-**already rotates the sampled image by the sensor orientation**. The GL renderer adds **only the afocal 180°** 
+**already rotates the sampled image by the sensor orientation**. Except for the accepted pre-rotated
+source above, the GL renderer adds **only the afocal 180°**
 in tele mode (and 0° otherwise). The sensor orientation is still passed to the renderer, but **only to pick the 
 preview aspect ratio** (a ~90° rotation swaps displayed width/height). On-device testing confirmed: preview is 
 upright when using 180° afocal correction alone, with no sensor-orientation term added. `FlipRenderer` still 
@@ -746,7 +762,8 @@ FOCUSED on device.
 
 `camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model and
 for CPH2841, the Find X9 Ultra's global model (owner decision 2026-10-06, inferred from shared
-hardware, NOT measured on CPH2841) and PMA120 (the satellite edition, same reasoning); and
+hardware, NOT measured on CPH2841) and PMA120 (the satellite edition, same reasoning), except that
+those siblings explicitly withhold `makerLogStandaloneTeleVideo` until separately measured; and
 `GENERIC` for every other handset;
 `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on PMA110. Each PMA110 value is a MEASURED HAL deviation; GENERIC is Android-as-specified. Statements elsewhere in this document and
 in CLAUDE.md about these behaviours describe the PMA110 profile unless they say otherwise.
@@ -761,6 +778,7 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `videoMinFrameDurationsUnderstated` | `true` | `false` | `CameraCaps.read(gateVideoRatesOnMinFrameDuration)` fills `videoMinFrameDurationsNs`, which `VideoFrameRate.availableFor` uses to drop rates the selected size's advertised SurfaceTexture minimum frame duration cannot sustain; PMA110's TELE advertises 30 fps at 3840×2160 yet records ~60 |
 | `nativeLogCurveMeasured` | `true` (the programmed S-Log3 curve measured landing scene levels where the convention puts them, 2026-10-14) | `false` (unmeasured; in one dim room the Galaxy Z Flip6 decoded a chart's white to the same ~5½-stops-under level as PMA110, 2026-10-26) | NOT a route gate — native log still runs wherever the curve is advertised (owner decision 2026-10-26). `CameraEngine.nativeLogCurveMeasured` → `CameraUiState.nativeLogCurveVerified`; false shows the one-line Caution warning under Gamma = Log on the native path (`nativeLogUnverifiedWarningVisible`) |
 | `makerLogPipeline` | `true` (ColorOS 17 measured; shared PMA110-family profile) | `false` | Rear logical OEM Log session, no pin/Open Gate, up to 30 fps; TC only where `makerLogTeleMaxWireZoom` is set; actual result confirmation gates Ready and recording source truth |
+| `makerLogStandaloneTeleVideo` | `true` only on exact PMA110 after the mounted-converter simultaneous-operation proof (FIELD_CHECKS A30); CPH2841/PMA120 explicitly `false` | `false` | `makerLogRequestAdmitted` separately requires standalone TC route truth, no physical id, and this admission before `sessionTypeFor` selects 0x80b5. Accepted source confirmation still drives the measured pre-rotated-pixel exception above; the debug-only admission remains removed |
 | `makerLogTeleMaxWireZoom` | `9.8` (measured 2026-10-26 on the maker TC route: wire 9.89 stayed on the host tele, every entry to 10.0 handed over to the 10× periscope for 1.6–1.9 s) | `null` (TC + Log (maker) not offered) | `makerLogOffered`'s TC term; `CameraEngine.makerTeleRouteFor` → `MakerTeleRoute.wireZoomCeiling` and the route caps' TC-local window `[1, 9.8 ÷ 3]` (≈42.6× TOTAL on the 300 mm kit) |
 | `nativeLogEiSupported` | `false` (measured: ISP output not exposure-linear under the programmed curve, 2026-10-15) | `true` (spec: linear TONEMAP_CURVE input; unmeasured) | `CameraController.repeatingNativeLogEiStops` forces wire offset 0 when false; `CameraEngine.nativeLogEiSupported` → `CameraUiState.nativeLogEiSupported` hides the Video-tab "Log EI Offset" row and the OSD " +N" |
 | `tenBitNativeLogBridge` | `true` (measured 2026-10-25: P010 + S-Log3 curve + JPEG + RAW on cam 2 and on cam 4 under 0x80b4; ten bits reach GL and the file) | `false` (unmeasured; a HAL may advertise P010 + STANDARD and still reject or mis-tag it) | `CameraEngine.tenBitNativeLogStreamFor` resolves the GL input size for `CameraController.open(tenBitNativeLogStream)` when the capability half also holds (`CameraCaps.p010StandardAdvertised`, the size in `CameraCaps.p010OutputSizes`, not FRONT); the controller builds a `P010InputBridge` on the first try of each rung and retries that rung 8-bit if it is refused. True also starts every GL generation on an RGBA1010102 EGL config |
@@ -993,7 +1011,9 @@ roll uses a similar confidence threshold when the phone points steeply up or dow
 **Video codec and color profiles:**
 
 Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList). Exact components are
-ranked hardware-first while registry order is preserved, with software fallback retained. Bitrate presets run Low → **Max** (`BitrateLevel`): the REQUESTED target at
+ranked hardware-first while registry order is preserved, with software fallback retained. Each
+`EncoderSelection` also carries that exact component+codec's `EncoderSizeRateSupport` probe; extended
+size/rate admission never substitutes a MIME-wide or another component's answer. Bitrate presets run Low → **Max** (`BitrateLevel`): the REQUESTED target at
 Max computes to ~99 Mbps at 4K30 (0.40 bpp), hard-clamped at 120 Mbps (`videoBitRate`). A device
 recording measured ~134 Mbps in the file — that is VBR encoder overshoot of the ~99 Mbps target (no
 KEY_BITRATE_MODE is set), not a requested ceiling. The old High (0.16 bpp) left half the HW headroom
@@ -1088,17 +1108,33 @@ Matched-exposure stock/probe gamma arrays were identical. Product testing confir
 HDR mode 1/two exposures and error-free 4K Main10 + AAC recording (FIELD_CHECKS A20). Pixel identity
 and exact gamut equivalence outside the measured chart remain unproven: stock's VideoColorBT709
 result still differs. A26 restores matching DCG/gamma arrays and measures close TC pixel agreement.
-Standalone 4 + video operation mode 0x80b5 now reaches native HDR in a probe, but has not passed the
-matched focus/optics comparison; the product keeps the validated logical TC route.
 
-**TC + Log (maker)** (owner request 2026-10-26) keeps that signature by keeping its camera: with the
-converter on, Video + Log (maker) opens logical camera 0 with the unchanged maker protocol instead of
-standalone 4 + `0x80b4`, and holds it on the host tele by zoom. One resolver
+**TC + Log (maker), standalone PMA110 production route.**
+On exact PMA110, TC + Log (maker) opens the standalone tele camera with video operation mode
+`0x80b5`; CPH2841, PMA120 and GENERIC keep the pre-existing routes below. The accepted path carries
+the real OEM O-Log2/HDR/DRC/WB pipeline and has mounted-converter simultaneous-operation evidence
+(FIELD_CHECKS A30): real 1024-entry gamma, HDR mode 1, unequal DRC/conversion gains, upright preview
+and file, TC-local zoom/readouts and clean 2160×3840 Main10. A Rec.709 pixel A/B proves the actual
+O-Log2 profile rather than a tag echo: full-frame p1/p50 luma 194/202 versus 0/8 (Rec.709 ×4), with
+707 distinct Y10 levels and 75.04% nonzero low two bits. Its five-trial residual displacement
+stayed below stock TC in every trial, with no directional-blur vote; the routes used different actual
+ISO values, so this is strong measured stabilization, NOT an exposure-matched ranking or a numeric
+4.3× OIS-gain claim. Five aligned stock-versus-standalone colour windows matched within 0.82 decoded
+RGB codes for that scene, not as a universal gamut certificate. Sensor mode 50 is accepted evidence;
+mode 48 is not required. The accepted source's pixel-level pre-rotation follows the exception in the
+Rotation section; no `original.zoomRatio` multiplication is treated as stabilization or orientation
+proof. A maker refusal selects the ordinary standalone TC route and its truthful app-log fallback
+rather than claiming OEM output.
+
+**TC + Log (maker), pre-existing logical route (profiles without standalone admission).** Where the
+standalone route is not admitted, the established resolver opens logical camera 0 with the unchanged
+maker protocol instead of standalone 4 + `0x80b4`, and holds it on the host tele by zoom. One resolver
 (`CameraEngine.teleRouteCameraId`, from `makerLogTeleRouteWanted`) serves every TELE door — startup and
 reopen (`selectCurrentLens`), Photo/Video, lens/TC and MR/settings recall — so Photo TC, any other
-transfer, > 30 fps, Open Gate or a camera pin still open the ordinary TC route byte-identically. The
-converter's GL/readout world is untouched: afocal 180°, TC-local zoom, focal/magnification readouts,
-OSD and EXIF. Only the session and the zoom WIRE differ, both inside the controller: `MakerTeleRoute`
+transfer, > 30 fps, Open Gate or a camera pin still open the ordinary TC route byte-identically. On
+this logical route only, the converter's GL/readout world remains TC-local: afocal 180°, TC-local
+zoom, focal/magnification readouts, OSD and EXIF. Only the session and the zoom WIRE differ, both
+inside the controller: `MakerTeleRoute`
 multiplies every `CONTROL_ZOOM_RATIO` written by the tele chip's unified position (3.0 on PMA110,
 `makerTeleWireZoomScale`) and divides every one read back, so engine, GL zoom compensation and UI
 stay TC-local; `original.zoomRatio` carries the wire value and the Hasselblad `camera.mode` hint is
@@ -1147,14 +1183,70 @@ change-gated `VivoLog:` row reports the preview-bit echo and `vivo.feedback.*` r
 
 **Video resolution and frame rates:**
 
-Resolutions come from the selected camera's `StreamConfigurationMap`, then the shipping selector caps
-recording width at 3840. PMA110 exposes 4K UHD as the largest selected 16:9 mode. Frame rates include
-standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94). The UI deliberately
-excludes 120 fps because the constrained high-speed session crashes this HAL.
+Resolutions originate in the selected camera's `StreamConfigurationMap`, but the camera cache stays
+RAW: `CameraEngine.capsCache` never stores a packet-filtered answer. At accepted-route capability
+installation, and again after codec/transfer/RAW-intent/bitrate changes before Ready, one
+`projectRecordableVideoSizes` projection filters the raw lists through the active exact encoder
+candidates and Gamma packet. Maker-TC zoom/aperture route adjustments are applied without restoring
+filtered sizes. ProSheet, frame-rate reconciliation and explicit-size admission all consume that same
+projected `availableVideoSizes` / `openGateVideoSizes`; there is no separate UI filter. An empty
+projected aspect list retains the legacy direct-characteristics automatic answer, and failure to
+project a future VIDEO size never invalidates a healthy accepted PHOTO session.
 
-Open-Gate (4:3-aspect recording; device-verified 2560×1920 on the tele — the recording surface is
-capped at 3840 wide, so this is NOT the full 4096×3072 still readout) is available alongside the
-standard 16:9 sizes.
+Automatic VIDEO and the PHOTO preview stay capped at 3840 wide, preserving the existing defaults
+(PMA110 selects 4K UHD / 2560×1920 Open Gate). With no matching-aspect size at or below the cap,
+selection takes the largest other advertised size inside it; if none exists, automatic selection has
+no answer and route configuration refuses preflight rather than exceeding the cap or inventing a
+stream. A size beyond the legacy 4096×3072 boundary, including 8K, can configure only through an
+explicit VIDEO selection (or its restored request) present in the projected list. Extended admission
+uses the exact component and codec's `MediaFormat` support answer for the required profile (Main10
+where applicable), selected nominal query rate, actual bitrate, and rotation-corrected encoder
+raster, intersected with the camera's fixed-FPS/minimum-duration limits and the ≤30 fps extended
+ceiling. Exact 1001-grid recording rates remain intact; only platform queries use nominal rates.
+No legal rate means no selectable size and an inert explicit setter: Engine, UI, persistence, the
+current stream, and Ready remain unchanged. RAW Log additionally needs a native RAW raster at least
+as large as the requested output. PMA110 has no additional-size profile admission and remains
+4K-only; FIELD_CHECKS A29 preserves the measured OEM-Log 8K streaming fatalities and the validated
+installed 4K build facts.
+
+Before a VIDEO reopen invalidates Ready or opens Camera2, `resolveVideoSessionIntent` resolves rate →
+RAW-Log eligibility → raster → rate to a fixed point and publishes one immutable `VideoSessionIntent`.
+The packet carries route, codec, transfer, RAW-Log answer, Open Gate, camera stream size, actual
+encoder raster, and exact rate; a rate correction that newly enables RAW Log reapplies the RAW raster
+gate before the open rather than asking the developer to upscale. The controller stages the newest
+packet before `openCamera`, and an open that races a newer same-shape pipeline cannot write its stale
+fallback back over it. PHOTO-mode explicit-size admission and retry identity use the retained
+next-Video Gamma, not PHOTO's forced SDR. If a later route/Gamma packet removes an extended request,
+the delivered size falls back to the capped automatic choice without rewriting the operator's
+request; reprojection from raw caps can admit that request again. Open Gate is published and
+persisted only after the Engine accepts the resolved change.
+
+Attempted and accepted raster truth stay separate. Per-open ownership records the attempted stream
+size with its route, transfer, optics/pipeline generations, direct-request write, and Open Gate;
+Camera2/GL use that attempt only for its owning transaction. The first valid real-camera-frame Ready
+publication installs `acceptedVideoSize` and the complete last accepted graph. REC freezes the
+accepted controller/session and an identical accepted raster, refusing a newer attempted or delivered
+size that differs. A surviving-newer-pipeline rollback either restores the actual accepted pair or
+stays Not-Ready and reconfigures; it never publishes a mismatched stream/size pair as Ready.
+
+An extended raster has one automatic attempt per explicit selection. A soft Camera2 configure
+rejection reports before any maker/RAW/P010 or ordinary fallback rung; a configure-fatal or later
+streaming-fatal device error takes the same exact route/size/transfer refusal latch before bounded
+recovery. Recovery restores the last usable real-frame accepted graph with Gamma unchanged, or, when
+no such graph survives, resolves exactly one legacy capped automatic attempt. It never descends
+through 5K/other extended intermediates and never recursively re-enters the rejected rollback
+transaction: recovery uses a post-mutation reconfiguration with bounded preflight/retry/terminal
+semantics, including when no accepted or capped answer resolves. The explicit request remains
+persisted, and only an identical explicit resolution retry clears its own refusal tuple. Every
+externally visible recovery effect revalidates controller, optics, pipeline, Open Gate, direct-size,
+and attempted-stream ownership, so an older callback cannot replace newer state.
+
+Frame rates include standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94).
+The UI deliberately excludes 120 fps because the constrained high-speed session crashes this HAL.
+
+Open-Gate (4:3-aspect recording; device-verified 2560×1920 on the tele — the automatic recording
+surface is capped at 3840 wide, so this is NOT the full 4096×3072 still readout) is available alongside
+the standard 16:9 sizes.
 
 Exact bitrate is displayed in Mbps and user-selectable per codec and resolution.
 

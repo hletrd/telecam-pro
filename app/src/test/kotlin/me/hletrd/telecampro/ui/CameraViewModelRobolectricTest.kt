@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
@@ -23,6 +25,8 @@ import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.ExtendedVideoRasterRefusal
+import me.hletrd.telecampro.camera.ExtendedVideoRasterRefusalLatch
 import me.hletrd.telecampro.camera.EngineCallbackKey
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
@@ -33,6 +37,8 @@ import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.TeleSelection
+import me.hletrd.telecampro.camera.rawLogRouteKey
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
@@ -51,6 +57,8 @@ import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
 import java.util.ArrayDeque
@@ -1654,6 +1662,458 @@ class CameraViewModelRobolectricTest {
         assertTrue(photo.controls.programAppSide)
         // The photographer's Photo shutter survives the round trip (the hidden photo bank).
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
+    }
+
+    @Test fun `no future VIDEO size leaves accepted PHOTO session Ready`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val extendedOnly = android.util.Size(7680, 4320)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(extendedOnly),
+            openGateVideoSizes = emptyList(),
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("cameraReady").setBoolean(e, true)
+        engineField("selection").set(e, TeleSelection("test", null, 23f))
+        engineField("caps").set(e, routeCaps)
+        setState(v) { it.copy(mode = CaptureMode.PHOTO, caps = routeCaps, cameraReady = true) }
+        val avc = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "test.avc.no-extended",
+            mime = MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { false },
+        )
+
+        e.setVideoPipeline(listOf(avc), ColorTransfer.SDR, fallbackCodec = VideoCodec.AVC)
+        idleFor(50)
+
+        assertTrue("a dormant VIDEO projection cannot invalidate PHOTO", engineField("cameraReady").getBoolean(e))
+        assertTrue(v.state.value.cameraReady)
+    }
+
+    @Test fun `Open Gate refusal does not update or persist the ViewModel request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val extended4by3 = android.util.Size(7680, 5760)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(android.util.Size(3840, 2160)),
+            openGateVideoSizes = listOf(extended4by3),
+        )
+        setState(v) { it.copy(mode = CaptureMode.VIDEO, caps = routeCaps, openGate = false) }
+        CameraEngine::class.java.getDeclaredField("videoMode").apply { isAccessible = true }.setBoolean(e, true)
+        CameraEngine::class.java.getDeclaredField("openGate").apply { isAccessible = true }.setBoolean(e, false)
+        CameraEngine::class.java.getDeclaredField("selection").apply { isAccessible = true }
+            .set(e, TeleSelection("test", null, 23f))
+        CameraEngine::class.java.getDeclaredField("caps").apply { isAccessible = true }.set(e, routeCaps)
+
+        v.onToggleOpenGate(true)
+
+        assertFalse(v.state.value.openGate)
+        assertFalse(currentExtras(v).openGate)
+        assertFalse(
+            CameraEngine::class.java.getDeclaredField("openGate")
+                .apply { isAccessible = true }
+                .getBoolean(e),
+        )
+    }
+
+    @Test fun `extended resolution selection projects a legal rate before its reopen`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            extendedVideoSizeRates = mapOf(eightK to setOf(23.976, 24.0, 29.97, 30.0)),
+        )
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = routeCaps,
+                videoResolution = uhd,
+                videoFrameRate = VideoFrameRate.FPS_60,
+                controls = it.controls.copy(fps = 60),
+            )
+        }
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(
+            e,
+            listOf(
+                EncoderSelection(
+                    codec = VideoCodec.HEVC,
+                    codecName = "extended-test",
+                    mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+                    hardwareAccelerated = true,
+                    main10 = true,
+                    formatSupport = EncoderFormatSupport { format ->
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+                    },
+                ),
+            ),
+        )
+        v.onVideoFrameRate(VideoFrameRate.FPS_60)
+        var rateAtSizePublication: VideoFrameRate? = null
+        var controlsFpsAtSizePublication: Int? = null
+        e.onVideoSizeChosen = { size, _ ->
+            if (size == eightK) {
+                rateAtSizePublication = engineField("videoFrameRate").get(e) as VideoFrameRate
+                controlsFpsAtSizePublication = (engineField("controls").get(e) as ManualControls).fps
+            }
+        }
+
+        v.onVideoResolution(eightK)
+
+        assertEquals(VideoFrameRate.FPS_29_97, rateAtSizePublication)
+        assertEquals(30, controlsFpsAtSizePublication)
+    }
+
+    @Test fun `extended rate correction that enables RAW Log refuses an upscaled raster inertly`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            supportsRaw = true,
+            rawSize = android.util.Size(4096, 3072),
+            rawLogDevelopable = true,
+            rawMinFrameDurationNs = 33_333_333L,
+        )
+        val encoder8k30 = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-8k30",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("transfer").set(e, ColorTransfer.SLOG3)
+        engineField("rawLogEnabled").setBoolean(e, true)
+        engineField("videoFrameRate").set(e, VideoFrameRate.FPS_60)
+        engineField("controls").set(e, ManualControls(fps = 60))
+        engineField("videoEncoderCandidates").set(e, listOf(encoder8k30))
+        engineField("caps").set(e, routeCaps)
+        engineField("videoSize").set(e, uhd)
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = routeCaps,
+                videoResolution = uhd,
+                videoFrameRate = VideoFrameRate.FPS_60,
+                transfer = ColorTransfer.SLOG3,
+                rawLog = true,
+            )
+        }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertEquals(uhd, engineField("videoSize").get(e))
+        assertEquals(VideoFrameRate.FPS_60, engineField("videoFrameRate").get(e))
+        assertNull(e.currentRequestedVideoSize())
+    }
+
+    @Test fun `PHOTO extended admission uses retained Gamma and an illegal exact format is inert`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableVideoSizes = listOf(eightK, uhd),
+            // A stale projected map must not override the exact retained-HLG format probe.
+            extendedVideoSizeRates = mapOf(eightK to setOf(23.976, 24.0, 29.97, 30.0)),
+        )
+        val mainOnly = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "main-only",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_PROFILE) ==
+                    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("videoEncoderCandidates").set(e, listOf(mainOnly))
+        engineField("caps").set(e, routeCaps)
+        engineField("requestedVideoSize").set(e, null)
+        engineField("videoSize").set(e, uhd)
+        setState(v) { it.copy(mode = CaptureMode.PHOTO, caps = routeCaps, videoResolution = uhd) }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(uhd, engineField("videoSize").get(e))
+    }
+
+    @Test fun `camera fixed 60 and encoder 30 leaves no legal rate and setter is inert`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(60, 60)),
+            availableVideoSizes = listOf(eightK, uhd),
+            extendedVideoSizeRates = mapOf(eightK to setOf(29.97, 30.0)),
+        )
+        val encoder30 = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-30",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { true },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("videoEncoderCandidates").set(e, listOf(encoder30))
+        engineField("caps").set(e, routeCaps)
+        engineField("requestedVideoSize").set(e, null)
+        engineField("videoSize").set(e, uhd)
+        setState(v) {
+            it.copy(mode = CaptureMode.VIDEO, caps = routeCaps, videoResolution = uhd)
+        }
+        val before = v.state.value
+        val extrasBefore = currentExtras(v)
+
+        assertFalse(e.setVideoResolution(eightK))
+        v.onVideoResolution(eightK)
+
+        assertEquals(before, v.state.value)
+        assertEquals(extrasBefore, currentExtras(v))
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(uhd, engineField("videoSize").get(e))
+    }
+
+    @Test fun `PHOTO explicit retry clears the retained next-Video Gamma refusal tuple`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val route = TeleSelection("test", null, 23f)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+            availableVideoSizes = listOf(eightK, uhd),
+        )
+        val encoder8k = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-8k-hlg",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { true },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("selection").set(e, route)
+        engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(e, listOf(encoder8k))
+        val latch = engineField("extendedVideoRasterRefusals").get(e) as ExtendedVideoRasterRefusalLatch
+        val routeKey = rawLogRouteKey(route.logicalId, route.physicalId, false)
+        latch.refuse(ExtendedVideoRasterRefusal(routeKey, eightK, ColorTransfer.HLG))
+        assertTrue(latch.blocks(routeKey, eightK, ColorTransfer.HLG))
+
+        assertTrue(e.setVideoResolution(eightK))
+
+        assertFalse("the HLG next-Video graph must really retry", latch.blocks(routeKey, eightK, ColorTransfer.HLG))
+    }
+
+    @Test fun `resolution request revalidates when a pipeline change wins the probe race`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val routeCaps = ViewModelTestAccess.caps().copy(
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+            availableVideoSizes = listOf(eightK, uhd),
+        )
+        val probeEntered = CountDownLatch(1)
+        val releaseProbe = CountDownLatch(1)
+        val initialEncoder = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-initially-legal",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport {
+                probeEntered.countDown()
+                releaseProbe.await(2, TimeUnit.SECONDS)
+                true
+            },
+        )
+        val rejectingEncoder = initialEncoder.copy(
+            codecName = "encoder-now-illegal",
+            formatSupport = EncoderFormatSupport { false },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, false)
+        engineField("transfer").set(e, ColorTransfer.SDR)
+        engineField("requestedVideoTransfer").set(e, ColorTransfer.HLG)
+        engineField("caps").set(e, routeCaps)
+        engineField("videoEncoderCandidates").set(e, listOf(initialEncoder))
+        engineField("requestedVideoSize").set(e, null)
+        engineField("requestedVideoSizeDirectWrites").setLong(e, 0L)
+        val accepted = AtomicReference<Boolean>()
+        val picker = Thread { accepted.set(e.setVideoResolution(eightK)) }
+        picker.start()
+        assertTrue(probeEntered.await(2, TimeUnit.SECONDS))
+
+        e.setVideoPipeline(listOf(rejectingEncoder), ColorTransfer.HLG)
+        releaseProbe.countDown()
+        picker.join(2_000)
+
+        assertFalse("a stale successful probe cannot admit the old packet", accepted.get())
+        assertNull(e.currentRequestedVideoSize())
+        assertEquals(0L, engineField("requestedVideoSizeDirectWrites").getLong(e))
+    }
+
+    @Test fun `live bitrate changes reproject and restore the retained extended request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val route = TeleSelection("test", null, 23f)
+        val raw = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK, uhd))
+        val lowOnly = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "encoder-low-bitrate-only",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_BIT_RATE) <= 60_000_000
+            },
+        )
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("selection").set(e, route)
+        engineField("caps").set(e, raw)
+        engineField("bitrateLevel").set(e, me.hletrd.telecampro.camera.BitrateLevel.LOW)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = engineField("capsCache").get(e)
+            as java.util.concurrent.ConcurrentHashMap<String, me.hletrd.telecampro.camera.CameraCaps>
+        rawCache["test:null"] = raw
+        e.setVideoPipeline(listOf(lowOnly), ColorTransfer.SDR)
+        assertTrue("precondition: LOW admits the explicit 8K request", e.setVideoResolution(eightK))
+
+        val generationBeforeHigh = engineField("videoPipelinePublicationGeneration").get(e) as java.util.concurrent.atomic.AtomicLong
+        val highGenerationBefore = generationBeforeHigh.get()
+        e.setBitrateLevel(me.hletrd.telecampro.camera.BitrateLevel.HIGH)
+
+        assertTrue("bitrate owns the projection generation", generationBeforeHigh.get() > highGenerationBefore)
+        assertEquals(
+            listOf(uhd),
+            (engineField("caps").get(e) as me.hletrd.telecampro.camera.CameraCaps).availableVideoSizes,
+        )
+        assertEquals(uhd, engineField("videoSize").get(e))
+        assertEquals(eightK, e.currentRequestedVideoSize())
+
+        e.setBitrateLevel(me.hletrd.telecampro.camera.BitrateLevel.LOW)
+
+        assertEquals(eightK, engineField("videoSize").get(e))
+        assertEquals(eightK, e.currentRequestedVideoSize())
+    }
+
+    @Test fun `codec reconciliation falls back from 8K without relabeling the request`() {
+        val (v, e) = createViewModel()
+        idleFor(0)
+        val eightK = android.util.Size(7680, 4320)
+        val uhd = android.util.Size(3840, 2160)
+        val raw = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(eightK, uhd))
+        fun engineField(name: String) =
+            CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        engineField("videoMode").setBoolean(e, true)
+        engineField("selection").set(e, TeleSelection("test", null, 23f))
+        engineField("caps").set(e, raw)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = engineField("capsCache").get(e)
+            as java.util.concurrent.ConcurrentHashMap<String, me.hletrd.telecampro.camera.CameraCaps>
+        rawCache["test:null"] = raw
+        val hevc8k = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "test.hevc.8k",
+            mime = "video/hevc",
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        val avcUhd = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "test.avc.uhd",
+            mime = "video/avc",
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_WIDTH) <= 3840 &&
+                    format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        ViewModelTestAccess.setField(
+            v,
+            "encoderInventory",
+            CodecInventory(mapOf(VideoCodec.HEVC to listOf(hevc8k), VideoCodec.AVC to listOf(avcUhd))),
+        )
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.VIDEO,
+                caps = raw,
+                videoResolution = eightK,
+                tenBitEncodeAvailable = true,
+                availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
+            )
+        }
+        e.setVideoPipeline(listOf(hevc8k), ColorTransfer.SDR)
+        v.onVideoResolution(eightK)
+        idleFor(50)
+        assertEquals("precondition: the HEVC route admits the explicit 8K pick", eightK, v.state.value.videoResolution)
+
+        v.onVideoCodec(VideoCodec.AVC)
+        idleFor(50)
+
+        assertEquals("the published size is the accepted fallback", uhd, v.state.value.videoResolution)
+        assertEquals("the operator request is not relabeled as delivered", "7680x4320", currentExtras(v).videoResolution)
+        assertEquals("the raw camera cache is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
+
+        v.onVideoCodec(VideoCodec.HEVC)
+        idleFor(50)
+        assertEquals("reprojection from raw caps restores the supported request", eightK, v.state.value.videoResolution)
+        assertEquals("7680x4320", currentExtras(v).videoResolution)
     }
 
     // ---- The focus-ruler loupe assist must not become a persisted setting ----

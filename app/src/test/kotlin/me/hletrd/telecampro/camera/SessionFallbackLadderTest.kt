@@ -13,6 +13,14 @@ import org.junit.Test
 class SessionFallbackLadderTest {
 
     @Test
+    fun `standalone maker video logical maker and ordinary TC keep distinct operation modes`() {
+        assertEquals(0x80b5, sessionTypeFor(standaloneMakerVideo = true, logicalMaker = false, ordinaryTc = false))
+        assertEquals(0x830b, sessionTypeFor(standaloneMakerVideo = false, logicalMaker = true, ordinaryTc = false))
+        assertEquals(0x80b4, sessionTypeFor(standaloneMakerVideo = false, logicalMaker = false, ordinaryTc = true))
+        assertEquals(0, sessionTypeFor(standaloneMakerVideo = false, logicalMaker = false, ordinaryTc = false))
+    }
+
+    @Test
     fun `attempt 0 is the full session`() {
         val p = sessionAttemptPlan(
             attempt = 0,

@@ -1,11 +1,13 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.graphics.SurfaceTexture
 import android.media.MediaFormat
 import android.os.Looper
 import android.util.Range
 import android.util.Rational
 import android.util.Size
+import android.view.Surface
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.hletrd.telecampro.camera.CameraController
@@ -16,15 +18,21 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.camera.TeleSelection
+import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.VideoSessionIntent
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.recordingEncoderAdmission
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoPipelineEngineOverrides
 import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.EncoderFormatSupport
 import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -145,6 +153,212 @@ class ModeRollbackOwnershipRobolectricTest {
         )
         assertEquals(null, admitted.failure)
         assertEquals(listOf(VideoCodec.AVC), admitted.candidates.map { it.codec })
+    }
+
+    @Test
+    fun `surviving newer codec reprojects restored route caps and delivered size`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+        val eightK = Size(7680, 4320)
+        val uhd = Size(3840, 2160)
+        val raw = rollbackCaps().copy(availableVideoSizes = listOf(eightK, uhd))
+        val hevc8k = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-hevc-8k",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        val avcUhd = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc-uhd",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getInteger(MediaFormat.KEY_WIDTH) <= 3840 &&
+                    format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 30f
+            },
+        )
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(hevc8k),
+            VideoCodec.AVC to listOf(avcUhd),
+        )))
+        setField(engine, "selection", TeleSelection("test", null, 23f))
+        setField(engine, "caps", raw)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = field(engine, "capsCache")
+            as java.util.concurrent.ConcurrentHashMap<String, CameraCaps>
+        rawCache["test:null"] = raw
+        engine.setVideoPipeline(listOf(hevc8k), ColorTransfer.SDR)
+        viewModel.onVideoResolution(eightK)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("precondition: HEVC delivers the explicit 8K baseline", eightK, field(engine, "videoSize"))
+
+        viewModel.onModeChange(CaptureMode.PHOTO)
+        viewModel.onVideoCodec(VideoCodec.AVC)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("the newer Photo-mode command reconciles to UHD", uhd, field(engine, "videoSize"))
+
+        forceOwnedRollback(
+            engine,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+
+        assertEquals(CaptureMode.VIDEO, viewModel.state.value.mode)
+        assertEquals("the newer codec survives the older rollback", VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals("rollback caps are projected for that codec", listOf(uhd), (field(engine, "caps") as CameraCaps).availableVideoSizes)
+        assertEquals("rollback delivered size uses the same projection", uhd, field(engine, "videoSize"))
+        assertEquals("the explicit request still survives", eightK, field(engine, "requestedVideoSize"))
+        assertEquals("the actual accepted stream is retained until its reopen", eightK, field(engine, "previewStreamSize"))
+        assertFalse("the restored VIDEO session cannot be Ready at a different raster", engineReady(engine))
+        assertNull("REC admission is refused until the reprojected stream is accepted", currentAcceptedRecordingSession(engine))
+        assertEquals(listOf(uhd), viewModel.state.value.caps?.availableVideoSizes)
+        assertEquals(uhd, viewModel.state.value.videoResolution)
+        assertEquals("raw camera truth is never narrowed", listOf(eightK, uhd), rawCache["test:null"]!!.availableVideoSizes)
+    }
+
+    @Test
+    fun `surviving newer pipeline at one raster cannot restore a stale REC intent`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+        val eightK = Size(7680, 4320)
+        val route = TeleSelection("test", null, 23f)
+        val raw = rollbackCaps().copy(
+            availableFpsRanges = arrayOf(Range(30, 30)),
+            availableVideoSizes = listOf(eightK),
+            extendedVideoSizeRates = mapOf(eightK to setOf(23.976, 24.0, 29.97, 30.0)),
+        )
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-hevc-29-97",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) <= 29.97f
+            },
+        )
+        val avc30 = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc-30",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+            formatSupport = EncoderFormatSupport { format ->
+                format.getFloat(MediaFormat.KEY_FRAME_RATE) == 30f
+            },
+        )
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(hevc),
+            VideoCodec.AVC to listOf(avc30),
+        )))
+        setField(engine, "selection", route)
+        setField(engine, "caps", raw)
+        setField(engine, "requestedVideoSize", eightK)
+        setField(engine, "videoSize", eightK)
+        setField(engine, "previewStreamSize", eightK)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = field(engine, "capsCache")
+            as java.util.concurrent.ConcurrentHashMap<String, CameraCaps>
+        rawCache["test:null"] = raw
+        engine.setVideoPipeline(listOf(hevc), ColorTransfer.SDR)
+        val controller = field(engine, "controller") as CameraController
+        controller.stageVideoSessionIntentForOpen(
+            VideoSessionIntent(
+                route = route,
+                codec = VideoCodec.HEVC,
+                transfer = ColorTransfer.SDR,
+                rawLog = false,
+                openGate = false,
+                streamSize = eightK,
+                encoderSize = Size(eightK.height, eightK.width),
+                frameRate = VideoFrameRate.FPS_29_97,
+            ),
+        )
+        acceptCurrentSession(engine, controller)
+        val acceptedRec = checkNotNull(currentRecordingAdmissionSnapshot(engine))
+        assertEquals(VideoCodec.HEVC, field(checkNotNull(field(acceptedRec, "inputs")), "codec"))
+
+        viewModel.onModeChange(CaptureMode.PHOTO)
+        viewModel.onVideoCodec(VideoCodec.AVC)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals("the new packet normalizes cadence without changing raster", VideoFrameRate.FPS_30, field(engine, "videoFrameRate"))
+        assertEquals("the retained controller still describes the old accepted graph", VideoCodec.HEVC, controller.videoSessionIntent?.codec)
+
+        forceOwnedRollback(
+            engine,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+
+        assertEquals(CaptureMode.VIDEO, viewModel.state.value.mode)
+        assertFalse("a complete intent mismatch must reopen before Ready", engineReady(engine))
+        assertNull("REC cannot freeze the retained HEVC/29.97 intent for AVC/30", currentRecordingAdmissionSnapshot(engine))
+    }
+
+    @Test
+    fun `post-mutation recovery with no resolvable video intent enters bounded retry`() {
+        val (_, engine) = createAccepted(CaptureMode.VIDEO)
+        val eightK = Size(7680, 4320)
+        val raw = rollbackCaps().copy(availableVideoSizes = listOf(eightK))
+        setField(engine, "selection", TeleSelection("test", null, 23f))
+        setField(engine, "caps", raw)
+        setField(engine, "requestedVideoSize", null)
+        setField(engine, "started", true)
+        @Suppress("UNCHECKED_CAST")
+        val rawCache = field(engine, "capsCache")
+            as java.util.concurrent.ConcurrentHashMap<String, CameraCaps>
+        rawCache["test:null"] = raw
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val owners = checkNotNull(field(engine, "glOwners"))
+        val gl = checkNotNull(owners.javaClass.getDeclaredMethod("current").invoke(owners))
+        setField(gl, "inputSurface", surface)
+        val retrying = CountDownLatch(1)
+        engine.onStatus = {
+            if (it?.message == CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING) retrying.countDown()
+        }
+        val desired = CameraEngine::class.java.getDeclaredMethod("currentOpticsReconfiguration")
+            .apply { isAccessible = true }.invoke(engine)
+        val transaction = checkNotNull(field(checkNotNull(desired), "transaction"))
+
+        CameraEngine::class.java.getDeclaredMethod(
+            "reconfigureCamera",
+            String::class.java,
+            transaction.javaClass,
+            Boolean::class.javaPrimitiveType,
+            Class.forName("me.hletrd.telecampro.camera.StartupTrace\$Owner"),
+        ).apply { isAccessible = true }.invoke(engine, "test", transaction, false, null)
+
+        assertTrue("the unresolved intent must reach BARE_RETRY", retrying.await(2, TimeUnit.SECONDS))
+        setField(engine, "started", false)
+        surface.release()
+        texture.release()
+    }
+
+    @Test
+    fun `rollback reopen effects cannot recursively retain the rejected transaction`() {
+        val effectsType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsRollbackEffects" }
+        val transactionType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsTransaction" }
+
+        assertFalse(
+            "a mismatch reopen must be requested as a Boolean and rebuilt post-mutation",
+            effectsType.declaredFields.any { transactionType.isAssignableFrom(it.type) },
+        )
     }
 
     @Test
@@ -651,6 +865,32 @@ class ModeRollbackOwnershipRobolectricTest {
     private fun engineTransfer(engine: CameraEngine) = field(engine, "transfer") as ColorTransfer
     private fun standbyWanted(engine: CameraEngine) = field(engine, "standbyAudioMonitorWanted") as Boolean
     private fun engineReady(engine: CameraEngine) = field(engine, "cameraReady") as Boolean
+
+    private fun currentAcceptedRecordingSession(engine: CameraEngine): Any? =
+        CameraEngine::class.java.getDeclaredMethod("currentAcceptedRecordingSession")
+            .apply { isAccessible = true }
+            .invoke(engine)
+
+    private fun currentRecordingAdmissionSnapshot(engine: CameraEngine): Any? =
+        CameraEngine::class.java.getDeclaredMethod("currentRecordingAdmissionSnapshot")
+            .apply { isAccessible = true }
+            .invoke(engine)
+
+    private fun acceptCurrentSession(engine: CameraEngine, controller: CameraController) {
+        val opticsGeneration = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
+        val sessionGeneration = (field(engine, "cameraSessionGeneration") as AtomicLong).get()
+        CameraEngine::class.java.declaredMethods.single {
+            it.name == "commitOpticsReady" && it.parameterTypes.size == 6
+        }.apply { isAccessible = true }.invoke(
+            engine,
+            opticsGeneration,
+            controller,
+            PhotoSessionOutputs(),
+            sessionGeneration,
+            {},
+            null,
+        )
+    }
 
     private fun field(owner: Any, name: String): Any? = owner.javaClass.getDeclaredField(name)
         .apply { isAccessible = true }

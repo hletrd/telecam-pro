@@ -2,19 +2,27 @@ package me.hletrd.telecampro.video
 
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import me.hletrd.telecampro.camera.VideoCodec
+import android.util.Size
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.projectedLegalVideoRate
+import me.hletrd.telecampro.ui.ViewModelTestAccess
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
 /**
  * Pins the two pure seams of the encoder scan (TEST4-19): the name heuristic that backs a throwing
  * isHardwareAccelerated, and the hardware-first tie-break. EncoderCaps itself needs a live
  * MediaCodecList and stays device-verified.
  */
+@RunWith(RobolectricTestRunner::class)
 class EncoderCapsTest {
 
     private fun component(
@@ -29,6 +37,84 @@ class EncoderCapsTest {
         hardwareAccelerated = hardware,
         hevcProfiles = profiles,
     )
+
+    @Test
+    fun `Main10 rejection removes HLG 8K but Main-only SDR answer is independent`() {
+        val hlg = exactFormat(VideoCodec.HEVC, ColorTransfer.HLG, 4320, 7680, 29.97)
+        val sdr = exactFormat(VideoCodec.HEVC, ColorTransfer.SDR, 4320, 7680, 29.97)
+        val mainOnlyProbe = EncoderFormatSupport { format ->
+            format.getInteger(MediaFormat.KEY_PROFILE) == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+        }
+        assertFalse(mainOnlyProbe.supports(hlg))
+        assertTrue(mainOnlyProbe.supports(sdr))
+
+        val mainOnly = EncoderSelection(
+            VideoCodec.HEVC, "main-only", MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true, main10 = false, formatSupport = mainOnlyProbe,
+        )
+        val caps = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(Size(7680, 4320)))
+        assertNull(projectedLegalVideoRate(
+            caps, Size(7680, 4320), listOf(mainOnly), ColorTransfer.HLG,
+            VideoCodec.HEVC, sensorOrientation = 90, contentRotation = 180,
+        ))
+        assertNotNull(projectedLegalVideoRate(
+            caps, Size(7680, 4320), listOf(mainOnly), ColorTransfer.SDR,
+            VideoCodec.HEVC, sensorOrientation = 90, contentRotation = 180,
+        ))
+    }
+
+    @Test
+    fun `portrait encoder rejection removes a 90 degree 8K candidate`() {
+        val landscapeOnlyProbe = EncoderFormatSupport { format ->
+            format.getInteger(MediaFormat.KEY_WIDTH) >= format.getInteger(MediaFormat.KEY_HEIGHT)
+        }
+        val selection = EncoderSelection(
+            VideoCodec.HEVC, "landscape-only", MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true, main10 = true, formatSupport = landscapeOnlyProbe,
+        )
+        val caps = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(Size(7680, 4320)))
+
+        assertNull(projectedLegalVideoRate(
+            caps, Size(7680, 4320), listOf(selection), ColorTransfer.SDR,
+            VideoCodec.HEVC, sensorOrientation = 90, contentRotation = 180,
+        ))
+        assertNotNull(projectedLegalVideoRate(
+            caps, Size(7680, 4320), listOf(selection), ColorTransfer.SDR,
+            VideoCodec.HEVC, sensorOrientation = 0, contentRotation = 0,
+        ))
+    }
+
+    @Test
+    fun `NTSC capability probes stay nominal while the admitted recording rate stays exact`() {
+        val probedRates = mutableListOf<Float>()
+        val probe = EncoderFormatSupport { format ->
+            probedRates += format.getFloat(MediaFormat.KEY_FRAME_RATE)
+            true
+        }
+        val selection = EncoderSelection(
+            VideoCodec.HEVC, "ntsc", MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true, main10 = true, formatSupport = probe,
+        )
+        val caps = ViewModelTestAccess.caps().copy(availableVideoSizes = listOf(Size(7680, 4320)))
+
+        val admitted = projectedLegalVideoRate(
+            caps, Size(7680, 4320), listOf(selection), ColorTransfer.SDR,
+            VideoCodec.HEVC, sensorOrientation = 90, contentRotation = 0,
+        )
+
+        assertTrue(29.97f in probedRates)
+        assertFalse(probedRates.any { kotlin.math.abs(it - VideoFrameRate.FPS_29_97.encoderRate.toFloat()) < 0.00001f })
+        assertEquals(VideoFrameRate.FPS_29_97, admitted)
+        assertEquals(30000.0 / 1001.0, admitted?.encoderRate ?: 0.0, 0.0)
+    }
+
+    private fun exactFormat(
+        codec: VideoCodec,
+        transfer: ColorTransfer,
+        width: Int,
+        height: Int,
+        rate: Double,
+    ): MediaFormat = ColorProfiles.videoFormat(codec, width, height, rate, 0.0, 100_000_000, transfer)
 
     @Test
     fun `empty and throwing discovery fail closed`() {
@@ -107,6 +193,67 @@ class EncoderCapsTest {
         assertTrue(inventory.heifEncodeAvailable)
         assertFalse(inventory.tenBitEncodeAvailable)
         assertFalse(inventory.selectionFor(VideoCodec.HEVC)!!.main10)
+    }
+
+    @Test
+    fun `format probe belongs to exact component`() {
+        val component = CodecComponent(
+            name = "c2.test.hevc",
+            encoder = true,
+            supportedTypes = setOf("video/hevc"),
+            hardwareAccelerated = true,
+            hevcProfiles = setOf(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+            formatSupport = mapOf(
+                VideoCodec.HEVC to EncoderFormatSupport { format ->
+                    format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_VIDEO_HEVC &&
+                        format.getInteger(MediaFormat.KEY_WIDTH) == 7680 &&
+                        format.getInteger(MediaFormat.KEY_HEIGHT) == 4320 &&
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) == 30f
+                },
+            ),
+        )
+        val selected = buildCodecInventory(listOf(component)).selectionFor(VideoCodec.HEVC)!!
+        val probe = selected.formatSupport!!
+        assertTrue(probe.supports(exactFormat(VideoCodec.HEVC, ColorTransfer.SDR, 7680, 4320, 30.0)))
+        assertFalse(probe.supports(exactFormat(VideoCodec.HEVC, ColorTransfer.SDR, 3840, 2160, 60.0)))
+    }
+
+    @Test
+    fun `dual-codec component retains independent MIME and format probes`() {
+        val component = CodecComponent(
+            name = "c2.test.dual",
+            encoder = true,
+            supportedTypes = setOf("video/hevc", "video/avc"),
+            hardwareAccelerated = true,
+            hevcProfiles = emptySet(),
+            formatSupport = mapOf(
+                VideoCodec.HEVC to EncoderFormatSupport { format ->
+                    format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_VIDEO_HEVC &&
+                        format.getInteger(MediaFormat.KEY_WIDTH) == 7680 &&
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) == 30f
+                },
+                VideoCodec.AVC to EncoderFormatSupport { format ->
+                    format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_VIDEO_AVC &&
+                        format.getInteger(MediaFormat.KEY_WIDTH) == 3840 &&
+                        format.getFloat(MediaFormat.KEY_FRAME_RATE) == 60f
+                },
+            ),
+        )
+        val inventory = buildCodecInventory(listOf(component))
+        val hevc = inventory.selectionFor(VideoCodec.HEVC)!!.formatSupport!!
+        val avc = inventory.selectionFor(VideoCodec.AVC)!!.formatSupport!!
+
+        assertTrue(hevc.supports(exactFormat(VideoCodec.HEVC, ColorTransfer.SDR, 7680, 4320, 30.0)))
+        assertFalse(hevc.supports(exactFormat(VideoCodec.AVC, ColorTransfer.SDR, 3840, 2160, 60.0)))
+        assertFalse(avc.supports(exactFormat(VideoCodec.HEVC, ColorTransfer.SDR, 7680, 4320, 30.0)))
+        assertTrue(avc.supports(exactFormat(VideoCodec.AVC, ColorTransfer.SDR, 3840, 2160, 60.0)))
+    }
+
+    @Test
+    fun `missing capability query grants no oversize support`() {
+        val componentWithoutProbe = component("c2.test.hevc", MediaFormat.MIMETYPE_VIDEO_HEVC)
+        val selected = buildCodecInventory(listOf(componentWithoutProbe)).selectionFor(VideoCodec.HEVC)!!
+        assertNull(selected.formatSupport)
     }
 
     @Test

@@ -324,14 +324,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun applyProtectedDebugCameraFollowups(command: DebugCameraControlCommand) {
+        command.zoomRatio?.let(vm::debugApplyZoom)
+        command.record?.let(vm::debugSetRecording)
+        repeat(command.shutterPresses) { vm.debugPressShutter() }
+    }
+
     /** Consumes only commands admitted by the debug manifest's DUMP-protected component. */
     private fun consumeProtectedDebugCameraCommand() {
         if (!BuildConfig.DEBUG) return
         val command = DebugCameraControlMailbox.consume() ?: return
         command.zslSpike?.let(vm::debugSetZslSpike)
-        command.zoomRatio?.let(vm::debugApplyZoom)
-        command.record?.let(vm::debugSetRecording)
-        repeat(command.shutterPresses) { vm.debugPressShutter() }
+        applyProtectedDebugCameraFollowups(command.copy(zslSpike = null))
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -411,7 +415,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
         setContent {
             TeleCamProTheme {
                 val state by vm.state.collectAsState()

@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-29):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -26,7 +26,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A23** needs white balance and still framing checked on the front route, an owner decision on the lost 4 s manual-WB still in Active, the POCO still checks (needs "USB debugging (Security settings)") and its calibration-vs-preset gain mismatch, and AUTO under a second light on the PMA110,
 **A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
-**A29** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
+**A31** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1647,7 +1647,175 @@ own debug rows: `CaptureFamily: registered` (admission) → `ShutterLag: started
 
 Open: the Flip6, S23 Ultra, S20, POCO and the PMA110 reference.
 
-### A29. vivo OEM Log (+TC) — ◯ OPEN 2026-10-28, UNVERIFIED (implemented from static analysis without a device)
+### A29. PMA110 OEM Log 8K probe — ✅ MEASURED NEGATIVE 2026-10-28
+
+An explicit 7680×4320 candidate was injected only into the DEBUG PMA110 OEM-Log projection, after
+the exact HEVC component accepted that size at 29.97 and 30 fps. Release and GENERIC projections were
+host-tested unable to receive it. The device ran immutable debug `d0a6a80d274c-2cd9aa9e` (probe
+commit `d0a6a80d`, APK SHA-256
+`e17fb312bb251f1c1b6abb3ec752b9b6267d710a4cf6d0ed45f80e2904ef2cf2`; installed-path hash matched)
+on `OPPO/PMA110/OP61BDL1:17/CP2A.260605.016/B.30d6865-a9327b-aae421`.
+
+Both rates configured a real Camera2 stream, then failed before REC readiness or any encoder take:
+
+- **29.97:** `createStreamLocked : stream size is 7680 x 4320`, CamX `operation_mode: 0x830b`,
+  `setBuffersDimensions [7680, 4320]`, and `Session configured ... makerLog=true` all preceded
+  `Start camera streaming`. The OEM GME node then reported `ExecuteGeolib failed` /
+  `CDKResultExtEPRFailed`, the camera HAL raised SIGABRT, and Camera2 reported device error 4.
+- **30:** the same real 7680×4320 `0x830b` stream and accepted maker session started, then the camera
+  HAL raised SIGSEGV about 0.22 s into streaming; Camera2 again reported device error 4.
+
+No 8K frame reached recorder admission, no new video file was created, and there is no Main10 encode,
+full-decode, cadence, memory or thermal-soak evidence to claim. Bounded recovery reopened ordinary 4K
+S-Log3 (`makerLog=false`) after both failures. The debug injection was withdrawn in `768e3ca3`; no
+`DeviceProfile` additional-size admission was added, so 8K remains absent unless a camera actually
+advertises and the exact encoder accepts it.
+
+The final no-injection immutable debug `768e3ca30d36-fa485de4` (commit `768e3ca3`, APK SHA-256
+`5deb5a6a6ad3e176df1760b803a92daeb6b0e4b95bea6fb8a996542a449ee123`, installed hash matched before
+and after the take) offers 4K and no 8K row. Its 4K OEM-Log 30 fps product take fully decodes:
+2160×3840 HEVC Main10, BT.2020 full range, 626 frames / 20.866667 s with every PTS interval
+0.033333–0.033334 s, AAC 48 kHz stereo / 20.778667 s, and `EncoderClock` placed 625 / dropped 0 /
+filled 1. This validates retained 4K behavior, not an 8K capability or an 8K soak.
+
+Local evidence:
+`.context/8k-oem-2026-10-28/evidence/` (immutable build receipts, full logcat, dumpsys, UI state and
+installed-hash checks).
+
+### A30. Standalone TC OEM Log 0x80b5 — ✅ PASSED 2026-10-29 (simultaneous-operation scope)
+
+PMA110 `PMA110_17.0.0.106(CN01)`, unlocked `172.30.50.127:44715`, immutable debug
+`69687fb3173e-5c90fd61` (source `69687fb3`; APK SHA-256
+`0b72f5a062472521f93e2e30d3f5c06f2f022ecf177fa277dd47cfd401efed0d`, wrapper and installed-path
+hashes matched before measurement). The DUMP-protected debug command was the only admission;
+production `makerLogStandaloneTeleVideo` stayed false. The Video tab read HEVC 4K29.97, OEM Log,
+then TC + `debug_standalone_maker_video=true` opened **standalone camera 4 + 0x80b5** at fallback 0
+and reached Ready. Follow-up `08aa4156` changes documentation/host tests only.
+
+**Focus and optics:** continuous-video AF settled from `PASSIVE_SCAN` to `PASSIVE_FOCUSED` at
+1.36739266 diopters and held that distance through the take. Native 2160×3840 frames and 1:1 crops
+resolve the fixed tablet scene's small labels and icon edges, unlike the severe unresolved blur in
+A26's earlier standalone attempt. The accepted controller/session remained camera 4. No physical
+chart was present, so this is a fixed-texture focus check, not a chart-distance or mounted-converter
+stabilization claim.
+
+**Real OEM pipeline, not a tag echo:** results report operation mode 32949 (`0x80b5`), Log format 0,
+and native gamma beginning `754 1067 1329 1500 1628 1730 1815 1888`. Ready additionally proves the
+existing acceptance predicate consumed a real **1024-entry** gamma with entry 0 = 754 and entry
+255 > 754; Camera2's watch dump itself abbreviates the array to eight entries. `HDRFeatureMode=1`,
+`drc_gain=7.80164671`, and packed conversion gains 7.77653646 / 1.0 show the unequal HDR/DRC policy.
+AWB AUTO converged; numeric WB-gain parity was not measured in this run. Requests carry
+`pro_video_log_mode` (not Hasselblad mode 40), `original.zoomRatio=4.28571415`, OIS ON and
+standard/vendor stabilization ON/1. CamX `ProcessSensorModeUpdate` selected **lighthousetele sensor
+mode 50**, 4096×2560 30 fps SHDR(2EXP) DCG 2PD, **not mode 48**. Sensor mode and ois/vstab values are
+supporting evidence only, not stabilization proof.
+
+`VID_TELECAM_F1_1793192341178_0000000001.mp4`: 2160×3840 HEVC **Main 10**, `yuv420p10le`, BT.2020
+full range / `bt2020-10`, AAC-LC 48 kHz stereo; 298 frames / 9.943267 s at exactly 30000/1001, every
+PTS delta 0.033366–0.033367 s, `EncoderClock placed=298 dropped=0 filled=0`, and a clean full decode.
+The 3-second frame has 614 distinct Y10 levels and 74.9994% nonzero low two bits.
+
+Wireless ADB disconnected after this take, before a same-scene stock PRO VIDEO O-Log2 control, an
+ordinary-TC control take, and the final installed-hash readback. Therefore stock pixel parity and
+the final hash check remain open; no production promotion or physical stabilization claim follows.
+Local evidence: `.context/tc-maker-stabilization-2026-10-28/` (APK/source identity, full logcat,
+dumpsys, watch metadata, clip, native frames/crops and analysis).
+
+**Mounted-converter completion (2026-10-28/29).** The physical Hasselblad converter stayed clamped
+over the 3× periscope for every condition. Stock PRO VIDEO bare-3× showed the afocal-inverted field;
+ordinary app TC and stock TC corrected it. The final installed-hash readback for the initial probe
+also matched `0b72f5a0…ed0d`, closing that interruption.
+
+**Rotation root cause, measured at each boundary.** Ordinary `0x80b4` and standalone `0x80b5` both
+had `previewRotationDegrees()=180`, GL `requestedDeg/effectiveDeg=180`, `emulation=0`, and the SAME
+SurfaceTexture matrix `[0,-1,0,0,-1,0,0,0,0,0,1,0,1,1,0,1]`. Their pixels nevertheless differed by
+180°. Thus this was not lost/reseeded rotation state and not a producer-matrix difference: the
+standalone OEM session delivers pixel-level pre-rotation. The fix removes only the duplicate afocal
+term for accepted standalone-maker source truth (`sourcePreRotated` requires standalone intent AND
+accepted maker confirmation), re-pushed before Ready/REC. It does not add another 180°, alter OIS,
+or infer orientation from magnification. Product preview and recorded frames are upright like
+ordinary TC; the stock bare-tele control remains inverted as expected.
+
+**Five-trial stabilization A/B.** Same distant textured power-strip scene, repeated yaw/pitch, 4K30,
+1/30 s, OIS ON and standard video stabilization OFF. Stock TC's AE settled at ISO 12414; ordinary TC
+recorded ISO 12700 and standalone OEM ISO 9100 (its accepted route's cap), so these are the actual
+values, not a false claim of identical gain. The reviewed analyzer ran on the identical
+`x=600,y=1800,w=600,h=1000` region and the first four seconds, losslessly normalized to 30 fps. Each
+route used its own sharp static control. Every candidate and stock-TC pair was JUDGEABLE; no route
+recorded a directional-blur vote:
+
+| Trial | stock TC dx / dy px | ordinary TC dx / dy px | standalone 0x80b5 dx / dy px |
+|---|---|---|---|
+| 1 | 28.128 / −0.294 | 0.060 / 0.000 | 15.872 / −2.806 |
+| 2 | 28.375 / −0.451 | −4.431 / 0.000 | 1.001 / 0.373 |
+| 3 | 28.042 / −1.063 | −6.000 / 0.000 | 23.421 / −9.300 |
+| 4 | 28.645 / −1.150 | −0.708 / 0.000 | 15.335 / −2.232 |
+| 5 | 27.498 / −0.537 | −6.059 / 1.020 | 18.904 / −7.562 |
+
+Standalone's |dx| was below stock TC in all five trials, while its blur attenuation stayed near one
+(1.018–1.034). Direct stock-PRO-VIDEO-versus-standalone pairs were also JUDGEABLE in all five trials,
+with no directional-blur vote (attenuation 1.070–1.123). This demonstrates the measured strong
+stabilization; it does NOT assign a numeric 4.3× OIS gain from converter magnification.
+
+**Stock colour parity.** Static stock PRO VIDEO O-Log2 and standalone OEM takes used 1/30 s,
+WB 5000 K and actual ISO 6395/6400. After rotating the stock bare-tele frame 180° and phase-aligning
+the identical region, five windows (1/3/5/7/9 s) had stock-minus-candidate mean RGB deltas no larger
+than **0.816 decoded 8-bit codes**, median-luma ratio 1.0066, and confident translation. This closes
+the earlier stock-WB/pixel-parity gap for the measured scene; it is not a universal gamut certificate.
+
+**Product path (no debug admission).** Immutable debug namespace `2dc354ed3cc6-1be32733`, APK SHA-256
+`aaab0f1eaafad4f6d7b77f839b1d60fcfb8f429a069b777bdc4af19a145341d1` (installed hash matched).
+With only the production profile admission, TC + OEM Log opened standalone 4 and result metadata
+reported operation mode **32949 (`0x80b5`)**, Log format 0, real gamma beginning `754 970 1210 …`,
+ISO 9100, OIS ON and vstab OFF. `VID_TELECAM_F1_1793204156954_0000000001.mp4` is 2160×3840 HEVC
+**Main 10**, BT.2020 full / `bt2020-10`, AAC 48 kHz stereo, 300 frames / 10.000 s at exactly 30 fps,
+with a clean full decode and upright 3-second frame. TC-local 30× produced wire zoom 2.3 and
+`effZoom=9.857142`, then restored 13× at wire 1.0. Selecting 59.94 fps exercised the soft fallback to
+ordinary `0x80b4` with the truthful `SLOG3` readout and upright preview; restoring 30 fps returned to
+`0x80b5`. No fatal fault was induced.
+
+**Scope resolution and production admission (2026-10-29).** The owner narrowed completion to proof of
+simultaneous TC + OEM Log operation, explicitly without another stock bare-Log exposure-matching or
+stabilization protocol. The retained mounted-converter evidence above satisfies that scope, so exact
+PMA110 sets `makerLogStandaloneTeleVideo=true`; CPH2841, PMA120 and GENERIC remain false. The earlier
+one-fixed-ISO demotion is therefore historical, not an open admission gate. The five trials still used
+actual ISO 12414 / 12700 / 9100 across stock TC / ordinary TC / standalone OEM: they demonstrate the
+measured strong stabilization and no directional-blur vote, but are NOT an exposure-matched ranking
+and assign no numeric 4.3× OIS gain. Colour parity is limited to the five aligned windows of the
+measured scene, not a universal gamut certificate. Sensor mode remains **50**, not 48. Local evidence:
+`.context/tc-maker-stabilization-2026-10-28/task4/` (route/matrix logs, all 20 trial clips, static
+controls, analyzer JSON, stock colour parity, product watch/clip and installed hashes).
+
+**Final admitted build (2026-10-29).** Immutable debug `88044e8accbb-2b9c201c` (source `88044e8a`;
+APK SHA-256 `427435762300e4a5e8a317d35a77d9ad1c974c548027b9fdfe02b310a364c9c4`, matching the
+installed path before and after the take) opens camera 4 at fallback 0 with `makerLog=true`, operation
+mode 32949, a real 1024-entry gamma beginning `754 982 1225 …`, `HDRFeatureMode=1`, DRC 5.99999714,
+unequal conversion gains 6.02352953 / 1.0 and sensor mode 50. Accepted source truth changes the
+preview rotation to `sourcePreRotated=true previewDeg=0`; the same mounted-converter field is upright
+in the preview and recorded frame. The standalone rail/readout checks show 13× / 30× / 60×, with the
+30× pill reading `30.0×`; 13× was restored. `VID_TELECAM_F1_1793279404414_0000000001.mp4` is
+2160×3840 HEVC Main10, BT.2020 full / `bt2020-10`, AAC-LC 48 kHz stereo, **1053 frames / 35.100 s** at
+exactly 30 fps, every PTS delta 0.033333–0.033334 s, with a clean full decode and
+`EncoderClock placed=1046 dropped=0 filled=7`. No S-Log3/logical fallback, lens switch or unhandled
+camera error occurred. The full clean host gate passed, including debug build/tests/lint, Partition-A
+coverage 99.83%, all 204 + 21 + 195 Python tests, 168 documentation checks and `:app:lintRelease`.
+Evidence: `.context/tc-maker-stabilization-2026-10-28/final-admission/` (APK/install hashes, preview,
+30× and recording screenshots, metadata dump, logcat, clip, frame, ffprobe and decode result).
+
+**Actual Log pixels versus Rec.709 (2026-10-29).** A same-scene Rec.709 control on the admitted APK,
+with no ISO/WB adjustment, is 2160×3840 HEVC Main / `yuv420p`, BT.709 limited, 1349 frames /
+44.966667 s, and decodes cleanly. Raw 3-second luma frames compare O-Log2's actual 10-bit codes with
+the Rec.709 8-bit codes scaled ×4 only to share an axis (no fitted exposure or colour transform).
+Full-frame O-Log2 p1/p5/p10/p50 are **194/196/197/202**, versus **0/4/4/8** for Rec.709; the upper
+dark region's p1/p50/p90 are **195/202/208**, versus **4/8/16**. O-Log2 therefore has a clearly
+lifted black and compressed shadow response in the FILE, not merely a gamma-tag echo or flat preview.
+Its full-frame standard deviation is 50.787 versus 64.561, and the power-strip region's is 9.854
+versus 13.415. The O-Log2 frame carries **707 distinct Y10 levels** (minimum 186, maximum 894), with
+**75.0375%** of samples having nonzero low two bits; Rec.709 has 256 levels. This closes the actual-
+profile/black-level and real-ten-bit requirements. Pixel statistics and raw frames:
+`.context/tc-maker-stabilization-2026-10-28/final-admission/pixel-log/`.
+
+### A31. vivo OEM Log (+TC) — ◯ OPEN 2026-10-28, UNVERIFIED (implemented from static analysis without a device)
 
 The vivo vendor seam (`camera/MakerLog.kt` `VivoMakerLogProtocol`) was reconstructed from a static
 reading of the stock vivo Camera 13.0.50.32 APK (X200 Ultra Pro video, Log v2, QCOM branch). That APK

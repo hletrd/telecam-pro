@@ -284,6 +284,9 @@ class GlPipeline(
 
     private var inited = false
     private val stMatrix = FloatArray(16)
+    private val debugLastSourceMatrix = FloatArray(16)
+    private var debugSourceMatrixLogged = false
+    private var debugLastSourceMatrixLogMs = 0L
     // NATIVE_WINDOW_TRANSFORM flags the current source's frames LACK and the SurfaceTexture matrix
     // must therefore gain (SourceTransformEmulation): 0 for a camera stream, the rear sensor
     // orientation's rotation for the RAW log developer's EGL frames. GL-thread confined.
@@ -577,6 +580,12 @@ class GlPipeline(
         // hint depend on that class's internals.
         previewRotationDeg = ((deg % 360) + 360) % 360
         renderer.setRotationDegrees(deg)
+        if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+            android.util.Log.i(
+                "GlPipeline",
+                "RotationBoundary: requestedDeg=$deg effectiveDeg=${renderer.contentRotationDegrees()}",
+            )
+        }
     }
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
 
@@ -1092,6 +1101,20 @@ class GlPipeline(
                 }
                 st.updateTexImage()
                 st.getTransformMatrix(stMatrix)
+                if (me.hletrd.telecampro.BuildConfig.DEBUG &&
+                    (!debugSourceMatrixLogged || !stMatrix.contentEquals(debugLastSourceMatrix) ||
+                        now - debugLastSourceMatrixLogMs >= 15_000L) &&
+                    me.hletrd.telecampro.camera.recurringDiagnosticAllowed(true)
+                ) {
+                    stMatrix.copyInto(debugLastSourceMatrix)
+                    debugSourceMatrixLogged = true
+                    debugLastSourceMatrixLogMs = now
+                    android.util.Log.i(
+                        "GlPipeline",
+                        "SourceMatrix: matrix=${stMatrix.joinToString(",")} " +
+                            "emulation=$sourceTransformEmulation timestamp=${st.timestamp}",
+                    )
+                }
                 SourceTransformEmulation.apply(stMatrix, sourceTransformEmulation)
             }.exceptionOrNull()
             if (acquisitionFailure != null) {

@@ -79,10 +79,45 @@ class VideoCapabilitiesTest {
 
     @Test
     fun `8K is capped at 30fps`() {
-        val rates = VideoFrameRate.availableFor(teleNormalFps, highSpeedMaxFps = 120, width = 7680, height = 4320, codec = VideoCodec.HEVC)
+        val rates = VideoFrameRate.availableFor(
+            teleNormalFps,
+            highSpeedMaxFps = 120,
+            width = 7680,
+            height = 4320,
+            codec = VideoCodec.HEVC,
+            extendedSizeRates = setOf(23.976, 24.0, 29.97, 30.0),
+        )
         assertTrue(rates.all { it.fps <= 30 })
         assertTrue(rates.contains(VideoFrameRate.FPS_30))
         assertFalse(rates.contains(VideoFrameRate.FPS_60))
+    }
+
+    @Test
+    fun `extended sizes require their projected rate while legacy sizes keep the old answer`() {
+        val extended = VideoFrameRate.availableFor(
+            teleNormalFps,
+            highSpeedMaxFps = 0,
+            width = 7680,
+            height = 4320,
+            codec = VideoCodec.HEVC,
+            extendedSizeRates = setOf(23.976, 24.0, 29.97, 30.0),
+        )
+        assertTrue(extended.contains(VideoFrameRate.FPS_29_97))
+        assertFalse(extended.contains(VideoFrameRate.FPS_59_94))
+
+        val legacy = VideoFrameRate.availableFor(
+            teleNormalFps, highSpeedMaxFps = 0, width = 3840, height = 2160, codec = VideoCodec.HEVC,
+        )
+        val legacyWithEmptyExtendedMap = VideoFrameRate.availableFor(
+            teleNormalFps,
+            highSpeedMaxFps = 0,
+            width = 3840,
+            height = 2160,
+            codec = VideoCodec.HEVC,
+            extendedSizeRates = emptySet(),
+        )
+        assertEquals(legacy, legacyWithEmptyExtendedMap)
+        assertTrue(legacy.contains(VideoFrameRate.FPS_59_94))
     }
 
     @Test

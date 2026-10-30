@@ -168,6 +168,8 @@ class CameraController internal constructor(
     // WHOSE maker pipeline this open requested (MakerLog.kt vendor seam), null when none. Written once
     // per open() on setupExecutor, read on the camera thread and by the engine's Ready commit.
     @Volatile private var makerLogVendor: MakerLogVendor? = null
+    // Standalone TC + 0x80b5 route truth, retained after refusal so the retry cannot fall back in place.
+    @Volatile private var standaloneMakerVideo = false
     private var pendingMakerConfirmation: ((CameraCaptureSession, TotalCaptureResult) -> Unit)? = null
     // Camera-thread confined: the DEBUG evidence probe of an accepted vivo session, null elsewhere.
     private var vivoEchoProbe: VivoMakerLogEchoProbe? = null
@@ -175,10 +177,12 @@ class CameraController internal constructor(
         private set
     /**
      * The vendor of the ACCEPTED maker session, null when none: OPPO only after its Log LUT confirmed,
-     * vivo on configure success alone (no confirmation signal is known — FIELD_CHECKS A29).
+     * vivo on configure success alone (no confirmation signal is known — FIELD_CHECKS A31).
      */
     val makerLogConfiguredVendor: MakerLogVendor?
         get() = makerLogVendor.takeIf { makerLogConfigured }
+    internal val sourcePreRotated: Boolean
+        get() = standaloneMakerSourcePreRotated(standaloneMakerVideo, makerLogConfigured)
     @Volatile var makerLogFailed = false
         private set
     // The maker TC route (MakerLog.kt): non-null when this controller opened the LOGICAL camera
@@ -326,7 +330,36 @@ class CameraController internal constructor(
      * path, so intent cannot answer it.
      */
     @Volatile var rawLogConfigured = false
+    /** Frozen VIDEO graph supplied at open; REC reads it only through the accepted controller identity. */
+    @Volatile var videoSessionIntent: VideoSessionIntent? = null
         private set
+
+    /** Publishes the intent BEFORE the open call, closing the candidate-publication/update window. */
+    internal fun stageVideoSessionIntentForOpen(intent: VideoSessionIntent) {
+        videoSessionIntent = intent
+    }
+
+    /**
+     * Reads the staged open packet WITHOUT writing it back: a same-shape update may land immediately
+     * after this read, and must remain the field REC consumes. Only an unstaged fallback is installed.
+     */
+    internal fun consumeVideoSessionIntentForOpen(fallback: VideoSessionIntent?): VideoSessionIntent? {
+        if (fallback == null) {
+            videoSessionIntent = null
+            return null
+        }
+        videoSessionIntent?.let { return it }
+        videoSessionIntent = fallback
+        return fallback
+    }
+
+    /** Same-session codec/Gamma packet change; route, RAW shape, raster and cadence must be identical. */
+    internal fun updateVideoSessionIntentForAcceptedPipeline(candidate: VideoSessionIntent): Boolean {
+        val current = videoSessionIntent ?: return false
+        if (current.copy(codec = candidate.codec, transfer = candidate.transfer) != candidate) return false
+        videoSessionIntent = candidate
+        return true
+    }
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
     // Ready outputs and the still request's SENSOR_PIXEL_MODE.
@@ -345,6 +378,12 @@ class CameraController internal constructor(
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
     private var highSpeedFps = 0
+    // Accepted VIDEO stream raster when it exceeds the legacy envelope. Its configure rejection must
+    // preserve Gamma and recover the accepted/capped graph through the Engine, never degrade transfer.
+    private var extendedVideoRasterSize: android.util.Size? = null
+    // Configuration and an accepted setRepeatingRequest call are not observable frame truth. Arm each
+    // ordinary session's Ready here and deliver it from that session's first real capture result.
+    private val realFrameReadyGate = RealFrameReadyGate<CameraCaptureSession>()
 
     @Volatile private var pending: Pending? = null
     // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
@@ -411,11 +450,14 @@ class CameraController internal constructor(
     // Face Priority AF frames (FacePriority.kt). Camera-thread callback, at most 10 Hz and only on a
     // MATERIAL change ([FaceReadoutGate]); an empty frame clears the overlay. Never drives a request.
     @Volatile var onFaces: ((FaceFrame) -> Unit)? = null
-    // Maker TC route refused (MakerLog.kt): the maker attempt failed or never applied on the logical
-    // camera, and this controller will NOT configure an ordinary session there. The engine marks the
-    // maker route refused and reopens the ordinary TC route (standalone host tele + 0x80b4). Camera
-    // thread; identity-gated by the engine like every controller callback.
+    // Maker TC route refused (MakerLog.kt): the maker attempt failed or never applied. Neither the
+    // logical nor the standalone probe controller falls back in place; the Engine latches the refusal
+    // and reopens ordinary standalone TC + S-Log3. Camera thread, identity-gated by the Engine.
     @Volatile var onMakerLogTeleRefused: (() -> Unit)? = null
+    // Extended-raster configure refusal (ExtendedVideoRasterRecovery.kt): route, accepted stream size
+    // and the open's optics generation. The configure gate makes this exactly once per rejected open;
+    // the Engine owns identity/generation checks and the same-Gamma smaller-size reopen.
+    @Volatile var onExtendedVideoRasterRefused: ((routeKey: String, size: android.util.Size, opticsGeneration: Long) -> Unit)? = null
     // Lens guard verdict ([makerTeleLensOffHost]) on the maker TC route: true while the logical
     // camera provably records through a lens other than the converter's host. Camera thread, at most
     // MAKER_TELE_LENS_READ_INTERVAL_MS apart and only on a change.
@@ -442,9 +484,18 @@ class CameraController internal constructor(
         // The resolved [rawLogSessionWanted] answer as the GL input stream size, or null. No default,
         // same rule: an open path that forgot it would silently drop the operator's RAW log.
         rawLogStream: android.util.Size?,
+        // The complete resolved VIDEO graph, or null for PHOTO. The route/raster refusal door and
+        // accepted REC packet consume this same object rather than re-reading independent Engine fields.
+        videoSessionIntent: VideoSessionIntent?,
         // The resolved maker vendor ([resolveMakerLogVendor]) when this open wants the maker pipeline,
         // else null. Re-checked below against THIS camera's caps and profile.
         makerLogVendor: MakerLogVendor? = null,
+        // Engine-resolved standalone TC + 0x80b5 route truth. No default: forgetting it would either
+        // refuse the probe or, worse, pair standalone camera truth with the logical maker session.
+        standaloneMakerVideo: Boolean,
+        // The exact debug/profile admission resolved by the Engine, kept separate from route truth so
+        // an unadmitted standalone request cannot configure 0x80b5 merely by naming that route.
+        standaloneMakerVideoAdmitted: Boolean,
         // The maker TC route's wire mapping and host lens, or null. No default, the route-term rule:
         // an open path that forgot it would open the logical camera with the converter declared and
         // its TC-local zoom on the logical wire — the main lens, not the tele the converter is on.
@@ -469,6 +520,7 @@ class CameraController internal constructor(
         onReady: Ready,
         onError: ErrorCb,
     ) {
+        realFrameReadyGate.cancel()
         // A replaced controller's Engine callback is identity-inert while a dual-open candidate owns
         // the shared slot. Publish terminality BEFORE invoking that callback so supersession cleanup
         // can never mistake the outgoing native owner for a restorable one in the callback→close gap.
@@ -477,7 +529,8 @@ class CameraController internal constructor(
             if (makerLogAttempt) makerLogFailed = true
             reportTerminalCameraFailure(dualOpenRestorability, failure, onError::onError)
         }
-        this.selection = selection
+        val intentToOpen = consumeVideoSessionIntentForOpen(videoSessionIntent)
+        this.selection = intentToOpen?.route ?: selection
         this.caps = caps
         this.glSurface = glInputSurface
         this.runNativeAcquisition = runNativeAcquisition
@@ -503,8 +556,18 @@ class CameraController internal constructor(
             MakerLogVendor.VIVO -> !deviceProfile.makerLogPipeline && vivoMakerLogCapable(caps.vendorSessionKeyNames)
             null -> false
         }
-        this.makerLogRequested = vendorGate && caps.isLogicalMultiCamera &&
-            selection.physicalId == null && !caps.lensFacingFront
+        // The standalone 0x80b5 route is OPPO-only; vivo always keeps its ordinary logical session.
+        this.standaloneMakerVideo = standaloneMakerVideo && makerLogVendor == MakerLogVendor.OPPO
+        this.makerLogRequested = makerLogRequestAdmitted(
+            makerLog = makerLogVendor != null,
+            makerPipeline = vendorGate,
+            logicalMultiCamera = caps.isLogicalMultiCamera,
+            standaloneMakerVideo = this.standaloneMakerVideo,
+            standaloneVideoAdmitted = standaloneMakerVideoAdmitted,
+            teleconverterMode = teleconverterMode,
+            physicalId = this.selection.physicalId,
+            lensFacingFront = caps.lensFacingFront,
+        )
         this.makerLogVendor = makerLogVendor.takeIf { this.makerLogRequested }
         this.makerLogRefused = false
         this.makerLogConfigured = false
@@ -520,6 +583,9 @@ class CameraController internal constructor(
         this.p010BridgeRefused = false
         this.rawLogStream = rawLogStream
         this.rawLogRefused = false
+        this.extendedVideoRasterSize = intentToOpen?.streamSize?.takeIf {
+            requiresExtendedVideoProof(it.width, it.height)
+        }
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -531,7 +597,7 @@ class CameraController internal constructor(
         this.diagnosticRequestMode = if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO
         this.diagnosticOpticsGeneration = diagnosticOpticsGeneration
         modeIntentGate.reset(PreviewModeIntent(pinAutoFps, diagnosticOpticsGeneration))
-        this.rawCharsCameraId = selection.physicalId ?: selection.logicalId
+        this.rawCharsCameraId = this.selection.physicalId ?: this.selection.logicalId
         this.rawChars = readRawCharacteristics()
 
         // openCamera can throw SYNCHRONOUSLY — CameraAccessException CAMERA_DISABLED when the app is
@@ -542,7 +608,7 @@ class CameraController internal constructor(
         openAttempted = true
         val openAdmitted = runNativeAcquisition {
             runCatching {
-                manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
+                manager.openCamera(this.selection.logicalId, executor, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     // Claim the callback-supplied identity before observing controller state. If
                     // close won while open was in flight, the armed owner closes this late handle
@@ -853,7 +919,12 @@ class CameraController internal constructor(
         // fills with `pro_video_log_mode`, and the measured maker session is stock PRO VIDEO, which
         // never carries the Hasselblad mode. The converter's TC context was not demonstrated to change
         // anything even on its own route (FIELD_CHECKS C3).
-        if (teleconverterMode && makerTeleRoute == null) {
+        if (applyHasselbladMode40(
+                teleconverter = teleconverterMode,
+                standaloneMakerVideo = standaloneMakerVideo,
+                logicalMaker = makerTeleRoute != null,
+            )
+        ) {
             runCatching {
                 set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
             }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
@@ -872,8 +943,10 @@ class CameraController internal constructor(
         val route = makerTeleRoute
         return if (route != null) {
             makerTeleWireZoom(ratio, route)
+        } else if (teleconverterMode) {
+            originalZoomHintForStandaloneTc(ratio, teleconverterMagnification)
         } else {
-            ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
+            ratio.coerceAtLeast(1f)
         }
     }
 
@@ -1022,15 +1095,12 @@ class CameraController internal constructor(
         // Non-null exactly on a maker attempt. Every vendor difference below keys on THIS, so an
         // OPPO attempt takes the measured path byte for byte and a non-maker attempt neither.
         val makerVendor = makerLogVendor.takeIf { useMakerLog }
-        // The maker TC route never falls back IN PLACE. Every maker refusal below (configure failure,
-        // session-parameter rejection, a source that never confirms) re-enters here with the maker
-        // half refused; the non-TC route then rebuilds an ordinary session on this same logical
-        // camera, but with the converter declared that would be the logical camera's own lens choice
-        // plus the TC ladder's 0x80b4 on a camera it was never measured on. The ordinary TC route is a
-        // different camera, so hand the decision back to the engine and configure nothing.
-        if (makerTeleRoute != null && !useMakerLog) {
+        // Neither maker TC route falls back IN PLACE. The logical route must move to the standalone
+        // host; the standalone 0x80b5 probe must move to ordinary TC + S-Log3 with the refusal latched
+        // in the Engine, not silently retry 0x80b4 on this same controller and leave maker intent live.
+        if ((makerTeleRoute != null || standaloneMakerVideo) && !useMakerLog) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                android.util.Log.i(TAG, "MakerTele: maker session refused on the logical camera; reopening the ordinary TC route")
+                android.util.Log.i(TAG, "MakerTele: maker session refused; reopening the ordinary standalone TC route")
             }
             onMakerLogTeleRefused?.invoke()
             return
@@ -1198,6 +1268,7 @@ class CameraController internal constructor(
             // with -38 and left the camera device in its ERROR state.
             vendorOperationMode = plan.useVendorOperationMode && rawBridge == null,
             makerVendor = makerVendor,
+            standaloneMakerVideoOperationMode = useMakerLog && standaloneMakerVideo,
             outputs = configs,
             callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
@@ -1211,7 +1282,7 @@ class CameraController internal constructor(
                     // unmeasured through this PRIVATE stream, so no caption may claim ten bits for it.
                     tenBitNativeLogConfigured = p010Bridge != null || makerVendor == MakerLogVendor.OPPO
                     // No vivo confirmation signal is known: its session is ACCEPTED on configure
-                    // success and recorded as vivo, unconfirmed (A29). OPPO still waits for its LUT.
+                    // success and recorded as vivo, unconfirmed (A31). OPPO still waits for its LUT.
                     if (makerVendor == MakerLogVendor.VIVO) {
                         makerLogConfigured = true
                         if (BuildConfig.DEBUG) vivoEchoProbe = VivoMakerLogEchoProbe()
@@ -1254,6 +1325,11 @@ class CameraController internal constructor(
                             if (closed || callbackSession !== s) return@confirmation
                             val confirmed = runCatching {
                                 makerLogSourceConfirmed(
+                                    sessionTypeFor(
+                                        standaloneMakerVideo = standaloneMakerVideo,
+                                        logicalMaker = !standaloneMakerVideo,
+                                        ordinaryTc = false,
+                                    ),
                                     result.get(CaptureResult.Key(MakerLogProtocol.OPERATION_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.LOG_MODE, IntArray::class.java))?.firstOrNull(),
                                     result.get(CaptureResult.Key(MakerLogProtocol.GAMMA_INFO, IntArray::class.java)),
@@ -1272,8 +1348,15 @@ class CameraController internal constructor(
                         }
                     }
                     when (sessionStartDelivery(startPreview())) {
-                        SessionStartDelivery.READY -> if (makerVendor != MakerLogVendor.OPPO) deliverReady()
+                        SessionStartDelivery.READY -> when (makerVendor) {
+                            // OPPO publishes Ready only after its real Log LUT confirms the source.
+                            MakerLogVendor.OPPO -> Unit
+                            // vivo has no known confirmation signal; configure success is its acceptance.
+                            MakerLogVendor.VIVO -> deliverReady()
+                            null -> realFrameReadyGate.arm(s, deliverReady)
+                        }
                         SessionStartDelivery.ERROR -> {
+                            realFrameReadyGate.cancel()
                             pendingMakerConfirmation = null
                             onError.onError(IllegalStateException("repeating preview request failed"))
                         }
@@ -1287,6 +1370,23 @@ class CameraController internal constructor(
                     if (closed) return
                     // The synchronous throw below already handled this attempt when it came with one.
                     if (!configureGate.claim(attemptToken)) return
+                    // An extended raster is refused BEFORE every transfer/session fallback. Smaller
+                    // output with the SAME Gamma is an Engine route decision; dropping maker/RAW/P010
+                    // here would silently turn (for example) 8K OEM Log into 8K or 4K S-Log3.
+                    val extendedRejection = classifyExtendedVideoRasterConfigureRejection(
+                        routeKey = rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode),
+                        extendedSize = extendedVideoRasterSize,
+                        opticsGeneration = diagnosticOpticsGeneration,
+                        failure = null,
+                    )
+                    if (extendedRejection is ExtendedVideoRasterConfigureRejection.Soft) {
+                        onExtendedVideoRasterRefused?.invoke(
+                            extendedRejection.routeKey,
+                            extendedRejection.size,
+                            extendedRejection.opticsGeneration,
+                        )
+                        return
+                    }
                     if (useMakerLog) {
                         makerLogRefused = true
                         runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
@@ -1376,6 +1476,32 @@ class CameraController internal constructor(
                 // Camera2 also posts onConfigureFailed for this attempt; whichever runs first owns it,
                 // and this synchronous path always runs first.
                 if (!configureGate.claim(attemptToken)) return@onFailure
+                // Same extended-raster precedence as onConfigureFailed, including a device-fatal
+                // rejection: report its exact graph for latched bounded recovery instead of walking
+                // maker/RAW/P010/ordinary fallbacks on a dead device.
+                when (
+                    val extendedRejection = classifyExtendedVideoRasterConfigureRejection(
+                        routeKey = rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode),
+                        extendedSize = extendedVideoRasterSize,
+                        opticsGeneration = diagnosticOpticsGeneration,
+                        failure = failure,
+                        deviceFatal = configureFailureIsDeviceFatal(failure),
+                    )
+                ) {
+                    is ExtendedVideoRasterConfigureRejection.Soft -> {
+                        onExtendedVideoRasterRefused?.invoke(
+                            extendedRejection.routeKey,
+                            extendedRejection.size,
+                            extendedRejection.opticsGeneration,
+                        )
+                        return@onFailure
+                    }
+                    is ExtendedVideoRasterConfigureRejection.Fatal -> {
+                        onError.onError(extendedRejection.failure)
+                        return@onFailure
+                    }
+                    null -> Unit
+                }
                 if (useMakerLog && !configureFailureIsDeviceFatal(failure)) {
                     makerLogRefused = true
                     runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
@@ -1464,10 +1590,11 @@ class CameraController internal constructor(
     private fun regularOrVendorSessionConfiguration(
         vendorOperationMode: Boolean,
         makerVendor: MakerLogVendor?,
+        standaloneMakerVideoOperationMode: Boolean,
         outputs: List<OutputConfiguration>,
         callback: CameraCaptureSession.StateCallback,
     ): SessionConfiguration = SessionConfiguration(
-        captureSessionType(makerVendor, vendorOperationMode),
+        captureSessionType(makerVendor, vendorOperationMode, standaloneMakerVideoOperationMode),
         outputs,
         executor,
         callback,
@@ -1710,6 +1837,7 @@ class CameraController internal constructor(
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
+                    realFrameReadyGate.onRealFrame(session)
                     pendingMakerConfirmation?.invoke(session, result)
                     vivoEchoProbe?.let { probe -> observeVivoEcho(probe, result) }
                     // Pair this repeating result with its ring frame (EXIF/admission truth for the
@@ -3538,6 +3666,7 @@ class CameraController internal constructor(
     }
 
     internal fun close(): CameraControllerCloseResult {
+        realFrameReadyGate.cancel()
         val terminal = beginClose()
         // A callback must never await work or onClosed delivery on its own HandlerThread. Engine
         // replacement/release lanes call from outside this thread and consume the bounded terminal.
@@ -3751,22 +3880,27 @@ internal fun customWbResultBelongsToRequest(
     gainsAvailable
 
 /**
- * The SessionConfiguration session type of one attempt: OPPO's measured maker operation mode 0x830b,
- * else the TC vendor operation mode 0x80b4 where the plan asked for it, else REGULAR. A vivo maker
- * attempt is ALWAYS REGULAR (0): stock Pro video configures an ordinary session and selects Log
- * through session parameters alone (static analysis, MakerLog.kt), and both vendor types are OPPO's
- * measured values — neither may reach a vivo HAL (a GENERIC profile never plans 0x80b4 anyway).
+ * The SessionConfiguration session type of one attempt: OPPO's measured logical maker operation mode
+ * 0x830b or its explicitly admitted standalone TC maker mode 0x80b5, else the TC vendor operation mode
+ * 0x80b4 where the plan asked for it, else REGULAR. A vivo maker attempt is ALWAYS REGULAR (0): stock
+ * Pro video configures an ordinary session and selects Log through session parameters alone (static
+ * analysis, MakerLog.kt), and all three vendor types are OPPO's measured values — none may reach a
+ * vivo HAL (a GENERIC profile never plans 0x80b4 or admits standalone 0x80b5 anyway).
  */
-internal fun captureSessionType(makerVendor: MakerLogVendor?, vendorOperationMode: Boolean): Int = when {
-    makerVendor == MakerLogVendor.OPPO -> MakerLogProtocol.SESSION_TYPE
+internal fun captureSessionType(
+    makerVendor: MakerLogVendor?,
+    vendorOperationMode: Boolean,
+    standaloneMakerVideoOperationMode: Boolean = false,
+): Int = when {
+    makerVendor == MakerLogVendor.OPPO -> sessionTypeFor(
+        standaloneMakerVideo = standaloneMakerVideoOperationMode,
+        logicalMaker = true,
+        ordinaryTc = vendorOperationMode,
+    )
     makerVendor == MakerLogVendor.VIVO -> SessionConfiguration.SESSION_REGULAR
     vendorOperationMode -> VENDOR_TC_SESSION_TYPE
     else -> SessionConfiguration.SESSION_REGULAR
 }
-
-// The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type. File-level
-// (it lived in the controller's private companion) so [captureSessionType] stays host-testable.
-internal const val VENDOR_TC_SESSION_TYPE = 0x80b4
 
 /**
  * Accepted-output truth comes from created readers, not the fallback plan that requested them —
@@ -3790,7 +3924,7 @@ internal fun acceptedPhotoSessionOutputs(
     raw = rawReaderPresent,
     // A RAW log session never carries the HLG10 profile, whatever the plan asked for.
     hlg = plan.useHlg && !rawLogPresent && !makerLogPresent,
-    // Ten bits only where MEASURED: OPPO's maker stream; vivo's is unmeasured (FIELD_CHECKS A29).
+    // Ten bits only where MEASURED: OPPO's maker stream; vivo's is unmeasured (FIELD_CHECKS A31).
     tenBitNativeLog = p010BridgePresent || (makerLogPresent && makerLogVendor != MakerLogVendor.VIVO),
     makerLog = makerLogPresent,
     makerLogVendor = if (makerLogPresent) makerLogVendor ?: MakerLogVendor.OPPO else null,

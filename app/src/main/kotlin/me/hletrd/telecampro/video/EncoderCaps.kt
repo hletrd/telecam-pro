@@ -13,6 +13,7 @@ data class EncoderSelection(
     val mime: String,
     val hardwareAccelerated: Boolean,
     val main10: Boolean,
+    val formatSupport: EncoderFormatSupport? = null,
 )
 
 /**
@@ -55,6 +56,8 @@ internal data class CodecComponent(
     val hardwareAccelerated: Boolean,
     /** null means the capability query failed; Main10 must then fail closed. */
     val hevcProfiles: Set<Int>?,
+    /** Exact-component format queries by codec; an absent entry grants no oversize support. */
+    val formatSupport: Map<VideoCodec, EncoderFormatSupport> = emptyMap(),
     /** AAC encoder capabilities, or null when the component is no AAC encoder (or the query failed). */
     val aac: AacEncoderCapabilities? = null,
 )
@@ -84,6 +87,7 @@ internal fun buildCodecInventory(components: List<CodecComponent>): CodecInvento
                             component.hevcProfiles?.contains(
                                 MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
                             ) == true,
+                        formatSupport = component.formatSupport[codec],
                     )
                 }
                 .toList()
@@ -224,6 +228,22 @@ object EncoderCaps {
             val advertisesAac = supportedTypes.any {
                 it.equals(MediaFormat.MIMETYPE_AUDIO_AAC, ignoreCase = true)
             }
+            // Each probe stays on the exact component and MIME admitted by the inventory.
+            val formatSupport = buildMap {
+                for ((codec, mime) in listOf(
+                    VideoCodec.HEVC to MediaFormat.MIMETYPE_VIDEO_HEVC,
+                    VideoCodec.AVC to MediaFormat.MIMETYPE_VIDEO_AVC,
+                )) {
+                    if (supportedTypes.none { it.equals(mime, ignoreCase = true) }) continue
+                    val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
+                    put(
+                        codec,
+                        EncoderFormatSupport { format ->
+                            runCatching { caps.isFormatSupported(format) }.getOrDefault(false)
+                        },
+                    )
+                }
+            }
             CodecComponent(
                 name = info.name,
                 encoder = runCatching { info.isEncoder }.getOrDefault(false),
@@ -240,6 +260,7 @@ object EncoderCaps {
                 } else {
                     emptySet()
                 },
+                formatSupport = formatSupport,
                 aac = if (advertisesAac && runCatching { info.isEncoder }.getOrDefault(false)) {
                     runCatching {
                         val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_AUDIO_AAC)

@@ -231,6 +231,12 @@ data class CameraCaps(
      */
     val videoMinFrameDurationsNs: Map<Size, Long> = emptyMap(),
     /**
+     * Exact encoder-proven nominal rates for sizes beyond the legacy 4096×3072 boundary. A missing
+     * extended size admits no rate; legacy sizes deliberately ignore this map and keep the ordinary
+     * fixed-range and minimum-frame-duration gates below.
+     */
+    val extendedVideoSizeRates: Map<Size, Set<Double>> = emptyMap(),
+    /**
      * TONEMAP_AVAILABLE_TONE_MAP_MODES. Read for the native-log decision
      * ([nativeLogCurveSupported]): a caller-programmed CONTRAST_CURVE is what lets the ISP encode
      * S-Log3 itself instead of its stock tone curve. Every PMA110 camera (HAL 0–5) advertises
@@ -938,14 +944,17 @@ internal fun pickVendorHiResSize(
 
 /**
  * Pure core of the engine's fallback stream-size selection: the largest matching-aspect size at or
- * under [capWidth], else the largest size overall (never null for a non-empty input). Plain pairs —
- * android.util.Size getters throw on the JVM.
+ * under [capWidth], else the largest capped size regardless of aspect. Null when no advertised size
+ * fits the cap: automatic selection must neither exceed it nor fabricate an unadvertised stream.
+ * Plain pairs — android.util.Size getters throw on the JVM.
  */
 internal fun pickStreamSize(
     sizes: List<Pair<Int, Int>>,
     capWidth: Int,
     fourByThree: Boolean,
-): Pair<Int, Int>? =
-    sizes.filter { (w, h) -> w <= capWidth && matchesStreamAspect(w, h, fourByThree) }
+): Pair<Int, Int>? {
+    val capped = sizes.filter { (w, _) -> w <= capWidth }
+    return capped.filter { (w, h) -> matchesStreamAspect(w, h, fourByThree) }
         .maxByOrNull { (w, h) -> w.toLong() * h }
-        ?: sizes.maxByOrNull { (w, h) -> w.toLong() * h }
+        ?: capped.maxByOrNull { (w, h) -> w.toLong() * h }
+}

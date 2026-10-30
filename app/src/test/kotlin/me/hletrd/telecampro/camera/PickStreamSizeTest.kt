@@ -41,9 +41,45 @@ class PickStreamSizeTest {
     }
 
     @Test
-    fun noAspectMatch_fallsBackToLargestOverall() {
-        val onlyOdd = listOf(4096 to 3072, 999 to 500)
-        assertEquals(4096 to 3072, pickStreamSize(onlyOdd, capWidth = 800, fourByThree = false))
+    fun noAspectMatch_fallsBackToLargestAtOrBelowTheCap() {
+        val onlyOdd = listOf(4096 to 3072, 2000 to 1000, 999 to 500)
+        assertEquals(2000 to 1000, pickStreamSize(onlyOdd, capWidth = 3840, fourByThree = false))
+    }
+
+    @Test
+    fun automaticChoiceWithNoSizeAtOrBelowTheCap_returnsNull() {
+        val onlyExtended = listOf(7680 to 4320, 5120 to 2880)
+        assertNull(pickStreamSize(onlyExtended, capWidth = 3840, fourByThree = false))
+    }
+
+    @Test
+    fun automaticVideoChoice_staysAtUhdWhen8kIsOffered() {
+        val offered = listOf(7680 to 4320, 3840 to 2160)
+        assertEquals(3840 to 2160, pickStreamSize(offered, capWidth = 3840, fourByThree = false))
+    }
+
+    @Test
+    fun explicitVideoChoice_honoursOffered8k() {
+        val offered = listOf(7680 to 4320, 3840 to 2160)
+        assertEquals(
+            7680 to 4320,
+            explicitStreamSizeOrAutomatic(7680 to 4320, offered, automatic = 3840 to 2160),
+        )
+    }
+
+    @Test
+    fun restored8kChoice_fallsBackWhenCurrentGammaRemoves8k() {
+        val offered = listOf(3840 to 2160, 1920 to 1080)
+        assertEquals(
+            3840 to 2160,
+            explicitStreamSizeOrAutomatic(7680 to 4320, offered, automatic = 3840 to 2160),
+        )
+    }
+
+    @Test
+    fun automaticPhotoPreview_staysBelow8k4By3() {
+        val offered = listOf(7680 to 5760, 2560 to 1920, 1440 to 1080)
+        assertEquals(2560 to 1920, pickStreamSize(offered, capWidth = 3840, fourByThree = true))
     }
 
     @Test
