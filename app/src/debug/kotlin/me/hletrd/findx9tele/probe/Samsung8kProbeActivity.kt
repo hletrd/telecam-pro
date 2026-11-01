@@ -35,6 +35,7 @@ import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executor
 import kotlin.concurrent.thread
 import me.hletrd.telecampro.BuildConfig
@@ -73,6 +74,8 @@ class Samsung8kProbeActivity : Activity() {
     private var audioRecord: AudioRecord? = null
     private var audioThread: Thread? = null
     @Volatile private var audioRunning = false
+    private val audioPcmHandoff = Samsung8kPcmHandoff(AUDIO_PCM_QUEUE_CAPACITY)
+    private val audioInputBufferIndices = ArrayDeque<Int>()
     private var muxer: MediaMuxer? = null
     private var videoFile: File? = null
     private var muxerStarted = false
@@ -524,28 +527,47 @@ class Samsung8kProbeActivity : Activity() {
         evidence.record("audio_recording_started", mapOf("startNs" to audioStartNs))
         var totalSamples = 0L
         while (audioRunning) {
-            val inputIndex = codec.dequeueInputBuffer(AUDIO_CODEC_TIMEOUT_US)
-            if (inputIndex < 0) continue
-            val input = codec.getInputBuffer(inputIndex)
-            if (input == null) {
-                codec.queueInputBuffer(inputIndex, 0, 0, 0, 0)
-                continue
-            }
-            input.clear()
-            val read = record.read(input, input.capacity())
+            val pcm = ByteArray(AUDIO_PCM_READ_BYTES)
+            val read = record.read(pcm, 0, pcm.size)
             if (read > 0) {
                 val presentationTimeUs =
                     (audioStartNs + totalSamples * 1_000_000_000L / AUDIO_SAMPLE_RATE) / 1_000L
-                codec.queueInputBuffer(inputIndex, 0, read, presentationTimeUs, 0)
+                val packet = Samsung8kPcmPacket(pcm, read, presentationTimeUs)
+                check(audioPcmHandoff.offer(packet)) { "AAC PCM handoff saturated" }
                 totalSamples += read / (2 * AUDIO_CHANNEL_COUNT)
-            } else if (read == 0) {
-                codec.queueInputBuffer(inputIndex, 0, 0, 0, 0)
-            } else if (audioRunning) {
-                throw IllegalStateException("AudioRecord read failed: $read")
-            } else {
-                codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                // MediaCodec is asynchronous. Only its callback thread may pair an advertised input
+                // index with this PCM; the recorder thread never dequeues or queues a codec buffer.
+                cameraHandler.post { pumpAudioInput(codec) }
+            } else if (read < 0) {
+                if (audioRunning) throw IllegalStateException("AudioRecord read failed: $read")
                 break
             }
+        }
+    }
+
+    private fun pumpAudioInput(codec: MediaCodec) {
+        if (closed) {
+            audioInputBufferIndices.clear()
+            return
+        }
+        try {
+            while (audioInputBufferIndices.isNotEmpty()) {
+                val packet = audioPcmHandoff.poll() ?: return
+                val inputIndex = audioInputBufferIndices.removeFirst()
+                val input = codec.getInputBuffer(inputIndex)
+                if (input == null) {
+                    codec.queueInputBuffer(inputIndex, 0, 0, packet.presentationTimeUs, 0)
+                    continue
+                }
+                input.clear()
+                check(packet.size <= input.remaining()) {
+                    "AAC input buffer ${input.remaining()} smaller than PCM packet ${packet.size}"
+                }
+                input.put(packet.bytes, 0, packet.size)
+                codec.queueInputBuffer(inputIndex, 0, packet.size, packet.presentationTimeUs, 0)
+            }
+        } catch (failure: Throwable) {
+            fail("audio_input", failure)
         }
     }
 
@@ -625,13 +647,17 @@ class Samsung8kProbeActivity : Activity() {
     }
 
     private val audioCodecCallback = object : MediaCodec.Callback() {
-        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
+        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+            if (closed) return
+            audioInputBufferIndices.addLast(index)
+            pumpAudioInput(codec)
+        }
 
         override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
             var failure: Throwable? = null
             try {
                 val realFrame = samsung8kProbeRealEncodedSample(info.size, info.flags)
-                if (muxerStarted && realFrame) {
+                if (!closed && muxerStarted && realFrame) {
                     muxer?.writeSampleData(
                         audioTrackIndex,
                         requireNotNull(codec.getOutputBuffer(index)),
@@ -662,6 +688,7 @@ class Samsung8kProbeActivity : Activity() {
         }
 
         override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+            if (closed) return
             try {
                 check(!muxerStarted) { "Audio output format changed after muxer start" }
                 audioTrackIndex = requireNotNull(muxer).addTrack(format)
@@ -774,11 +801,19 @@ class Samsung8kProbeActivity : Activity() {
         runCatching { previewSurface?.release() }
         audioRunning = false
         runCatching { audioRecord?.stop() }
-        runCatching { audioThread?.join(1_000) }
-        runCatching { audioRecord?.release() }
-        runCatching { audioCodec?.stop() }
-            .onFailure { evidence.record("audio_codec_stop_error", failureEvidence(it)) }
-        runCatching { audioCodec?.release() }
+        if (samsung8kProbeJoinAudioWorker(audioThread, timeoutMs = 1_000)) {
+            runCatching { audioRecord?.release() }
+            runCatching { audioCodec?.stop() }
+                .onFailure { evidence.record("audio_codec_stop_error", failureEvidence(it)) }
+            runCatching { audioCodec?.release() }
+        } else {
+            // A live worker may still be inside AudioRecord.read, so its native owners cannot be
+            // released safely. Abandon both rather than racing the unterminated thread.
+            evidence.record(
+                "audio_native_owners_abandoned",
+                mapOf("audioThreadAlive" to (audioThread?.isAlive == true)),
+            )
+        }
         runCatching { videoCodec?.stop() }
             .onFailure { evidence.record("codec_stop_error", failureEvidence(it)) }
         runCatching { encoderInputSurface?.release() }
@@ -806,8 +841,35 @@ class Samsung8kProbeActivity : Activity() {
         const val AUDIO_SAMPLE_RATE = 48_000
         const val AUDIO_CHANNEL_COUNT = 2
         const val AUDIO_BITRATE_BPS = 192_000
-        const val AUDIO_CODEC_TIMEOUT_US = 10_000L
+        const val AUDIO_PCM_READ_BYTES = 4_096
+        const val AUDIO_PCM_QUEUE_CAPACITY = 16
         const val FIRST_FRAME_TIMEOUT_MS = 15_000L
+    }
+}
+
+internal data class Samsung8kPcmPacket(
+    val bytes: ByteArray,
+    val size: Int,
+    val presentationTimeUs: Long,
+)
+
+/** Bounded, nonblocking recorder-to-codec handoff; saturation is terminal evidence, never a wait. */
+internal class Samsung8kPcmHandoff(capacity: Int) {
+    private val queue = ArrayBlockingQueue<Samsung8kPcmPacket>(capacity)
+
+    fun offer(packet: Samsung8kPcmPacket): Boolean = queue.offer(packet)
+
+    fun poll(): Samsung8kPcmPacket? = queue.poll()
+}
+
+internal fun samsung8kProbeJoinAudioWorker(worker: Thread?, timeoutMs: Long): Boolean {
+    if (worker == null) return true
+    return try {
+        worker.join(timeoutMs)
+        !worker.isAlive
+    } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
     }
 }
 

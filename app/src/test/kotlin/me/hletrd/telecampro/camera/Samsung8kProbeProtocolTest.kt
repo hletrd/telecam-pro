@@ -3,10 +3,15 @@ package me.hletrd.telecampro.camera
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.MediaCodec
 import android.util.Size
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import me.hletrd.findx9tele.probe.Samsung8kPcmHandoff
+import me.hletrd.findx9tele.probe.Samsung8kPcmPacket
 import me.hletrd.findx9tele.probe.Samsung8kProbeOpenLifecycle
 import me.hletrd.findx9tele.probe.closeSamsung8kProbeOnTerminal
 import me.hletrd.findx9tele.probe.runSamsung8kProbeStage
 import me.hletrd.findx9tele.probe.samsung8kProbeMuxerReady
+import me.hletrd.findx9tele.probe.samsung8kProbeJoinAudioWorker
 import me.hletrd.findx9tele.probe.samsung8kProbeProtocolForTest
 import me.hletrd.findx9tele.probe.samsung8kProbeRealEncodedSample
 import me.hletrd.findx9tele.probe.samsung8kRecordingRotationDegrees
@@ -181,6 +186,37 @@ class Samsung8kProbeProtocolTest {
         assertFalse(samsung8kProbeRealEncodedSample(size = 128, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG))
         assertFalse(samsung8kProbeRealEncodedSample(size = 128, flags = MediaCodec.BUFFER_FLAG_END_OF_STREAM))
         assertFalse(samsung8kProbeRealEncodedSample(size = 0, flags = 0))
+    }
+
+    @Test fun `AAC handoff refuses saturation without blocking and preserves order`() {
+        val handoff = Samsung8kPcmHandoff(capacity = 1)
+        val first = Samsung8kPcmPacket(byteArrayOf(1, 2), size = 2, presentationTimeUs = 10)
+        val second = Samsung8kPcmPacket(byteArrayOf(3, 4), size = 2, presentationTimeUs = 20)
+
+        assertTrue(handoff.offer(first))
+        assertFalse(handoff.offer(second))
+        assertEquals(first, handoff.poll())
+        assertTrue(handoff.offer(second))
+        assertEquals(second, handoff.poll())
+        assertNull(handoff.poll())
+    }
+
+    @Test fun `audio native cleanup requires actual worker termination`() {
+        val releaseWorker = CountDownLatch(1)
+        val workerStarted = CountDownLatch(1)
+        val worker = Thread {
+            workerStarted.countDown()
+            releaseWorker.await(5, TimeUnit.SECONDS)
+        }
+        worker.start()
+        assertTrue(workerStarted.await(1, TimeUnit.SECONDS))
+        try {
+            assertFalse(samsung8kProbeJoinAudioWorker(worker, timeoutMs = 1))
+        } finally {
+            releaseWorker.countDown()
+        }
+        assertTrue(samsung8kProbeJoinAudioWorker(worker, timeoutMs = 1_000))
+        assertTrue(samsung8kProbeJoinAudioWorker(null, timeoutMs = 1))
     }
 
     @Test fun `terminal camera callback closes the supplied device before failure cleanup`() {
