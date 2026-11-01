@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-31):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-11-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -27,7 +27,6 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
 **A31** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
-**A32** needs an 8K take of a lit, textured scene on each lens (detail against the 4K route, colour, orientation), a clap take, and a cool, unplugged 10-minute soak,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1862,14 +1861,21 @@ session for comparison (session parameters, stream format, dataspace).
 6. **Low-light hand-down.** A dim room on the TC route: the active physical id must stay on the host
    tele, or the `LENS SWITCHED` tag must appear (the guard's job; record which).
 
-### A32. PMA110 OEM 8K video (0x80A9, Rec. 709): route and 10-minute take on the device — ◐ HALF DONE 2026-10-31
+### A32. PMA110 OEM 8K video (0x80A9, Rec. 709) — ✅ CLOSED 2026-11-02: route REMOVED (owner decision)
 
 Device `OPPO/PMA110/OP61BDL1:17/CP2A.260605.016/B.30d6865-a9327b-aae421` (`PMA110_17.0.0.106(CN01)`,
 stock Camera 7.006.119). Route found with an isolated probe on 2026-10-30/31, then implemented
-(`OemEightKVideo.kt`, `OemEightKInputBridge.kt`, `DeviceProfile.oemEightKVideo`); probe evidence in
-the private `.context/8k-2026-10-30/` (NOTES.md, probe-runs/, probe-source/).
+(`OemEightKVideo.kt`, `OemEightKInputBridge.kt`, `DeviceProfile.oemEightKVideo`, commit `d0f80724`);
+probe evidence in the private `.context/8k-2026-10-30/` (NOTES.md, probe-runs/, probe-source/).
 
-**Probe facts the product relies on.** Stock 8K is standalone camera 2 under operation mode 0x80A9
+**Removed 2026-11-02, before the v1.0.5 cut (owner decision: "remove 8k").** The route never reached
+a release. The owner's review that day, converter mounted: "in 8K the TC stabilization does not work;
+only the 3× camera's stabilization works" — 0x80A9's EIS is the bare lens's, forced ON on this route,
+so through the inverting converter it corrects −f·θ of a −M·f·θ image motion. The three files above
+are deleted and PMA110 is 4K-only again. What follows is the record of a removed option, kept so a
+later attempt starts from the measured protocol.
+
+**Probe facts the removed route relied on.** Stock 8K is standalone camera 2 under operation mode 0x80A9
 with sensor mode 29 (8160×4592, 30 fps); its clip is HEVC Main 8-bit BT.709 7680×4320 at 29.856 fps.
 A third-party 0x80A9 session needs `com.oplus.is.sdk.camera.package = [1]` +
 `com.oplus.is.from.extension = 1` on the session parameters and every request: without them the
@@ -1920,19 +1926,9 @@ dropped=0 filled=9` (longest fill burst 83 ms), `audio0-video0=621.1ms` anchored
 `placed=440 dropped=0 filled=7`, `audio0-video0=676.5ms` anchored. Both files HEVC Main 4320×7680
 BT.709 30/1 with no PTS gap above 33.334 ms.
 
-**Owner review 2026-11-02 (converter mounted, TELE = TC on, 8K):** "in 8K the TC stabilization does
-not work; only the 3× camera's stabilization works." 0x80A9's EIS is the bare lens's and is forced ON on
-this route, so through the inverting converter it corrects −f·θ of a −M·f·θ image motion. Since then
-`oemEightKRouteAdmitted` refuses the raster while TC is on (the 3× preset without TC keeps it; stock's
-TC mode offers no 8K either). Device check, immutable debug `2a7d7b01e7d0-87e90e03` (working tree of
-the change, APK SHA-256 `8fd03623e2e507b7…`), owner's 8K request kept: with TC on, Video → Resolution
-offers 4K / 3264×1836 / 1440p / 1080p / 1664×936 and the session is `operation_mode: 0x80b4`; TC off
-on the 3× reopened the kept request as `Session configured (oem8k=true, camera=4, vstab=1)` under
-0x80a9; TC on again returned to 0x80b4.
-
-**Open:** a lit, textured scene on each lens (8K detail against the 4K route, colour against the 4K
-SDR route, upright orientation in an external player — every frame so far was dim: Y 22–35); a clap
-take for A/V sync; a soak unplugged from a cool start, and what the holes are.
+**Never run (route removed):** a lit, textured scene on each lens (8K detail against the 4K route,
+colour against the 4K SDR route, upright orientation in an external player — every frame was dim:
+Y 22–35); a clap take for A/V sync; a soak unplugged from a cool start.
 
 ## B. Held in hand — 3 min
 
