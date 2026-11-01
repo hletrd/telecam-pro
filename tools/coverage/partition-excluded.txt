@@ -4,6 +4,9 @@
 #    @Preview emission; "covering" either would be coverage theater.
 #  - UiSnapshotActivity*/SnapshotRequest: debug-only screenshot-QA harness; exercised on-device by
 #    device-tests case debug_snapshot_ui_contract, never ships in release.
+#  - Samsung8kProbeActivity*/Samsung8kProbeEvidence: DEBUG-only stock-Camera2 measurement harness;
+#    device evidence is its configure/frame/file record, never a release route. The pure protocol
+#    model remains in Partition A and is host-tested.
 me/hletrd/telecampro/ui/PreviewCameraActions
 me/hletrd/telecampro/ui/CameraScreenPreviewKt
 me/hletrd/telecampro/ui/ComposableSingletons$CameraScreenPreviewKt
@@ -11,3 +14,7 @@ me/hletrd/telecampro/ui/UiSnapshotActivity
 me/hletrd/telecampro/ui/UiSnapshotActivity$*
 me/hletrd/telecampro/ui/UiSnapshotActivityKt
 me/hletrd/telecampro/ui/SnapshotRequest
+me/hletrd/*/probe/Samsung8kProbeActivity
+me/hletrd/*/probe/Samsung8kProbeActivity$*
+me/hletrd/*/probe/Samsung8kProbeActivityKt
+me/hletrd/*/probe/Samsung8kProbeEvidence

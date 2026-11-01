@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
+import me.hletrd.findx9tele.probe.Samsung8kProbeActivity
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,6 +31,7 @@ class DebugCameraControlSecurityTest {
             mapOf(
                 MainActivity::class.java.name to (true to null),
                 DebugCameraControlActivity::class.java.name to (true to "android.permission.DUMP"),
+                Samsung8kProbeActivity::class.java.name to (true to "android.permission.DUMP"),
                 "me.hletrd.telecampro.ui.UiSnapshotActivity" to (true to "android.permission.DUMP"),
                 "androidx.compose.ui.tooling.PreviewActivity" to (true to "android.permission.DUMP"),
                 "androidx.activity.ComponentActivity" to (false to null),
@@ -37,6 +39,7 @@ class DebugCameraControlSecurityTest {
             activities.filterKeys {
                 it == MainActivity::class.java.name ||
                     it == DebugCameraControlActivity::class.java.name ||
+                    it == Samsung8kProbeActivity::class.java.name ||
                     it == "me.hletrd.telecampro.ui.UiSnapshotActivity" ||
                     it == "androidx.compose.ui.tooling.PreviewActivity" ||
                     it == "androidx.activity.ComponentActivity"
