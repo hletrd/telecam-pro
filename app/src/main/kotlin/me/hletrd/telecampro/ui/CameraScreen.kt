@@ -94,6 +94,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -674,10 +675,13 @@ fun CameraScreen(
     // the two coordinate systems from disagreeing — the same reasoning already applied twice locally,
     // applied once at the root. ProSheet / FnOverlay / MediaReview are emitted OUTSIDE this Box and
     // stay locale-relative: they are reading surfaces, not camera geometry.
+    // The window height the exposure meter centres in (exposureMeterLiftPx).
+    var rootHeightPx by remember { mutableIntStateOf(0) }
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
     Box(
         modifier = modifier
             .fillMaxSize()
+            .onSizeChanged { rootHeightPx = it.height }
             .background(CameraColors.Background)
             // Apply the exclusion owner only while a modal exists. Leaving a canFocus=true parent
             // focusProperties node installed after close intercepted exact opener requesters.
@@ -716,6 +720,10 @@ fun CameraScreen(
         // dial is open: the cluster growing upward must overlay the preview like every transient
         // panel, not shove the viewfinder around mid-interaction.
         var bottomClusterRestHeightPx by remember { mutableIntStateOf(0) }
+        // The same cluster's LIVE outer height (open dial included) and the meter's own height:
+        // only the exposure meter reads them, to rise clear of an open ruler (exposureMeterLiftPx).
+        var bottomClusterLiveHeightPx by remember { mutableIntStateOf(0) }
+        var exposureMeterHeightPx by remember { mutableIntStateOf(0) }
         // Published by the preview placement below and consumed by the Loupe Overview border; the
         // engine forwards the same value to GL so the scissor box and this border stay one rect.
         var finderBottomClearanceFraction by remember { mutableFloatStateOf(0f) }
@@ -1398,6 +1406,17 @@ fun CameraScreen(
         // left column and drew straight through the meter under the translucent scrim
         // (user-reported 2026-07-31). A modal Fn owns the screen; the meter is not consultable
         // through a scrim anyway, and it returns the frame the overlay closes.
+        val exposureMeterLift by animateIntAsState(
+            targetValue = exposureMeterLiftPx(
+                rootHeightPx = rootHeightPx,
+                meterHeightPx = exposureMeterHeightPx,
+                clusterHeightPx = bottomClusterLiveHeightPx,
+                gapPx = eightDpPx,
+                minTopPx = topBarDefaultTopPx + topBarSeamOffsetPx + topBarHeightPx + eightDpPx,
+            ),
+            animationSpec = tween(durationMillis = 150),
+            label = "exposureMeterLift",
+        )
         if (!fnOverlayVisible &&
             shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)
         ) ExposureMeter(
@@ -1407,7 +1426,11 @@ fun CameraScreen(
                 .align(Alignment.CenterStart)
                 // 12 dp start — the ONE left inset every left-anchored element shares (status OSD,
                 // exposure meter, Fn chip row); mixed 10/12/16 insets read as misalignment.
-                .padding(start = 12.dp),
+                .padding(start = 12.dp)
+                .onSizeChanged { exposureMeterHeightPx = it.height }
+                // Home stays the vertical centre; it rises only as far as an open dial's cluster
+                // would otherwise cover its scale (exposureMeterLiftPx).
+                .offset { IntOffset(0, -exposureMeterLift) },
             // Only the READOUT turns, not the scale. Rotating the whole meter was tried and
             // rejected on device: the bar is a vertical scale whose position carries the value and
             // it reads at any angle, while its figures do not (user-specified 2026-07-29).
@@ -1601,6 +1624,7 @@ fun CameraScreen(
                 // chrome-straddles-the-seam defect this reserve exists to prevent (UI review #6).
                 .onSizeChanged {
                     if (openManualDial == null) bottomClusterRestHeightPx = it.height
+                    bottomClusterLiveHeightPx = it.height
                 }
                 .then(operatorChrome)
                 // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the

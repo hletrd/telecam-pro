@@ -788,6 +788,31 @@ internal fun shouldShowExposureMeter(
     transient: Boolean,
 ): Boolean = mode == ExposureMode.MANUAL || transient
 
+/**
+ * How far (px, upward) the left-edge exposure meter rises so its scale stays clear of the bottom
+ * cluster's LIVE top. The meter's home is the window's vertical centre (CenterStart) and stays
+ * there whenever it fits: a meter that jumped between homes as a dial opened was rejected before.
+ * But the cluster grows upward with an open dial, and with DISP details on the shutter ruler's
+ * Speed / Angle row landed on the meter's lower scale (release QA 2026-11-02, PMA110: pills at
+ * y 1677-1845 px over a meter spanning 1289-1880). So the meter rises only by the overlap plus
+ * [gapPx], never above [minTopPx] (the top bar's bottom edge plus its gap); 0 while any measurement
+ * is still unknown.
+ */
+internal fun exposureMeterLiftPx(
+    rootHeightPx: Int,
+    meterHeightPx: Int,
+    clusterHeightPx: Int,
+    gapPx: Int,
+    minTopPx: Int,
+): Int {
+    if (rootHeightPx <= 0 || meterHeightPx <= 0 || clusterHeightPx <= 0) return 0
+    val restTop = (rootHeightPx - meterHeightPx) / 2
+    val clusterTop = rootHeightPx - clusterHeightPx
+    val overlap = restTop + meterHeightPx + gapPx - clusterTop
+    if (overlap <= 0) return 0
+    return overlap.coerceAtMost((restTop - minTopPx).coerceAtLeast(0))
+}
+
 // Pure (plain enum + IntArray) and internal so the MANUAL-mode spot meter's three guard branches
 // and clamp are unit-testable — a wrong needle here misleads every manual exposure decision.
 internal fun manualMeterEv(mode: ExposureMode, luma: IntArray?): Float? {
