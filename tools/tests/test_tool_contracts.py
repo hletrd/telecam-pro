@@ -88,6 +88,15 @@ def run_documentation_gate_from_committed_export(
             "docs/FIELD_CHECKS.md",
             "docs/play-console-submit.md",
             "docs/assets/play/screenshots/tablet/asset-validity.json",
+            # The phone set's readiness is bound to the submission sheet above, so a recapture
+            # (manifest + PNG bytes) must be overlaid together with the sheet that announces it.
+            "docs/assets/play/screenshots/asset-validity.json",
+            "docs/assets/play/screenshots/01-main-viewfinder.png",
+            "docs/assets/play/screenshots/02-pro-settings.png",
+            "docs/assets/play/screenshots/03-focus-tools.png",
+            "docs/assets/play/screenshots/04-video-controls.png",
+            "docs/assets/play/screenshots/05-lens-and-tele.png",
+            "docs/assets/play/screenshots/06-video-settings.png",
             "device-tests/README.md",
             "app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
@@ -1311,14 +1320,33 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         )
 
     def test_committed_export_rejects_ready_runbook_for_stale_screenshots(self) -> None:
-        def mark_runbook_ready(root: Path) -> None:
+        # State-independent: force the phone manifest back to its fail-closed stale shape and the
+        # sheet's phone section to READY, so the mismatch is tested whatever the live set is.
+        def stale_manifest_ready_runbook(root: Path) -> None:
+            manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["submission_ready"] = False
+            manifest["blocking_assets"] = [
+                "docs/assets/play/screenshots/02-pro-settings.png",
+                "docs/assets/play/screenshots/06-video-settings.png",
+            ]
+            manifest["obsolete_visible_copy"] = {
+                "docs/assets/play/screenshots/02-pro-settings.png": ["Shooting", "JPEG Quality"],
+                "docs/assets/play/screenshots/06-video-settings.png": [
+                    "Transfer", "Applied to the SDR stream",
+                ],
+            }
+            manifest["required_recapture"]["immutable_source_manifest_digest"] = None
+            manifest["required_recapture"]["apk_sha256"] = None
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             path = root / "docs/play-console-submit.md"
             text = path.read_text(encoding="utf-8")
-            marker = "**NOT SUBMISSION-READY**"
-            self.assertIn(marker, text)
-            path.write_text(text.replace(marker, "**SUBMISSION-READY**", 1), encoding="utf-8")
+            text = text.replace("- Phone screenshots — **NOT SUBMISSION-READY**", "- Phone screenshots — **SUBMISSION-READY**", 1)
+            self.assertIn("- Phone screenshots — **SUBMISSION-READY", text)
+            # The stale copy must still be named somewhere, so only the readiness check can fail.
+            path.write_text(text + "\nRetired copy: Shooting, JPEG Quality, Transfer, Applied to the SDR stream.\n", encoding="utf-8")
 
-        result, private_docs_present = run_documentation_gate_from_committed_export(mark_runbook_ready)
+        result, private_docs_present = run_documentation_gate_from_committed_export(stale_manifest_ready_runbook)
 
         self.assertEqual(private_docs_present, ())
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1328,7 +1356,8 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         )
 
     def test_committed_export_rejects_stale_runbook_for_ready_screenshots(self) -> None:
-        def mark_manifest_ready(root: Path) -> None:
+        # State-independent: a READY manifest beside a sheet whose phone section says NOT READY.
+        def ready_manifest_stale_runbook(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/asset-validity.json"
             manifest = json.loads(path.read_text(encoding="utf-8"))
             manifest["submission_ready"] = True
@@ -1337,8 +1366,13 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             manifest["required_recapture"]["immutable_source_manifest_digest"] = "0" * 64
             manifest["required_recapture"]["apk_sha256"] = "1" * 64
             path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            sheet = root / "docs/play-console-submit.md"
+            text = sheet.read_text(encoding="utf-8")
+            text = text.replace("- Phone screenshots — **SUBMISSION-READY", "- Phone screenshots — **NOT SUBMISSION-READY", 1)
+            self.assertIn("- Phone screenshots — **NOT SUBMISSION-READY", text)
+            sheet.write_text(text, encoding="utf-8")
 
-        result, private_docs_present = run_documentation_gate_from_committed_export(mark_manifest_ready)
+        result, private_docs_present = run_documentation_gate_from_committed_export(ready_manifest_stale_runbook)
 
         self.assertEqual(private_docs_present, ())
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
