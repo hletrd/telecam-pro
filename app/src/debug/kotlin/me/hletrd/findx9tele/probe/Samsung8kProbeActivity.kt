@@ -8,11 +8,14 @@ import android.graphics.SurfaceTexture
 import android.hardware.HardwareBuffer
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.ImageReader
 import android.media.ImageWriter
 import android.media.MediaCodec
@@ -20,6 +23,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -32,6 +36,7 @@ import android.view.Surface
 import android.view.TextureView
 import java.io.File
 import java.util.concurrent.Executor
+import kotlin.concurrent.thread
 import me.hletrd.telecampro.BuildConfig
 import org.json.JSONObject
 
@@ -64,12 +69,18 @@ class Samsung8kProbeActivity : Activity() {
     private var camera: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var videoCodec: MediaCodec? = null
+    private var audioCodec: MediaCodec? = null
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
+    @Volatile private var audioRunning = false
     private var muxer: MediaMuxer? = null
     private var videoFile: File? = null
     private var muxerStarted = false
     private var videoTrackIndex = -1
+    private var audioTrackIndex = -1
     private var encodedWidth = 0
     private var encodedHeight = 0
+    private var firstAudioFrame = false
 
     private var surfaceAvailable = false
     private var openStarted = false
@@ -124,8 +135,11 @@ class Samsung8kProbeActivity : Activity() {
             }
         }
         setContentView(textureView)
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+        if (!hasProbePermissions()) {
+            requestPermissions(
+                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO),
+                PROBE_PERMISSION_REQUEST,
+            )
         } else {
             maybeOpenCamera()
         }
@@ -137,14 +151,18 @@ class Samsung8kProbeActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != CAMERA_PERMISSION_REQUEST) return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode != PROBE_PERMISSION_REQUEST) return
+        if (hasProbePermissions()) {
             maybeOpenCamera()
         } else {
-            evidence.record("camera_permission_denied")
+            evidence.record("probe_permission_denied")
             finish()
         }
     }
+
+    private fun hasProbePermissions(): Boolean =
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     override fun onStop() {
         super.onStop()
@@ -162,10 +180,9 @@ class Samsung8kProbeActivity : Activity() {
         super.onDestroy()
     }
 
+    @SuppressLint("MissingPermission") // The hasProbePermissions guard above includes CAMERA.
     private fun maybeOpenCamera() {
-        if (openStarted || closed || !surfaceAvailable ||
-            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
-        ) return
+        if (openStarted || closed || !surfaceAvailable || !hasProbePermissions()) return
         openStarted = true
         openLifecycle.openStarted()
         cameraHandler.post {
@@ -230,6 +247,9 @@ class Samsung8kProbeActivity : Activity() {
         }) return
         if (!runSamsung8kProbeStage("create_encoder", ::synchronousFailure) {
             createEncoder()
+        }) return
+        if (!runSamsung8kProbeStage("create_audio_encoder", ::synchronousFailure) {
+            createAudioEncoder()
         }) return
         try {
             val outputs = listOf(
@@ -386,7 +406,27 @@ class Samsung8kProbeActivity : Activity() {
         }
         val codec = MediaCodec.createByCodecName(encoderInfo.name)
         videoCodec = codec
-        muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val characteristics = getSystemService(CameraManager::class.java)
+            .getCameraCharacteristics(protocol.cameraId)
+        val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        val displayDegrees = when (display?.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        val orientationHint = samsung8kRecordingRotationDegrees(sensorOrientation, displayDegrees)
+        muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4).apply {
+            setOrientationHint(orientationHint)
+        }
+        evidence.record(
+            "recording_orientation",
+            mapOf(
+                "sensorOrientation" to sensorOrientation,
+                "displayDegrees" to displayDegrees,
+                "orientationHint" to orientationHint,
+            ),
+        )
         codec.setCallback(videoCodecCallback, cameraHandler)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         encoderInputSurface = codec.createInputSurface()
@@ -421,6 +461,94 @@ class Samsung8kProbeActivity : Activity() {
         )
     }
 
+    @SuppressLint("MissingPermission") // maybeOpenCamera admits this path only with RECORD_AUDIO.
+    private fun createAudioEncoder() {
+        val minBuffer = AudioRecord.getMinBufferSize(
+            AUDIO_SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        check(minBuffer > 0) { "AudioRecord stereo buffer unavailable: $minBuffer" }
+        val record = AudioRecord.Builder()
+            .setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(AUDIO_SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+            )
+            .setBufferSizeInBytes((minBuffer * 2).coerceAtLeast(8192))
+            .build()
+        audioRecord = record
+        check(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord did not initialize" }
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        audioCodec = codec
+        val format = MediaFormat.createAudioFormat(
+            MediaFormat.MIMETYPE_AUDIO_AAC,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_CHANNEL_COUNT,
+        ).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BITRATE_BPS)
+        }
+        codec.setCallback(audioCodecCallback, cameraHandler)
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        codec.start()
+        evidence.record(
+            "audio_encoder_started",
+            mapOf(
+                "encoder" to codec.name,
+                "sampleRate" to AUDIO_SAMPLE_RATE,
+                "channels" to AUDIO_CHANNEL_COUNT,
+                "bitrate" to AUDIO_BITRATE_BPS,
+                "profile" to "AAC-LC",
+            ),
+        )
+        audioRunning = true
+        audioThread = thread(name = "Samsung8kProbeAudio") {
+            try {
+                runAudio(record, codec)
+            } catch (failure: Throwable) {
+                cameraHandler.post {
+                    if (!closed) fail("audio_input", failure)
+                }
+            }
+        }
+    }
+
+    private fun runAudio(record: AudioRecord, codec: MediaCodec) {
+        if (!audioRunning) return
+        record.startRecording()
+        val audioStartNs = SystemClock.elapsedRealtimeNanos()
+        evidence.record("audio_recording_started", mapOf("startNs" to audioStartNs))
+        var totalSamples = 0L
+        while (audioRunning) {
+            val inputIndex = codec.dequeueInputBuffer(AUDIO_CODEC_TIMEOUT_US)
+            if (inputIndex < 0) continue
+            val input = codec.getInputBuffer(inputIndex)
+            if (input == null) {
+                codec.queueInputBuffer(inputIndex, 0, 0, 0, 0)
+                continue
+            }
+            input.clear()
+            val read = record.read(input, input.capacity())
+            if (read > 0) {
+                val presentationTimeUs =
+                    (audioStartNs + totalSamples * 1_000_000_000L / AUDIO_SAMPLE_RATE) / 1_000L
+                codec.queueInputBuffer(inputIndex, 0, read, presentationTimeUs, 0)
+                totalSamples += read / (2 * AUDIO_CHANNEL_COUNT)
+            } else if (read == 0) {
+                codec.queueInputBuffer(inputIndex, 0, 0, 0, 0)
+            } else if (audioRunning) {
+                throw IllegalStateException("AudioRecord read failed: $read")
+            } else {
+                codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                break
+            }
+        }
+    }
+
     private fun forwardRecordImage(source: ImageReader) {
         val image = runCatching { source.acquireNextImage() }.getOrNull() ?: return
         if (closed) {
@@ -442,10 +570,8 @@ class Samsung8kProbeActivity : Activity() {
         override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
             var failure: Throwable? = null
             try {
-                val realFrame = info.size > 0 &&
-                    info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
-                    info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM == 0
-                if (muxerStarted && info.size > 0) {
+                val realFrame = samsung8kProbeRealEncodedSample(info.size, info.flags)
+                if (muxerStarted && realFrame) {
                     muxer?.writeSampleData(
                         videoTrackIndex,
                         requireNotNull(codec.getOutputBuffer(index)),
@@ -483,8 +609,7 @@ class Samsung8kProbeActivity : Activity() {
                 encodedWidth = format.getInteger(MediaFormat.KEY_WIDTH)
                 encodedHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
                 videoTrackIndex = requireNotNull(muxer).addTrack(format)
-                requireNotNull(muxer).start()
-                muxerStarted = true
+                maybeStartMuxer()
                 evidence.record(
                     "encoder_output_format",
                     mapOf(
@@ -497,6 +622,65 @@ class Samsung8kProbeActivity : Activity() {
                 fail("encoder_output_format", failure)
             }
         }
+    }
+
+    private val audioCodecCallback = object : MediaCodec.Callback() {
+        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
+
+        override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+            var failure: Throwable? = null
+            try {
+                val realFrame = samsung8kProbeRealEncodedSample(info.size, info.flags)
+                if (muxerStarted && realFrame) {
+                    muxer?.writeSampleData(
+                        audioTrackIndex,
+                        requireNotNull(codec.getOutputBuffer(index)),
+                        info,
+                    )
+                    if (!firstAudioFrame) {
+                        firstAudioFrame = true
+                        evidence.record(
+                            "first_real_audio_frame",
+                            mapOf(
+                                "encodedBytes" to info.size,
+                                "presentationTimeUs" to info.presentationTimeUs,
+                            ),
+                        )
+                    }
+                }
+            } catch (caught: Throwable) {
+                failure = caught
+            } finally {
+                runCatching { codec.releaseOutputBuffer(index, false) }
+            }
+            failure?.let { fail("audio_encoder_output", it) }
+        }
+
+        override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
+            evidence.record("audio_encoder_error", failureEvidence(error))
+            fail("audio_encoder_error", error)
+        }
+
+        override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+            try {
+                check(!muxerStarted) { "Audio output format changed after muxer start" }
+                audioTrackIndex = requireNotNull(muxer).addTrack(format)
+                evidence.record("audio_output_format", mapOf("format" to format.toString()))
+                maybeStartMuxer()
+            } catch (failure: Throwable) {
+                fail("audio_output_format", failure)
+            }
+        }
+    }
+
+    private fun maybeStartMuxer() {
+        if (muxerStarted || !samsung8kProbeMuxerReady(videoTrackIndex, audioTrackIndex)) return
+        requireNotNull(muxer).start()
+        muxerStarted = true
+        evidence.record(
+            "muxer_started",
+            mapOf("videoTrack" to videoTrackIndex, "audioTrack" to audioTrackIndex),
+        )
     }
 
     @SuppressLint("WrongConstant") // Samsung's measured 0x410000 vendor stream use case.
@@ -588,6 +772,13 @@ class Samsung8kProbeActivity : Activity() {
         runCatching { jpegReader?.close() }
         runCatching { yuvReader?.close() }
         runCatching { previewSurface?.release() }
+        audioRunning = false
+        runCatching { audioRecord?.stop() }
+        runCatching { audioThread?.join(1_000) }
+        runCatching { audioRecord?.release() }
+        runCatching { audioCodec?.stop() }
+            .onFailure { evidence.record("audio_codec_stop_error", failureEvidence(it)) }
+        runCatching { audioCodec?.release() }
         runCatching { videoCodec?.stop() }
             .onFailure { evidence.record("codec_stop_error", failureEvidence(it)) }
         runCatching { encoderInputSurface?.release() }
@@ -602,6 +793,7 @@ class Samsung8kProbeActivity : Activity() {
             mapOf(
                 "reason" to reason,
                 "firstRecordFrame" to firstRecordFrame,
+                "firstAudioFrame" to firstAudioFrame,
                 "output" to videoFile?.absolutePath,
                 "outputBytes" to (videoFile?.takeIf(File::exists)?.length() ?: 0L),
             ),
@@ -609,8 +801,12 @@ class Samsung8kProbeActivity : Activity() {
     }
 
     private companion object {
-        const val CAMERA_PERMISSION_REQUEST = 71
+        const val PROBE_PERMISSION_REQUEST = 71
         const val RECORD_BITRATE_BPS = 100_000_000
+        const val AUDIO_SAMPLE_RATE = 48_000
+        const val AUDIO_CHANNEL_COUNT = 2
+        const val AUDIO_BITRATE_BPS = 192_000
+        const val AUDIO_CODEC_TIMEOUT_US = 10_000L
         const val FIRST_FRAME_TIMEOUT_MS = 15_000L
     }
 }
@@ -684,6 +880,17 @@ private class Samsung8kProbeEvidence(directory: File) {
         const val TAG = "Samsung8kProbe"
     }
 }
+
+internal fun samsung8kProbeMuxerReady(videoTrack: Int, audioTrack: Int): Boolean =
+    videoTrack >= 0 && audioTrack >= 0
+
+internal fun samsung8kProbeRealEncodedSample(size: Int, flags: Int): Boolean =
+    size > 0 &&
+        flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+        flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM == 0
+
+internal fun samsung8kRecordingRotationDegrees(sensorOrientation: Int, displayDegrees: Int): Int =
+    (sensorOrientation - displayDegrees + 360) % 360
 
 private fun failureEvidence(failure: Throwable): Map<String, Any?> = mapOf(
     "class" to failure.javaClass.name,

@@ -1,11 +1,15 @@
 package me.hletrd.telecampro.camera
 
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.MediaCodec
 import android.util.Size
 import me.hletrd.findx9tele.probe.Samsung8kProbeOpenLifecycle
 import me.hletrd.findx9tele.probe.closeSamsung8kProbeOnTerminal
 import me.hletrd.findx9tele.probe.runSamsung8kProbeStage
+import me.hletrd.findx9tele.probe.samsung8kProbeMuxerReady
 import me.hletrd.findx9tele.probe.samsung8kProbeProtocolForTest
+import me.hletrd.findx9tele.probe.samsung8kProbeRealEncodedSample
+import me.hletrd.findx9tele.probe.samsung8kRecordingRotationDegrees
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -156,6 +160,27 @@ class Samsung8kProbeProtocolTest {
                 p.repeatingParameters,
             )
         }
+    }
+
+    @Test fun `probe muxer waits for both video and AAC tracks`() {
+        assertFalse(samsung8kProbeMuxerReady(videoTrack = -1, audioTrack = -1))
+        assertFalse(samsung8kProbeMuxerReady(videoTrack = 0, audioTrack = -1))
+        assertFalse(samsung8kProbeMuxerReady(videoTrack = -1, audioTrack = 0))
+        assertTrue(samsung8kProbeMuxerReady(videoTrack = 0, audioTrack = 1))
+    }
+
+    @Test fun `recording rotation follows the rear sensor and display`() {
+        assertEquals(90, samsung8kRecordingRotationDegrees(sensorOrientation = 90, displayDegrees = 0))
+        assertEquals(0, samsung8kRecordingRotationDegrees(sensorOrientation = 90, displayDegrees = 90))
+        assertEquals(270, samsung8kRecordingRotationDegrees(sensorOrientation = 90, displayDegrees = 180))
+        assertEquals(180, samsung8kRecordingRotationDegrees(sensorOrientation = 90, displayDegrees = 270))
+    }
+
+    @Test fun `codec config and end of stream are not media samples`() {
+        assertTrue(samsung8kProbeRealEncodedSample(size = 128, flags = 0))
+        assertFalse(samsung8kProbeRealEncodedSample(size = 128, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG))
+        assertFalse(samsung8kProbeRealEncodedSample(size = 128, flags = MediaCodec.BUFFER_FLAG_END_OF_STREAM))
+        assertFalse(samsung8kProbeRealEncodedSample(size = 0, flags = 0))
     }
 
     @Test fun `terminal camera callback closes the supplied device before failure cleanup`() {
