@@ -960,7 +960,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (Main10 27.5–28.6 fps, the encoder's RGBA→10-bit conversion; the P010 EGL target is refused), so
   HLG/Log/RAW Log/OEM Log stay 4K and a Gamma change drops the delivered size to 4K while keeping the
   8K request. The earlier OEM-Log 8K attempt (0x830b, A29) crashed the HAL: a different graph. Exact
-  PMA110 only (`DeviceProfile.oemEightKVideo`); no stills in the session.
+  PMA110 only (`DeviceProfile.oemEightKVideo`); no stills in the session. **Never under the
+  teleconverter (owner review 2026-11-02):** 0x80A9's EIS is the bare lens's and is forced ON on this
+  route, and through the inverting converter a bare-lens correction leaves (M + 1)/M of the shake — the
+  owner saw "only the 3× camera's stabilization" in an 8K TC take. `oemEightKRouteAdmitted` therefore
+  refuses the raster while TC is on (a kept 8K request delivers 4K there, as with Gamma); the 3× lens
+  preset without TC keeps 8K. Stock's own TC mode offers no 8K either.
 - **The SENSOR cannot be asked for an NTSC rate, so the FILE is retimed onto the exact grid (device-
   measured 2026-10-05 and 2026-10-26; grid since 2026-10-26, owner decision "29.97, 59.94 and 23.976
   are the standard").** Encoder PTS USED TO BE the SurfaceTexture sensor timestamps, so a file's frame

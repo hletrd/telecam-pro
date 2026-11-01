@@ -131,12 +131,21 @@ class OemEightKVideoTest {
     }
 
     @Test
-    fun `the route needs the profile, the back camera, a standalone id and a host lens`() {
-        assertTrue(oemEightKRouteAdmitted(profileAdmits = true, backRoute = true, standalone = true, hostLens = true))
-        assertFalse(oemEightKRouteAdmitted(profileAdmits = false, backRoute = true, standalone = true, hostLens = true))
-        assertFalse(oemEightKRouteAdmitted(profileAdmits = true, backRoute = false, standalone = true, hostLens = true))
-        assertFalse(oemEightKRouteAdmitted(profileAdmits = true, backRoute = true, standalone = false, hostLens = true))
-        assertFalse(oemEightKRouteAdmitted(profileAdmits = true, backRoute = true, standalone = true, hostLens = false))
+    fun `the route needs the profile, the back camera, a standalone id, a host lens and no converter`() {
+        fun admitted(
+            profileAdmits: Boolean = true,
+            backRoute: Boolean = true,
+            standalone: Boolean = true,
+            hostLens: Boolean = true,
+            teleconverter: Boolean = false,
+        ) = oemEightKRouteAdmitted(profileAdmits, backRoute, standalone, hostLens, teleconverter)
+        assertTrue(admitted())
+        assertFalse(admitted(profileAdmits = false))
+        assertFalse(admitted(backRoute = false))
+        assertFalse(admitted(standalone = false))
+        assertFalse(admitted(hostLens = false))
+        // The 3× host lens under the converter: 0x80A9's bare-lens EIS would amplify the shake.
+        assertFalse(admitted(teleconverter = true))
     }
 
     @Test

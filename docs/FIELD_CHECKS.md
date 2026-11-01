@@ -1912,6 +1912,16 @@ dropped=0 filled=9` (longest fill burst 83 ms), `audio0-video0=621.1ms` anchored
 `placed=440 dropped=0 filled=7`, `audio0-video0=676.5ms` anchored. Both files HEVC Main 4320×7680
 BT.709 30/1 with no PTS gap above 33.334 ms.
 
+**Owner review 2026-11-02 (converter mounted, TELE = TC on, 8K):** "in 8K the TC stabilization does
+not work; only the 3× camera's stabilization works." 0x80A9's EIS is the bare lens's and is forced ON on
+this route, so through the inverting converter it corrects −f·θ of a −M·f·θ image motion. Since then
+`oemEightKRouteAdmitted` refuses the raster while TC is on (the 3× preset without TC keeps it; stock's
+TC mode offers no 8K either). Device check, immutable debug `2a7d7b01e7d0-87e90e03` (working tree of
+the change, APK SHA-256 `8fd03623e2e507b7…`), owner's 8K request kept: with TC on, Video → Resolution
+offers 4K / 3264×1836 / 1440p / 1080p / 1664×936 and the session is `operation_mode: 0x80b4`; TC off
+on the 3× reopened the kept request as `Session configured (oem8k=true, camera=4, vstab=1)` under
+0x80a9; TC on again returned to 0x80b4.
+
 **Open:** a lit, textured scene on each lens (8K detail against the 4K route, colour against the 4K
 SDR route, upright orientation in an external player — every frame so far was dim: Y 22–35); a clap
 take for A/V sync; a soak unplugged from a cool start, and what the holes are.

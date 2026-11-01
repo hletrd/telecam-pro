@@ -39,15 +39,23 @@ internal val OEM_8K_VIDEO_FPS: Set<Int> = setOf(30)
 
 /**
  * Whether an opened route may offer the OEM 8K raster: the measured profile, a BACK standalone camera,
- * and one of the two lenses 0x80A9 lists ([hostLens]: the main or 3× tele, resolved by enumerated focal,
- * never by a camera-id literal).
+ * one of the two lenses 0x80A9 lists ([hostLens]: the main or 3× tele, resolved by enumerated focal,
+ * never by a camera-id literal), and NO teleconverter.
+ *
+ * The converter is excluded because 0x80A9's stabilization is the bare lens's (Super_EIS_8K, forced ON
+ * on the Rec. 709 route) and cannot be told about the glass: through the inverting afocal converter a
+ * rotation moves the image −M·f·θ, so a bare-lens correction of −f·θ leaves (M + 1)/M of the shake —
+ * worse than none. Owner review 2026-11-02 on the mounted converter: "in 8K the TC stabilization does
+ * not work, only the 3× camera's". Stock offers no 8K in its own TC mode either (1080p / 4K only), and
+ * the TC route's own session type (0x80b4) cannot carry the 8K usecase.
  */
 internal fun oemEightKRouteAdmitted(
     profileAdmits: Boolean,
     backRoute: Boolean,
     standalone: Boolean,
     hostLens: Boolean,
-): Boolean = profileAdmits && backRoute && standalone && hostLens
+    teleconverter: Boolean,
+): Boolean = profileAdmits && backRoute && standalone && hostLens && !teleconverter
 
 /** The encoder/Gamma packet the route was measured with: Rec. 709 into HEVC. */
 internal fun oemEightKPacketAdmitted(transfer: ColorTransfer, codec: VideoCodec): Boolean =

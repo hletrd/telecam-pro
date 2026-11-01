@@ -9518,6 +9518,8 @@ class CameraEngine internal constructor(
             standalone = sel.physicalId == null,
             hostLens = sel.logicalId == cachedIdForFocal(LensChoice.MAIN.targetEquivMm) ||
                 sel.logicalId == cachedIdForFocal(LensChoice.TELE3X.targetEquivMm),
+            // The 8K usecase's bare-lens EIS amplifies converter shake (oemEightKRouteAdmitted).
+            teleconverter = teleconverterMode,
         )
     }
 
