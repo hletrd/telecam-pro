@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "task": "2026-11-02-samsung-private-8k-probe/task-3",
+  "status": "FAILED_AT_OPEN_CAMERA",
+  "device": {
+    "serial": "R3CW20Q1EGE",
+    "model": "SM-S918N",
+    "buildDisplayId": "CP2A.260605.016.S918NKSU8GZIF",
+    "apiLevel": 37,
+    "adbRoute": "USB through hletrd@172.30.62.1"
+  },
+  "source": {
+    "commit": "404332202f10a6a9dbcda183c1ddd6bed179009b",
+    "commitSubject": "test(camera): 🧪 record S20 AAC follow-up evidence",
+    "productionRoutesModified": false,
+    "probeProtocolModified": false
+  },
+  "immutableDebug": {
+    "builder": "tools/build_immutable_debug.py",
+    "buildResult": "BUILD SUCCESSFUL",
+    "apkPath": "app/build/immutable-debug/404332202f10-d38bd8f2/apk/debug/app-debug.apk",
+    "apkBytes": 68727944,
+    "apkSha256": "bce268095554d4bee7a99e653ef9a9987a44d072e9d5e2fbdf9fcbb61a795b87",
+    "installResult": "Success",
+    "installedPath": "/data/app/~~IqKLKk3CICQK_atBwq1G-w==/me.hletrd.telecampro.debug-LO4701bhVyXJmN0Um_5Pkw==/base.apk",
+    "installedApkSha256BeforeProbe": "bce268095554d4bee7a99e653ef9a9987a44d072e9d5e2fbdf9fcbb61a795b87",
+    "installedApkSha256AfterProbe": "bce268095554d4bee7a99e653ef9a9987a44d072e9d5e2fbdf9fcbb61a795b87",
+    "installedBytesMatchImmutableApk": true,
+    "latestValidatedDebugRemainsInstalled": true
+  },
+  "deviceAttempt": {
+    "attemptCount": 1,
+    "cameraId": "56",
+    "requestedRecordingSize": "7680x4320",
+    "requestedRecordingFps": 30,
+    "openCameraStarted": true,
+    "configureAttempted": false,
+    "configureAccepted": false,
+    "acceptedStreams": null,
+    "acceptedOptions": null,
+    "failure": {
+      "stage": "open_camera",
+      "elapsedMs": 98,
+      "class": "java.lang.IllegalArgumentException",
+      "message": "Unknown camera ID 56",
+      "cameraAccessReason": null
+    },
+    "firstRealRecordFrame": false,
+    "firstRealAudioFrame": false,
+    "mp4Created": false,
+    "outputBytes": 0,
+    "furtherRetryPerformed": false,
+    "protocolWeakened": false
+  },
+  "fileVerification": {
+    "ffprobe": "NOT_RUN_NO_MP4",
+    "codec": "UNVERIFIED_OPEN_CAMERA_BLOCKED",
+    "cadence": "UNVERIFIED_OPEN_CAMERA_BLOCKED",
+    "audio": "UNVERIFIED_OPEN_CAMERA_BLOCKED",
+    "orientation": "UNVERIFIED_OPEN_CAMERA_BLOCKED",
+    "fullFfmpegDecode": "NOT_RUN_NO_MP4",
+    "upscalingUsed": false
+  },
+  "artifacts": {
+    "immutable-build.txt": {
+      "bytes": 3131,
+      "sha256": "b7ebe00722973a36fba8f47e87e12286b87b33deb2c0d1318b119381f5522e55"
+    },
+    "probe-evidence.jsonl": {
+      "bytes": 821,
+      "sha256": "8da2d23a11e2a34f6bdd6294584f70373dd47f07c56e36d2f5d0a0aee2df874f"
+    },
+    "preview.png": {
+      "bytes": 1477771,
+      "sha256": "15e2f5a0ab608d846f886db96608db5123e8d19e075a5868fae38f71666a350b"
+    },
+    "logcat.txt": {
+      "bytes": 1141335,
+      "sha256": "68c14683f078a3bd1094abdac41d443a891719dc19b97d652457060ab5135adf"
+    }
+  },
+  "conclusion": "The exact immutable debug APK opened neither camera 56 nor an 8K session: Camera2 rejected the open synchronously with Unknown camera ID 56. Configure, first-frame, recording, and file validation were not reached; no retry or protocol change was made."
+}
