@@ -1231,6 +1231,16 @@ for ON and the OSD names Standard (`CameraUiState.osdVideoStabMode`), and the br
 audio anchor. Ten-bit at 8K does not hold 30 fps, so HLG and every Log stay at 4K. FIELD_CHECKS A29
 preserves the earlier OEM-Log 8K streaming fatalities (0x830b, a different graph).
 
+Samsung's stock-private 8K route has NO production admission. On the measured S20 5G (SM-G981N,
+API 33) and S23 Ultra (SM-S918N, API 37), one exact probe attempt each failed at `open_camera`:
+camera **50** threw `IllegalArgumentException: Unknown camera ID 50` after 72 ms, and camera **56**
+threw `IllegalArgumentException: Unknown camera ID 56` after 98 ms. Neither attempt reached session
+configuration, a frame or an MP4, so stock's private access to those high-resolution IDs is not
+third-party Camera2 open access. `DeviceProfile`, camera selection and the session pipeline therefore
+add no Samsung high-resolution route or support claim; the extended-raster single-attempt recovery
+above and every non-Samsung route remain unchanged. Measured builds and immutable-APK evidence are
+in FIELD_CHECKS A33.
+
 Before a VIDEO reopen invalidates Ready or opens Camera2, `resolveVideoSessionIntent` resolves rate →
 RAW-Log eligibility → raster → rate to a fixed point and publishes one immutable `VideoSessionIntent`.
 The packet carries route, codec, transfer, RAW-Log answer, Open Gate, camera stream size, actual

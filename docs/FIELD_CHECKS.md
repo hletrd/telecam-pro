@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-31):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-11-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ◐ · A33 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Thirty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -66,8 +66,8 @@ Wireless-ADB ports and the USB host change per session and are deliberately not 
 |---|---|---|---|---|---|---|
 | OPPO Find X9 Ultra | PMA110 | SM8850 | 17 (37) · ColorOS `PMA110_17.0.0.106(CN01)` | 2026-09-01 | PMA110 | 2026-10-28 |
 | Samsung Galaxy Z Flip6 | SM-F741N | SM8650 | 17 (37) · One UI 9.0 `F741NKSU4EZIH` | 2026-09-05 | GENERIC | 2026-10-28 |
-| Samsung Galaxy S23 Ultra | SM-S918N | SM8550 | 16 (36) · One UI 8.5 `S918NKSS8FZI1` | 2026-09-05 | GENERIC | 2026-10-28 |
-| Samsung Galaxy S20 5G | SM-G981N | SM8250 | 13 (33) · One UI 5.1 `G981NKSS8IYC2` | 2025-03-01 | GENERIC | 2026-10-28 |
+| Samsung Galaxy S23 Ultra | SM-S918N | SM8550 | 17 (37) · `S918NKSU8GZIF` | — | GENERIC | 2026-11-02 |
+| Samsung Galaxy S20 5G | SM-G981N | SM8250 | 13 (33) · One UI 5.1 `G981NKSS8IYC2` | 2025-03-01 | GENERIC | 2026-11-02 |
 | Xiaomi POCO X3 GT | 21061110AG | MT6891 | 13 (33) · MIUI 14 `V14.0.6.0.TKPMIXM` | 2024-04-01 | GENERIC | 2026-10-28 |
 | Lenovo Xiaoxin Pad 2024 (小新Pad 2024) | TB331FC | SM6225 | 15 (35) · ZUXOS `1.1.10.680` | 2025-11-05 | GENERIC | 2026-10-28 |
 | Lenovo Idea Tab 5G (Tab K11 Gen 2) | TB336ZU | Dimensity 6300 | 16 (36) | — | GENERIC | 2026-09-09 |
@@ -81,7 +81,8 @@ What the app offers on each, as measured (the reason a check is or is not runnab
   P010 bridge, a PMA110-family profile flag); RAW on logical camera 0.
 - **Galaxy S23 Ultra:** RGBA1010102; four optical presets (0.6 / 1 / 3 / 10×); the UI ran in ko-KR.
   Gamma set not yet read on the current build.
-- **Galaxy S20 5G:** paired 2026-10-28; nothing measured yet.
+- **Galaxy S20 5G:** paired 2026-10-28; the private 8K probe was refused at camera open (A33);
+  nothing else measured yet.
 - **POCO X3 GT:** Rec. 709 only (no Main10 HEVC encoder, no RGBA1010102 config); RAW16 advertises
   50 ms on every camera, so RAW Log (≥ 24 fps) is never offered; stabilization up to Standard. Shell
   `input` needs MIUI's "USB debugging (Security settings)" over USB and wireless alike, and it is
@@ -1915,6 +1916,31 @@ BT.709 30/1 with no PTS gap above 33.334 ms.
 **Open:** a lit, textured scene on each lens (8K detail against the 4K route, colour against the 4K
 SDR route, upright orientation in an external player — every frame so far was dim: Y 22–35); a clap
 take for A/V sync; a soak unplugged from a cool start, and what the holes are.
+
+### A33. Samsung private 8K on S20 5G / S23 Ultra — ✅ MEASURED NEGATIVE 2026-11-02
+
+The isolated debug probe made ONE exact stock-shaped attempt per device, with no retry and no
+protocol weakening. Both attempts failed synchronously in `open_camera`, before session
+configuration:
+
+- **Galaxy S20 5G, SM-G981N, API 33, build `TP1A.220624.014.G981NKSS8IYC2`:** requested camera
+  **50**, 7680×4320 at 24 fps. `CameraManager.openCamera` threw `IllegalArgumentException: Unknown
+  camera ID 50` after 72 ms. Immutable debug `b635cde53961-3b053d64`, APK SHA-256
+  `f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d`; the installed APK hash
+  matched before and after the probe.
+- **Galaxy S23 Ultra, SM-S918N, API 37, build `CP2A.260605.016.S918NKSU8GZIF`:** requested camera
+  **56**, 7680×4320 at 30 fps. `CameraManager.openCamera` threw `IllegalArgumentException: Unknown
+  camera ID 56` after 98 ms. Immutable debug `404332202f10-d38bd8f2`, APK SHA-256
+  `bce268095554d4bee7a99e653ef9a9987a44d072e9d5e2fbdf9fcbb61a795b87`; the installed APK hash
+  matched before and after the probe and remains the latest validated debug product installed.
+
+Neither device reached `configure`, accepted streams, a preview or record frame, audio, or MP4
+creation; output bytes were zero, so `ffprobe`, full decode, raster, cadence, orientation and codec
+checks were not run. These are **third-party camera-open refusals**, not failed 8K configure or
+encoder results. The stock camera's private access to its high-resolution route does not make
+stock-visible IDs 50/56 public Camera2 cameras for this app. No production route, profile admission
+or support claim was added, and the PMA110 8K single-attempt recovery is unchanged. Raw evidence:
+`.context/samsung-8k-probe-s20/evidence.json` and `.context/samsung-8k-probe-s23/evidence.json`.
 
 ## B. Held in hand — 3 min
 
