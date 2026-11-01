@@ -1252,7 +1252,9 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = osdClearanceTop()),
+                .padding(top = osdClearanceTop())
+                // The OSD row this lane clears moves with the top bar's seam shift; so must the lane.
+                .offset { IntOffset(0, topBarSeamOffsetPx) },
             horizontalAlignment = Alignment.CenterHorizontally,
             // Matches the taller scopes column on the top-end edge: two free-floating overlay lanes
             // on the same screen edge should not run different rhythms.
@@ -1318,7 +1320,11 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(end = 12.dp, top = osdClearanceTop()),
+                .padding(end = 12.dp, top = osdClearanceTop())
+                // Same seam shift as the OSD row it clears: in a 16:9 Video finder the bar and row
+                // move down ~49 dp on PMA110 and the fixed clearance left the audio meter resting on
+                // the battery chip (release QA 2026-11-02), a histogram/waveform across the row.
+                .offset { IntOffset(0, topBarSeamOffsetPx) },
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
