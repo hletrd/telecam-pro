@@ -1482,7 +1482,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   timed by `SENSOR_TIMESTAMP` + exposure/2 + skew·row (gyro and camera share `elapsedRealtimeNanos`,
   timestampSource REALTIME); a causal smoother pushed toward the real path until the window fits. The
   Stabilization setting drives it (Standard 10 % / Active 20 % margin). On-device effectiveness and
-  the TELE sign are A19 field checks — compiled math is not shake removed.
+  the TELE sign are A19 field checks — compiled math is not shake removed. The TELE sign and
+  magnification PASSED the owner's handheld review with the converter mounted (2026-11-02,
+  operator-reported); a scored A/B and the bare pair remain open.
   **Resource facts (measured, cam 4 RAW 4096×3072 at 30 fps):** the per-frame CPU upload dominated —
   RAW16 straight from client memory 6.6 ms; RAW10 (offered at the same 33.3 ms) plus only the rows the
   demosaic reads 4.7 ms; the same bytes through two PBOs **2.4 ms** (2.1 ms is a plain copy, bounded by

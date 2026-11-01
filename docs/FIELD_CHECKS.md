@@ -753,6 +753,14 @@ through the S-Log3 inverse and the LogC3 OETF predicts the LogC3 file's within 2
 every percentile from p0.5 to p99.5 (median 258 → predicted 242.3, measured 241), so the GL re-encode
 of the developer's S-Log3 into LogC3 is right on device.
 
+**Owner review 2026-11-02, converter mounted, TELE + RAW Log, handheld (installed debug APK SHA-256
+`e1a1fbae27b556fa…`, the immutable `63ffcedf…-15587f25` of A32):** "in RAW log mode the TC
+stabilization magnification is applied well; if the log profile is right, the implementation is
+good." So the converter's −M·f model holds through the glass: the TELE sign and magnification
+PASSED by eye. Operator-reported, like C3 and B1 — not the phase-correlation score above, and the bare
+(no-converter) pair was not part of the remark. The log PROFILE itself (the colour-chart and
+clipped-highlight items under Open) is what the owner names as the remaining question.
+
 **Galaxy Z Flip6, ten-minute RAW Log take 2026-10-27 (GENERIC, logical camera 0):** cadence and file
 held for the whole take with no developed frame lost, while the phone reached thermal status 4
 (CRITICAL) at five minutes — numbers in A27. The POCO X3 GT never offers RAW Log (RAW16 50 ms).
