@@ -454,6 +454,43 @@ internal const val FN_OVERLAY_MAX_WIDTH_DP =
     2 * FN_PANEL_PADDING_DP + FN_OVERLAY_COLUMN_COUNT * FN_TILE_LONG_DP +
         FN_OVERLAY_COLUMN_COUNT * FN_TILE_GAP_DP + FN_CLOSE_TARGET_DP
 
+/** The portrait strip's minimum clearance from the window's side edges. */
+internal const val FN_OVERLAY_EDGE_MARGIN_DP = 14
+
+/**
+ * The Fn entry's raw-start footprint: its 12 dp rail inset plus `CompactFnButton`'s 48 dp touch box.
+ * The portrait strip shares the entry's vertical band (it deliberately sits over the focal rail), so
+ * its plate must start beyond this or it covers the very button that opened it.
+ */
+internal const val FN_ENTRY_FOOTPRINT_DP = 12 + 48
+
+/** Raw-left edge and width of the upright portrait strip, in dp. */
+internal data class FnStripPlacement(val startDp: Float, val widthDp: Float)
+
+/**
+ * Upright portrait strip in a window [windowWidthDp] wide: the 4x2 TILE GRID is centred on the
+ * window's centre line (the shutter / mode-pair axis) and the close column hangs off its end.
+ * Centring the whole plate instead (grid + close, the first shape) put the grid 26 dp left of the
+ * shutter and ran the plate's start edge over the Fn entry: on PMA110 (411 dp) the plate began at
+ * 39.5 dp while the entry's touch box ends at 60 dp (owner review 2026-11-02, "the Fn window sits on
+ * the button and looks misaligned"). Centring the grid starts the plate at 65.5 dp there.
+ * Tiles shrink, never under the 48 dp floor, before the close column crosses the edge margin; null
+ * when even 48 dp tiles cannot be centred (a window under ~340 dp), where the caller keeps the
+ * plain centred plate.
+ */
+internal fun fnStripPlacement(windowWidthDp: Float): FnStripPlacement? {
+    val trailing = (FN_TILE_GAP_DP + FN_CLOSE_TARGET_DP + FN_PANEL_PADDING_DP).toFloat()
+    val gaps = (FN_OVERLAY_COLUMN_COUNT - 1) * FN_TILE_GAP_DP
+    val maxHalfGrid = (FN_OVERLAY_COLUMN_COUNT * FN_TILE_LONG_DP + gaps) / 2f
+    val minHalfGrid = (FN_OVERLAY_COLUMN_COUNT * FN_TILE_SHORT_DP + gaps) / 2f
+    val centre = windowWidthDp / 2f
+    val halfGrid = minOf(maxHalfGrid, centre - FN_OVERLAY_EDGE_MARGIN_DP - trailing)
+    if (halfGrid < minHalfGrid) return null
+    val start = centre - halfGrid - FN_PANEL_PADDING_DP
+    if (start < FN_ENTRY_FOOTPRINT_DP) return null
+    return FnStripPlacement(startDp = start, widthDp = 2 * halfGrid + FN_PANEL_PADDING_DP + trailing)
+}
+
 /**
  * Held tray: what is left of [FN_OVERLAY_HELD_WIDTH_DP] for the info line once the two raw tile
  * columns and their gaps are paid for (32 dp — a 12 sp line plus its leading even at 2x font scale).

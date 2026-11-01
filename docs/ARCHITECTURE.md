@@ -1750,7 +1750,11 @@ draw only the slot icon and a camera abbreviation (`fnTileReadout` in `CameraScr
 AF-C / AUTO / 1/250 / AWB / 709 / STD and so on; words resolve through EN+KO `fn_tile_*` resources,
 operator-fixed exposure, focus, and WB values draw in the manual amber, and the selected tile
 carries an Accent outline), and a 48 dp close glyph at the grid's physical end. Portrait uses a raw
-bottom 4x2 grid capped at 332 dp wide. Held 90/270 use raw 2x4 Start/End trays (148 dp deep) whose
+bottom 4x2 grid capped at 332 dp wide whose TILE GRID (not the whole plate) is centred on the window's
+centre line, the shutter axis, with the close column hanging off its end (`fnStripPlacement`); that
+also starts the plate clear of the Fn entry's 60 dp footprint, which the centred plate covered
+(owner review 2026-11-02). Tiles shrink toward the 48 dp floor on narrow windows; below ~340 dp the
+plain centred plate returns. Held 90/270 use raw 2x4 Start/End trays (148 dp deep) whose
 slot reordering produces the same physical bottom 4x2 reading order; each tile's icon and value
 rotate as one unit, the info line runs along the raw Y axis, and the close sits at the same physical
 place as in portrait. The panel scrolls when window/font constraints require it. Every tile merges

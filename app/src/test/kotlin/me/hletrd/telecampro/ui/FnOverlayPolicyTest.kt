@@ -134,6 +134,35 @@ class FnOverlayPolicyTest {
     }
 
     @Test
+    fun `the upright strip centres its tile grid on the shutter axis and clears the Fn entry`() {
+        // PMA110 at its 560 dpi override: 1440 px / 3.5 = 411.4 dp. The centred PLATE began at 39.7 dp,
+        // under the entry's touch box (to 60 dp); the centred GRID starts the plate at 66 dp, its tiles
+        // 0.07 dp under the designed 64 so the close column keeps the 14 dp edge margin.
+        val pma = fnStripPlacement(1440f / 3.5f)!!
+        assertEquals(FN_OVERLAY_MAX_WIDTH_DP.toFloat(), pma.widthDp, 1f)
+        assertEquals(66f, pma.startDp, 1e-3f)
+
+        // Across every window it can serve: the grid's centre IS the window's centre, the close column
+        // keeps the edge margin, the plate clears the entry, and no tile drops under the touch floor.
+        for (w in 340..1400 step 7) {
+            val window = w.toFloat()
+            val s = fnStripPlacement(window) ?: continue
+            val grid = s.widthDp - 2 * FN_PANEL_PADDING_DP - FN_TILE_GAP_DP - FN_CLOSE_TARGET_DP
+            assertEquals("w=$w", window / 2f, s.startDp + FN_PANEL_PADDING_DP + grid / 2f, 1e-3f)
+            assertTrue("w=$w", s.startDp + s.widthDp <= window - FN_OVERLAY_EDGE_MARGIN_DP + 1e-3f)
+            assertTrue("w=$w", s.startDp >= FN_ENTRY_FOOTPRINT_DP)
+            val tile = (grid - (FN_OVERLAY_COLUMN_COUNT - 1) * FN_TILE_GAP_DP) / FN_OVERLAY_COLUMN_COUNT
+            assertTrue("w=$w tile=$tile", tile >= FN_TILE_SHORT_DP - 1e-3f && tile <= FN_TILE_LONG_DP + 1e-3f)
+        }
+        // A 360 dp phone shrinks the tiles (51 dp) rather than giving up the centring.
+        assertEquals(66f, fnStripPlacement(360f)!!.startDp, 1e-3f)
+        // Too narrow for centred 48 dp tiles: the caller keeps the plain centred plate.
+        assertNull(fnStripPlacement(320f))
+        // A tablet never stretches the strip.
+        assertEquals(FN_OVERLAY_MAX_WIDTH_DP.toFloat(), fnStripPlacement(800f)!!.widthDp, 1e-3f)
+    }
+
+    @Test
     fun `Fn entry stays on the physical bottom edge in either hold`() {
         listOf(0, 90, 180, 360, 450).forEach {
             assertEquals(FnEntryAnchor.START, fnEntryAnchor(it))

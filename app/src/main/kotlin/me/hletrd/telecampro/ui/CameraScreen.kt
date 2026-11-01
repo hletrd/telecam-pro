@@ -2591,11 +2591,13 @@ internal fun FnOverlay(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = FN_OVERLAY_SCRIM_ALPHA)),
     ) {
+        // The window width the upright strip centres its tile grid in (fnStripPlacement).
+        val strip = fnStripPlacement(maxWidth.value)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -2605,9 +2607,17 @@ internal fun FnOverlay(
         )
         val panelPlacement = when (trayAnchor) {
             FnOverlayAnchor.BOTTOM_CENTER -> Modifier
-                .align(Alignment.BottomCenter)
+                .align(if (strip != null) AbsoluteAlignment.BottomLeft else Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 14.dp)
+                // The tile grid sits on the shutter axis and the plate clears the Fn entry
+                // (fnStripPlacement); a window too narrow for that keeps the centred plate.
+                .then(
+                    if (strip != null) {
+                        Modifier.absolutePadding(left = strip.startDp.dp)
+                    } else {
+                        Modifier.padding(horizontal = FN_OVERLAY_EDGE_MARGIN_DP.dp)
+                    },
+                )
                 // 154 dp clears the cluster's two ACTION rows and nothing above them: measured up
                 // from the same navigation-bar inset, the cluster spends 20 (its own bottom pad) +
                 // 76 (shutter row) + 8 + 48 (mode pair) = 152 dp on them, so the strip's bottom edge
@@ -2623,10 +2633,15 @@ internal fun FnOverlay(
                 // would make the strip's anchor move with detail state. It is measured for
                 // previewTopPx's reserve, which wants exactly that behaviour; this anchor does not.
                 .padding(bottom = 154.dp)
-                // Centered and capped: four 64 dp tiles plus the close column, never stretched
-                // across a wide window. A narrower window shrinks the weighted tiles instead.
-                .widthIn(max = FN_OVERLAY_MAX_WIDTH_DP.dp)
-                .fillMaxWidth()
+                // Capped: four 64 dp tiles plus the close column, never stretched across a wide
+                // window. A narrower window shrinks the weighted tiles instead.
+                .then(
+                    if (strip != null) {
+                        Modifier.width(strip.widthDp.dp)
+                    } else {
+                        Modifier.widthIn(max = FN_OVERLAY_MAX_WIDTH_DP.dp).fillMaxWidth()
+                    },
+                )
             FnOverlayAnchor.CENTER_START -> Modifier
                 .align(AbsoluteAlignment.CenterLeft)
                 .absolutePadding(left = 14.dp, top = 14.dp, bottom = 14.dp)
