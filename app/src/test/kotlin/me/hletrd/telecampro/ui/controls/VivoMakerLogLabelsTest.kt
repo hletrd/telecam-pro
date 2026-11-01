@@ -45,7 +45,7 @@ class VivoMakerLogLabelsTest {
         assertTrue(en.getString(R.string.hint_vivo_maker_log).contains("Unverified"))
         assertTrue(ko.getString(R.string.hint_vivo_maker_log).contains("검증되지"))
         assertTrue(en.getString(R.string.caption_maker_log_vivo).contains("unverified"))
-        assertTrue(ko.getString(R.string.caption_maker_log_vivo).contains("검증 안 됨"))
+        assertTrue(ko.getString(R.string.caption_maker_log_vivo).contains("미검증"))
         // The vivo caption claims no bit depth: nothing measured what that stream carries.
         assertTrue(!en.getString(R.string.caption_maker_log_vivo).contains("bit"))
     }

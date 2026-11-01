@@ -254,7 +254,7 @@ class BilingualPresentationComposeTest {
             }
         }
 
-        compose.onNodeWithText("10비트 동영상 · 사진 꺼짐").fetchSemanticsNode()
+        compose.onNodeWithText("10비트 동영상 · 사진 촬영 불가").fetchSemanticsNode()
         compose.onNodeWithText("속도", useUnmergedTree = true).fetchSemanticsNode()
         compose.onNodeWithText("각도", useUnmergedTree = true).fetchSemanticsNode()
         compose.onNodeWithContentDescription("셔터 속도")
