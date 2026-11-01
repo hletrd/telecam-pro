@@ -301,8 +301,8 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > than inferred from the ambiguous `CAMERA_DISABLED` code (the platform raises the same code for a
 > transient keyguard-relaunch race, so inferring it would have produced false accusations).
 >
-> **Screenshots: still the recaptured 2026-07-27 set.** Nothing here changes what they show on a
-> PMA110 — see the screenshot section before uploading.
+> **Screenshots:** the phone set is SUBMISSION-READY since 2026-11-02 (menu frames 02/03/06
+> recaptured from an immutable debug build) — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
@@ -607,27 +607,23 @@ and Video Permissions declaration (Manual Console Sequence step 5); no repo chan
 - Feature graphic: `docs/assets/play/feature-graphic.png`
   - 1024 x 500 PNG
   - no alpha
-- Phone screenshots — **NOT SUBMISSION-READY**. The checked-in set was recaptured 2026-07-27
-  (cycle 9), cropped to **1440x2880 (exactly 2:1)**
-  24-bit PNG, no alpha. Play rejects anything taller than 2:1 and this panel is 1440x3168 (1:2.2).
+- Phone screenshots — **SUBMISSION-READY (2026-11-02)**. Six PNGs at **1440x2880 (exactly 2:1)**,
+  24-bit, no alpha. Play rejects anything taller than 2:1 and this panel is 1440x3168 (1:2.2).
   The crop box is **(0, 168) → (1440, 3048)**, derived by MEASUREMENT rather than guessed: on this
   panel the OS status-bar glyphs end at y=101 and the lowest app pixel (the shutter ring) sits at
-  y=3041, so this window strips both system bars and loses no app content. Verified per file — only
-  `02` touches the bottom edge, and that is the MR card of a SCROLLING sheet, which reads correctly
-  as "more below".
-  - **Frames 02 and 06 are blocking stale assets.** Frame 02 visibly says `Shooting` / `JPEG
-    Quality` instead of current `Shoot` / `Still Quality`; frame 06 says `Transfer` / `Applied to
-    the SDR stream` instead of current `Gamma` / `Applied to the camera’s already tone-mapped
-    stream`. Do not upload the phone set until both are recaptured and the checked manifest is ready.
-  - Historical provenance is mixed. The three viewfinder frames come from the operator's own
-    handheld captures against real subjects (buildings, sky) because the listing wants
-    photography-led art; the three menu frames come from the signed RELEASE build installed on the
-    PMA110. That record has no immutable source-manifest digest and no longer proves current UI.
-  - `docs/assets/play/screenshots/asset-validity.json` pins every existing PNG digest, names the two
-    blockers, and binds expected copy to current string resources. Recapture 02 and 06 on PMA110 in
-    portrait `en-US` from the exact immutable-debug APK printed by the wrapper; record its schema-2
-    source-manifest digest and APK SHA-256 before changing `submission_ready` to true. Preserve the
-    measured `(0, 168) → (1440, 3048)` crop. Do not fabricate or edit a host-side replacement.
+  y=3041, so this window strips both system bars and loses no app content.
+  - **Menu frames 02, 03 and 06 were recaptured 2026-11-02** on PMA110, portrait, `en-US`, from the
+    immutable debug APK `dda6cdd49f85-c2e88c2d` (commit `dda6cdd4`, `dirty=false`, APK SHA-256
+    `1171c3501db3f2a0…`; its schema-2 source-manifest digest is recorded in the manifest). 02 shows
+    the current `Shoot` tab with `Still Quality`; 06 the Video tab with `Gamma` = HLG and its
+    `Applied to the camera’s already tone-mapped stream` caption (the app was returned to Rec. 709
+    afterwards); 03 the Focus tab, retaken so all three menu frames show the current tab rail with
+    Audio. The stale copy they replaced (`Shooting` / `JPEG Quality`, `Transfer` / `Applied to the
+    SDR stream`) no longer appears in the set.
+  - The viewfinder frames 01, 04 and 05 remain the 2026-07-27 captures: the operator's own handheld
+    frames against real subjects (buildings, sky), recorded in the manifest's `historical_capture`.
+  - `docs/assets/play/screenshots/asset-validity.json` pins every PNG digest and binds expected copy
+    to current string resources, so `tools/check_docs.py` fails closed on silent replacement.
   - Landscape captures were REJECTED for this set. The app counter-rotates glyphs by the
     gravity-derived device orientation, so a landscape-held capture renders the focal rail and mode
     carousel sideways. This is app behaviour, not a bug — capture PORTRAIT. All six historical
@@ -637,14 +633,14 @@ and Video Permissions declaration (Manual Console Sequence step 5); no repo chan
     build now reads `13x / 30x / 60x`.
   - `screenshots/01-main-viewfinder.png` — photo viewfinder: OSD row, focal rail, mode carousel,
     shutter
-  - `screenshots/02-pro-settings.png` — **STALE / BLOCKING:** old Shooting/JPEG Quality copy
+  - `screenshots/02-pro-settings.png` — Shoot tab: output formats, aspect, Still Quality, zoom
   - `screenshots/03-focus-tools.png` — Focus tab: AF modes, spot size, AF lock, peaking level/colour
   - `screenshots/04-video-controls.png` — video mode: REC control, live encoder OSD
   - `screenshots/05-lens-and-tele.png` — focal rail with the 300 mm TELECONVERTER engaged (the
     app's signature route: 3x pinned, TELE tag lit). The Fn quick-control sheet was tried first but
     would not survive a screencap — it dismisses before the frame lands, so this shot carries the
     lens story instead.
-  - `screenshots/06-video-settings.png` — **STALE / BLOCKING:** old Transfer/SDR-stream copy
+  - `screenshots/06-video-settings.png` — Video tab: resolution, FPS, bitrate, Gamma (HLG caption)
   - 01 and 04 now carry LIT, real subjects (the "photography-led art" option this note always
     offered). **05 is still a BLACK-scene frame and is the one weak spot in the set**: it is the
     only slot that requires TELE engaged, and every real-subject TELE capture on hand predates the
