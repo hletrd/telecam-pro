@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "task": "2026-11-02-samsung-private-8k-probe/task-2",
+  "status": "FAILED_OPEN_CAMERA",
+  "device": {
+    "serial": "R3CN307CRQF",
+    "model": "SM-G981N",
+    "buildDisplayId": "TP1A.220624.014.G981NKSS8IYC2",
+    "apiLevel": 33,
+    "adbRoute": "USB through hletrd@172.30.62.1"
+  },
+  "source": {
+    "commit": "b635cde53961f8d5ce67cec884de998d5d2bb016",
+    "previousCommit": "9531f1c9c63d1008b8d58a8fd4f8793df8c4e720",
+    "productionRoutesModified": false,
+    "probeCommitSubject": "test(camera): 🧪 add AAC evidence to Samsung 8K probe"
+  },
+  "immutableDebug": {
+    "builder": "tools/build_immutable_debug.py",
+    "apkPath": "app/build/immutable-debug/b635cde53961-3b053d64/apk/debug/app-debug.apk",
+    "apkBytes": 68711556,
+    "apkSha256": "f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d",
+    "installResult": "Success",
+    "installedPath": "/data/app/~~01ut86HZOpF-yyyEirJEHQ==/me.hletrd.telecampro.debug-C305P-8l87R03Nox62QbPQ==/base.apk",
+    "installedApkSha256BeforeProbe": "f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d",
+    "installedApkSha256AfterProbe": "f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d",
+    "installedBytesMatchImmutableApk": true
+  },
+  "probe": {
+    "activity": "me.hletrd.findx9tele.probe.Samsung8kProbeActivity",
+    "attemptCount": 1,
+    "cameraId": "50",
+    "requestedRecordingFps": 24,
+    "requestedRecordSize": "7680x4320",
+    "requestedRecordStreamOption": "0x41",
+    "requestedRecordStreamUseCase": "0x410000",
+    "requestedRecordDataspace": "0x104",
+    "openCameraStarted": true,
+    "configureAttempted": false,
+    "configureAccepted": false,
+    "acceptedStreams": null,
+    "failure": {
+      "stage": "open_camera",
+      "elapsedMs": 72,
+      "class": "java.lang.IllegalArgumentException",
+      "message": "Unknown camera ID 50",
+      "cameraAccessReason": null
+    },
+    "firstPreviewCallbackFrame": false,
+    "firstRealRecordFrame": false,
+    "firstRealAudioFrame": false,
+    "mp4Created": false,
+    "outputBytes": 0,
+    "retryPerformed": false,
+    "protocolWeakened": false,
+    "screenshotContents": "Android launcher after the probe Activity finished; no camera preview"
+  },
+  "fileVerification": {
+    "ffprobe": "NOT_RUN_NO_MP4",
+    "fullFfmpegDecode": "NOT_RUN_NO_MP4",
+    "actualRaster": "UNVERIFIED_NO_MP4",
+    "codec": "UNVERIFIED_NO_MP4",
+    "frameRate": "UNVERIFIED_NO_MP4",
+    "aac": "UNVERIFIED_NO_MP4",
+    "duration": "UNVERIFIED_NO_MP4",
+    "previewOrientation": "UNREACHED_OPEN_CAMERA",
+    "fileOrientation": "UNVERIFIED_NO_MP4"
+  },
+  "hostVerification": {
+    "fullHostGateExitCode": 0,
+    "fullHostGateChecks": "168 checks, 0 failed, 24 private checks skipped",
+    "fullHostGateReleaseLint": "SKIPPED (dirty tree)",
+    "fullHostGateScope": "AAC/orientation probe changes before the final codec-config/EOS sample guard",
+    "finalTargetedTestsAndLint": "PASS on the exact committed probe source",
+    "finalTargetedCommand": ":app:testDebugUnitTest --tests *Samsung8kProbeProtocolTest* :app:lintDebug"
+  },
+  "artifacts": {
+    "immutable-build.txt": {
+      "sha256": "8e7cd98926aa20f0be8b04ab61c3712f0f01e79ebac9607af231a1a2e607dd77"
+    },
+    "probe-tests-lint.txt": {
+      "sha256": "f4d8466764a20d45b412341040b2d9b812360cd6abdf0f76b1266455fc087693"
+    },
+    "verify-host-pre-device.txt": {
+      "sha256": "f7ea0e422a872cb5bb2a06349732324c6b6cfadffa42a43a274fa9970751c5f9"
+    },
+    "probe-evidence.jsonl": {
+      "bytes": 819,
+      "sha256": "d8599103b805fd815ee458badc60255ed43b126951197d24556cd4afe30239a0"
+    },
+    "preview.png": {
+      "bytes": 199848,
+      "sha256": "47183cab839ab28f64e8f532cc4ffbf4909937ee23546fadc1a61af6182a52de"
+    },
+    "logcat.txt": {
+      "bytes": 952520,
+      "sha256": "f7d1d367e29e962efc741c34b357bc77e6065e854331ade464ac06db0a53d342"
+    }
+  },
+  "conclusion": "The third-party probe could not open camera ID 50 on this S20. No configure, frame, orientation, or recording claim is made, and no S23 behavior is inferred."
+}

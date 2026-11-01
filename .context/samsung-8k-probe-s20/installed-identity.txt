@@ -1,0 +1,6 @@
+source_commit=b635cde53961f8d5ce67cec884de998d5d2bb016
+immutable_apk_sha256=f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d
+immutable_apk_bytes=68711556
+installed_path=/data/app/~~01ut86HZOpF-yyyEirJEHQ==/me.hletrd.telecampro.debug-C305P-8l87R03Nox62QbPQ==/base.apk
+installed_apk_sha256=f2cae2bf2dddb613e6bf3dc64a90cf71491247fa878bc3f5345ecaa7ea20779d
+install_result=Success
