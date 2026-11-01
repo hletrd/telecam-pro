@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "task": "2026-11-02-samsung-private-8k-probe/task-2-aac-ownership-followup",
+  "status": "FIX_VERIFIED_HOST_DEVICE_BLOCKED_AT_OPEN_CAMERA",
+  "device": {
+    "serial": "R3CN307CRQF",
+    "model": "SM-G981N",
+    "buildDisplayId": "TP1A.220624.014.G981NKSS8IYC2",
+    "apiLevel": 33,
+    "adbRoute": "USB through hletrd@172.30.62.1"
+  },
+  "source": {
+    "commit": "5d89b6c0224444d89539af28c2669f0bc5cbf651",
+    "commitSubject": "fix(camera): 🐛 guard Samsung AAC input and teardown",
+    "productionRoutesModified": false,
+    "synchronousDequeueInputBufferCallsInProbe": 0,
+    "audioInputMode": "asynchronous callback with bounded nonblocking PCM handoff",
+    "unsuccessfulJoinCleanup": "AudioRecord and MediaCodec are abandoned, not stopped or released"
+  },
+  "regressions": {
+    "AAC handoff refuses saturation without blocking and preserves order": "PASS",
+    "audio native cleanup requires actual worker termination": "PASS",
+    "all Samsung8kProbeProtocolTest tests": "PASS",
+    "lintDebug": "PASS",
+    "fullHostGate": "PASS: 168 checks, 0 failed, 24 private checks skipped; release lint SKIPPED (dirty tree)"
+  },
+  "immutableDebug": {
+    "builder": "tools/build_immutable_debug.py",
+    "apkPath": "app/build/immutable-debug/5d89b6c02244-6b774750/apk/debug/app-debug.apk",
+    "apkBytes": 68727944,
+    "apkSha256": "8a5933d0dab04357342ea5174447e30ff99b39657a6948984057071e2000c2a1",
+    "installResult": "Success",
+    "installedPath": "/data/app/~~32MNJTHo1l6MFk4mMO7Swg==/me.hletrd.telecampro.debug-7LwQWhOs8yJ4WPrNIDmPJg==/base.apk",
+    "installedApkSha256BeforeProbe": "8a5933d0dab04357342ea5174447e30ff99b39657a6948984057071e2000c2a1",
+    "installedApkSha256AfterProbe": "8a5933d0dab04357342ea5174447e30ff99b39657a6948984057071e2000c2a1",
+    "installedBytesMatchImmutableApk": true
+  },
+  "deviceAttempt": {
+    "attemptCountAfterFix": 1,
+    "cameraId": "50",
+    "protocolChanged": false,
+    "openCameraStarted": true,
+    "configureAttempted": false,
+    "configureAccepted": false,
+    "failure": {
+      "stage": "open_camera",
+      "elapsedMs": 58,
+      "class": "java.lang.IllegalArgumentException",
+      "message": "Unknown camera ID 50",
+      "cameraAccessReason": null
+    },
+    "audioEncoderCreated": false,
+    "correctedAudioRuntimePathExercised": false,
+    "audioInputErrorObserved": false,
+    "audioInputErrorAbsenceIsNotRuntimeValidation": true,
+    "firstRealRecordFrame": false,
+    "firstRealAudioFrame": false,
+    "mp4Created": false,
+    "outputBytes": 0,
+    "furtherRetryPerformed": false
+  },
+  "fileVerification": {
+    "ffprobe": "NOT_RUN_NO_MP4",
+    "fullFfmpegDecode": "NOT_RUN_NO_MP4",
+    "aac": "UNVERIFIED_ON_DEVICE_OPEN_CAMERA_BLOCKED",
+    "orientation": "UNVERIFIED_ON_DEVICE_OPEN_CAMERA_BLOCKED"
+  },
+  "artifacts": {
+    "immutable-build.txt": {
+      "sha256": "110b59a2ad40b923cc4bb3b44f4e9976541df7b74cf3cfca6c882a6132720799"
+    },
+    "probe-tests-lint.txt": {
+      "sha256": "20cd302b92ab0eb69b0e4d13c84f0ad6e2122a2cc9967b8badfe4472e1a926c8"
+    },
+    "verify-host.txt": {
+      "sha256": "32b176da7541b337cad7faeb5ebb5f362b481d40f547c7f9c310861f2a3054e8"
+    },
+    "probe-evidence.jsonl": {
+      "bytes": 819,
+      "sha256": "3e67157d6a41eb894cbfbeb53cbf1a4e3324b258a77df93ce480f0ecfddd2f71"
+    },
+    "preview.png": {
+      "bytes": 200336,
+      "sha256": "eae15265033397fe7943b9bfdf4665f529abe38a80e0a7ac8100ecbdc9d18e0d"
+    },
+    "logcat.txt": {
+      "bytes": 892849,
+      "sha256": "bbc1352f6189ce7015bcf43ef3c139a296b800d470bafb914f2550c568437761"
+    }
+  },
+  "conclusion": "Both review defects are fixed and covered by passing host regressions. The exact fixed APK was installed and attempted once on S20, but the unchanged camera-50 open refusal prevented any on-device AAC or recording validation."
+}

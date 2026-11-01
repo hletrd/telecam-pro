@@ -1,0 +1,6 @@
+{"elapsedMs":2,"event":"probe_start","model":"SM-G981N","cameraId":"50","recordingFps":24,"evidenceFile":"\/storage\/emulated\/0\/Android\/data\/me.hletrd.telecampro.debug\/files\/samsung-8k-probe\/samsung8k-probe-evidence.jsonl"}
+{"elapsedMs":49,"event":"open_camera","cameraId":"50"}
+{"elapsedMs":58,"event":"synchronous_error","class":"java.lang.IllegalArgumentException","message":"Unknown camera ID 50","cameraAccessReason":null,"stage":"open_camera"}
+{"elapsedMs":59,"event":"terminal_failure","class":"java.lang.IllegalArgumentException","message":"Unknown camera ID 50","cameraAccessReason":null,"stage":"open_camera"}
+{"elapsedMs":61,"event":"stop","reason":"open_camera"}
+{"elapsedMs":63,"event":"stopped","reason":"open_camera","firstRecordFrame":false,"firstAudioFrame":false,"output":null,"outputBytes":0}

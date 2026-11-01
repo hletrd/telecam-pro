@@ -1,0 +1,63 @@
+Calculating task graph as no cached configuration is available for tasks: :app:assembleDebug
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:preBuild UP-TO-DATE
+> Task :app:generateDebugSourceProvenance
+> Task :app:preDebugBuild
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugBuildConfig FROM-CACHE
+> Task :app:generateDebugResources FROM-CACHE
+> Task :app:extractDebugSupportedLocales FROM-CACHE
+> Task :app:javaPreCompileDebug FROM-CACHE
+> Task :app:processDebugNavigationResources FROM-CACHE
+> Task :app:mergeDebugAssets
+> Task :app:compressDebugAssets
+> Task :app:desugarDebugFileDependencies FROM-CACHE
+> Task :app:checkDebugDuplicateClasses
+> Task :app:checkDebugAarMetadata
+> Task :app:mergeLibDexDebug FROM-CACHE
+> Task :app:generateDebugGlobalSynthetics FROM-CACHE
+> Task :app:generateDebugLocaleConfig FROM-CACHE
+> Task :app:compileDebugNavigationResources FROM-CACHE
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug FROM-CACHE
+> Task :app:processDebugMainManifest FROM-CACHE
+> Task :app:processDebugManifest FROM-CACHE
+> Task :app:packageDebugResources FROM-CACHE
+> Task :app:processDebugManifestForPackage FROM-CACHE
+> Task :app:mergeDebugJniLibFolders
+> Task :app:mergeDebugResources FROM-CACHE
+> Task :app:mergeDebugNativeLibs
+> Task :app:validateSigningDebug
+> Task :app:writeDebugAppMetadata
+
+> Task :app:stripDebugDebugSymbols
+Unable to strip the following libraries, packaging them as they are: libandroidx.graphics.path.so. Run with --info option to learn more.
+
+> Task :app:writeDebugSigningConfigVersions
+> Task :app:parseDebugLocalResources FROM-CACHE
+> Task :app:generateDebugRFile FROM-CACHE
+> Task :app:processDebugResources FROM-CACHE
+> Task :app:mergeExtDexDebug FROM-CACHE
+> Task :app:compileDebugKotlin FROM-CACHE
+> Task :app:processDebugJavaRes
+> Task :app:mergeDebugJavaResource
+> Task :app:compileDebugJavaWithJavac FROM-CACHE
+> Task :app:dexBuilderDebug FROM-CACHE
+> Task :app:mergeProjectDexDebug FROM-CACHE
+> Task :app:packageDebug
+> Task :app:assembleDebug
+> Task :app:createDebugApkListingFileRedirect
+
+[Incubating] Problems report is available at: file:///private/var/folders/kz/t1c9x6qj5zgb2sg_4lv0nh900000gn/T/telecam-debug-source-nwdvmc_t/source/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/9.8.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 4s
+41 actionable tasks: 17 executed, 24 from cache
+Configuration cache entry stored.
+immutable debug build complete: commit=5d89b6c0224444d89539af28c2669f0bc5cbf651 apk=/Users/hletrd/flash-shared/find-x9-ultra-camera/.claude/worktrees/samsung-8k-probe/app/build/immutable-debug/5d89b6c02244-6b774750/apk/debug/app-debug.apk
