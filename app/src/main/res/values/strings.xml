@@ -512,6 +512,7 @@
     <string name="review_error_open_image">Unable to open this image.</string>
     <string name="review_error_play_video">Unable to play this video.</string>
     <string name="review_error_timed_out">Couldn\'t load media. Try again.</string>
+    <string name="review_error_missing">Can\'t find this capture. It may have been deleted.</string>
     <string name="review_error_restart_required">Can\'t verify the media. Reopen the app.</string>
     <string name="review_delete_raw_capture_title">Delete RAW capture?</string>
     <string name="review_delete_capture_title">Delete capture?</string>

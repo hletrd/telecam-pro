@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.unit.dp
+import java.io.FileNotFoundException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import me.hletrd.telecampro.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -44,6 +46,24 @@ class MediaReviewOwnershipTest {
         descriptor.dispose()
 
         assertTrue(bitmap.isRecycled)
+    }
+
+    @Test
+    fun `a review load that throws becomes an error state, not a silent retire`() {
+        // The lane retires a work item that throws, and a retired review stays on "Loading
+        // review…" forever; a row deleted outside the app throws FileNotFoundException.
+        fun messageOf(descriptor: ReviewDescriptor) = (descriptor.state as ReviewMediaState.Error).messageRes
+
+        assertEquals(
+            R.string.review_error_missing,
+            messageOf(reviewDescriptorOrError { throw FileNotFoundException("row deleted") }),
+        )
+        assertEquals(
+            R.string.review_error_timed_out,
+            messageOf(reviewDescriptorOrError { throw SecurityException("grant revoked") }),
+        )
+        val loaded = ReviewDescriptor(ReviewMediaState.Ready.Raw, metadata = null)
+        assertSame(loaded, reviewDescriptorOrError { loaded })
     }
 
     @Test

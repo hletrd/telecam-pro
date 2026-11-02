@@ -109,6 +109,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
@@ -712,8 +713,26 @@ internal fun loadFrozenStillReview(
     }
 }
 
+/**
+ * A provider read that THROWS must reach the review as an error state, never escape: the lane
+ * treats a thrown work item as retired, and a retired review has no state to publish, so it sat on
+ * "Loading review…" with no timeout behind it (device-found 2026-11-02 — the newest clip deleted
+ * from the system Gallery, then its still-cached thumbnail tapped: MediaProvider answers `getType`
+ * with null and `openInputStream` with FileNotFoundException for the vanished row).
+ */
+internal inline fun reviewDescriptorOrError(load: () -> ReviewDescriptor): ReviewDescriptor = try {
+    load()
+} catch (missing: FileNotFoundException) {
+    ReviewDescriptor(ReviewMediaState.Error(R.string.review_error_missing), metadata = null)
+} catch (failure: Exception) {
+    ReviewDescriptor(ReviewMediaState.Error(R.string.review_error_timed_out), metadata = null)
+}
+
 /** One finite request owns MIME, request-bound columns, and any bounded still source together. */
-private fun loadReviewDescriptor(request: ReviewDescriptorRequest): ReviewDescriptor {
+private fun loadReviewDescriptor(request: ReviewDescriptorRequest): ReviewDescriptor =
+    reviewDescriptorOrError { loadReviewDescriptorOrThrow(request) }
+
+private fun loadReviewDescriptorOrThrow(request: ReviewDescriptorRequest): ReviewDescriptor {
     val kind = reviewMediaKind(
         runCatching { request.context.contentResolver.getType(request.uri) }.getOrNull(),
     )
