@@ -72,6 +72,16 @@ class RawLogTest {
     }
 
     @Test
+    fun `a RAW Log route blocked by its rate gives that reason, a camera without RAW Log gives none`() {
+        assertEquals(null, rawLogBlock(pma110Rear, 29.97))
+        assertEquals(VideoColorModeBlock.FRAME_RATE, rawLogBlock(pma110Rear, 59.94))
+        // Not blocks: RAW Log does not exist on these cameras, so the chip is absent, not dimmed.
+        assertEquals(null, rawLogBlock(pma110Rear.copy(lensFacingFront = true), 59.94))
+        assertEquals(null, rawLogBlock(pma110Rear.copy(rawLogDevelopable = false), 59.94))
+        assertEquals(null, rawLogBlock(pma110Rear.copy(rawSize = null), 59.94))
+    }
+
+    @Test
     fun `RAW Log is offered only where it can act`() {
         assertTrue(rawLogOffered(pma110Rear, 29.97))
         assertFalse("60 fps", rawLogOffered(pma110Rear, 59.94))

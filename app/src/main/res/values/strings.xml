@@ -83,7 +83,6 @@
     <string name="label_zebra_level">Zebra Level</string>
     <string name="label_color">Color</string>
     <string name="label_sharpness">Sharpness</string>
-    <string name="label_menu">Menu</string>
     <string name="label_route">Route</string>
     <string name="label_photo_ois">Photo OIS</string>
     <string name="label_quick_button">Quick Button</string>
@@ -612,6 +611,11 @@
     <string name="hint_drive">Single shot, burst, exposure bracketing (AEB) or interval time-lapse.</string>
     <string name="hint_exposure_mode">P is automatic; S fixes the shutter; ISO fixes the sensitivity; M fixes both.</string>
     <string name="hint_flicker">Matches mains lighting (50 or 60 Hz) to stop banding under artificial light.</string>
+    <string name="gamma_block_open_gate">%1$s: not with Open Gate.</string>
+    <string name="gamma_block_frame_rate">%1$s: up to 30 fps.</string>
+    <string name="gamma_block_rear_only">%1$s: rear camera only.</string>
+    <string name="gamma_block_camera_pin">%1$s: not with a fixed camera ID.</string>
+    <string name="gamma_block_teleconverter">%1$s: not with the teleconverter on this phone.</string>
     <string name="hint_gamma">Rec. 709 is standard video; HLG suits HDR screens; Log and RAW Log are flat, for grading.</string>
     <string name="hint_log_profile">Pick the one your grading LUTs expect. S-Log3.Cine has a smaller gamut than S-Log3.</string>
     <string name="hint_fps">29.97 and 59.94 are the video standard; 23.976 gives a film look.</string>
@@ -619,10 +623,8 @@
     <string name="hint_full_press_volume">What a full press of the camera key, or a volume key, does.</string>
     <string name="hint_gain">Digital level after the microphone. Above 1.0× loud sound can clip.</string>
     <string name="hint_gamma_disp_assist">Shows log footage at normal contrast on screen; the file stays log.</string>
-    <string name="hint_grid">Composition guides on the viewfinder.</string>
     <string name="hint_half_press">What a light press of the camera key does.</string>
     <string name="hint_input">Which microphone records: the phone, wired, USB or Bluetooth.</string>
-    <string name="hint_interval">Time between shots in time-lapse.</string>
     <string name="hint_iso">Sensitivity in ISO and M modes. Higher is brighter but noisier.</string>
     <string name="hint_kelvin">Match the light: about 3200K for tungsten, 5600K for daylight.</string>
     <string name="hint_metering">Matrix reads the whole frame, Center weights the middle, Spot reads where you tap.</string>
@@ -632,11 +634,8 @@
     <string name="hint_peaking_level">How strong an edge must be before it lights up.</string>
     <string name="hint_phone">Selects this phone\'s official converters and lens labels; preselected when the model is recognized.</string>
     <string name="hint_quick_button">What the side quick button does in this app.</string>
-    <string name="hint_record_audio">Off records video without sound.</string>
     <string name="hint_remember_lens">Starts on the lens you used last.</string>
-    <string name="hint_remember_settings">Restores your settings on the next launch.</string>
     <string name="hint_remember_teleconverter">Starts with TELE on if you left it on.</string>
-    <string name="hint_resolution">Higher resolution keeps more detail and takes more space.</string>
     <string name="hint_self_timer">Delays the shot so pressing the shutter does not shake the frame.</string>
     <string name="hint_sharpness">In-camera sharpening. Off keeps untouched detail for editing.</string>
     <string name="hint_shutter">Speed reads 1/x s; Angle reads cine degrees (180° = half the frame time).</string>
@@ -650,8 +649,6 @@
     <string name="hint_zebra_level">Brightness where stripes start; 95% and 100% warn of blown highlights.</string>
     <string name="hint_zoom">Digital zoom on the current lens. Past the lens\'s optical reach, detail drops.</string>
     <string name="hint_false_color">Colors the image by brightness, to judge exposure at a glance.</string>
-    <string name="hint_histogram">Distribution of brightness in the frame.</string>
-    <string name="hint_level">Shows a horizon level.</string>
     <string name="hint_loupe">Magnifies the focus point to check sharpness.</string>
     <string name="hint_peaking">Highlights in-focus edges to help manual focus.</string>
     <string name="hint_photo_ois">Optical stabilization for photos. Turn it off on a tripod.</string>

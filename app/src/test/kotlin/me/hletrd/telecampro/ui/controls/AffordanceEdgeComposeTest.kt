@@ -64,6 +64,34 @@ class AffordanceEdgeComposeTest {
     }
 
     @Test
+    fun `a disabled selected chip keeps its fill so it never reads as off`() {
+        // Material painted it as a 12% grey slab, the look of an unselected disabled chip
+        // (UX review 2026-11-02: the sole output format looked switched off).
+        compose.setContent {
+            TeleCamProTheme {
+                Row(
+                    Modifier
+                        .background(CameraColors.Pill)
+                        .padding(16.dp),
+                ) {
+                    Chip("on-locked", selected = true, enabled = false)
+                    Chip("off-locked", selected = false, enabled = false)
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        fun centreContrast(tag: String): Double {
+            val pixels = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
+            return contrast(pixels[4, pixels.height / 2], CameraColors.Pill)
+        }
+        val onLocked = centreContrast("on-locked")
+        val offLocked = centreContrast("off-locked")
+        assertTrue("locked selected fill contrast was $onLocked", onLocked >= 3.0)
+        assertTrue("locked unselected chip must stay unfilled ($offLocked)", offLocked < 1.3)
+    }
+
+    @Test
     fun `focal rail keeps enabled edge strong and disabled states quiet`() {
         val enabled = railState(selected = false, enabled = true)
         val disabled = railState(selected = false, enabled = false)
@@ -156,7 +184,7 @@ class AffordanceEdgeComposeTest {
             onClick = {},
             label = { Text(tag) },
             modifier = Modifier.testTag(tag),
-            colors = pixelChipColors(),
+            colors = pixelChipColors(selected = selected),
             border = pixelChipBorder(selected, enabled),
         )
     }

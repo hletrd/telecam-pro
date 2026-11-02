@@ -1,5 +1,20 @@
 package me.hletrd.telecampro.ui.controls
 
+import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import me.hletrd.telecampro.camera.VideoColorModeBlock
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MAX_SECONDS
 import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MIN_SECONDS
@@ -146,6 +161,26 @@ import kotlin.math.roundToInt
  * Every row is a thin wrapper around a [CameraActions] method; this file owns no camera state.
  */
 internal enum class ProSheetTab { MY_MENU, SHOOTING, EXPOSURE, FOCUS, LENS, VIDEO, AUDIO, PROCESSING, ASSISTS, ADVANCED }
+
+
+/** Sheet panel rise / fall and the tab crossfade (UX review 2026-11-02). */
+internal const val SHEET_ENTER_MS = 220
+internal const val SHEET_EXIT_MS = 150
+internal const val TAB_CROSSFADE_MS = 120
+
+/** The one-line reason a dimmed Gamma chip gives ([VideoColorModeBlock]); `%1$s` is the mode. */
+@StringRes
+internal fun videoColorModeBlockText(block: VideoColorModeBlock): Int = when (block) {
+    VideoColorModeBlock.OPEN_GATE -> R.string.gamma_block_open_gate
+    VideoColorModeBlock.FRAME_RATE -> R.string.gamma_block_frame_rate
+    VideoColorModeBlock.REAR_ONLY -> R.string.gamma_block_rear_only
+    VideoColorModeBlock.CAMERA_PIN -> R.string.gamma_block_camera_pin
+    VideoColorModeBlock.TELECONVERTER -> R.string.gamma_block_teleconverter
+}
+
+/** My Menu's Recent rows without the ones already pinned above them (UX review 2026-11-02). */
+internal fun myMenuRecentRows(pinned: List<FnSlot>, recent: List<FnSlot>): List<FnSlot> =
+    recent.filterNot { it in pinned }
 
 @Composable
 private fun proSheetTabLabel(tab: ProSheetTab): String = stringResource(
@@ -294,6 +329,9 @@ internal fun ProSheet(
     // FnSlot behaved differently per surface (cycle-6 designer D-01).
     onSelectManualDial: (DialType) -> Unit = {},
     externalLauncher: ((ExternalNavigationTarget) -> ExternalLaunchOutcome)? = null,
+    // The host's AnimatedVisibility scope: the PANEL slides in/out under it while the host fades the
+    // whole sheet (scrim included). Null in tests and previews: the sheet simply appears.
+    animationScope: AnimatedVisibilityScope? = null,
 ) {
     var selectedTab by remember { mutableStateOf(initialTab) }
     var externalFailure by remember(openRequestId) { mutableStateOf<ExternalNavigationFailure?>(null) }
@@ -308,7 +346,10 @@ internal fun ProSheet(
     // dialog be dragged upward past its rest position (the "bounce" the user saw), and Material3 1.4.0
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
     // it's dismissed only by the X, a scrim tap, or the system Back gesture.
-    BackHandler(enabled = true, onBack = onDismiss)
+    // Not while the exit animation plays: the sheet is already dismissed, and a Back pressed during
+    // those 150 ms belongs to whatever is underneath.
+    val leaving = animationScope?.transition?.targetState == EnterExitState.PostExit
+    BackHandler(enabled = !leaving, onBack = onDismiss)
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(openRequestId) {
         selectedTab = initialTab
@@ -348,8 +389,29 @@ internal fun ProSheet(
             RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         }
         val cameraSettingsPaneTitle = stringResource(R.string.a11y_camera_settings)
+        // Motion (UX review 2026-11-02): the panel used to pop in and out in one frame. It rises from
+        // its own edge — bottom on a phone, end on the side layout — decelerating in, accelerating
+        // out, while the host fades the scrim. Durations follow the system animator scale
+        // (Compose's MotionDurationScale observes it), so "Remove animations" makes it instant.
+        val panelMotion = animationScope?.let { scope ->
+            with(scope) {
+                Modifier.animateEnterExit(
+                    enter = if (sideLayout) {
+                        slideInHorizontally(tween(SHEET_ENTER_MS, easing = LinearOutSlowInEasing)) { it / 8 }
+                    } else {
+                        slideInVertically(tween(SHEET_ENTER_MS, easing = LinearOutSlowInEasing)) { it / 8 }
+                    },
+                    exit = if (sideLayout) {
+                        slideOutHorizontally(tween(SHEET_EXIT_MS, easing = FastOutLinearInEasing)) { it / 8 }
+                    } else {
+                        slideOutVertically(tween(SHEET_EXIT_MS, easing = FastOutLinearInEasing)) { it / 8 }
+                    },
+                )
+            }
+        } ?: Modifier
         Column(
             modifier = panelModifier
+                .then(panelMotion)
                 .modalFocusBoundary()
                 .clip(panelShape)
                 .background(CameraColors.Pill)
@@ -367,7 +429,16 @@ internal fun ProSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(stringResource(R.string.label_menu), color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
+                // The tab's name, not "Menu" (UX review 2026-11-02): the header said Menu and the page
+                // said Lens directly under it — two titles, 70 dp, one of them telling the operator
+                // nothing the open sheet does not. The rail still marks the tab; this names it.
+                // My Menu spells its name out: the rail's "My" is a 76 dp-column abbreviation.
+                val title = if (selectedTab == ProSheetTab.MY_MENU) {
+                    stringResource(R.string.section_my_menu)
+                } else {
+                    proSheetTabLabel(selectedTab)
+                }
+                Text(title, color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
                 CloseButton(
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(closeFocusRequester),
@@ -398,10 +469,21 @@ internal fun ProSheet(
                             }
                         }
                     }
+                    // A short crossfade between tabs (UX review 2026-11-02) — each tab keeps its own
+                    // scroll state, so the incoming page fades in at ITS offset, not the outgoing one's.
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            fadeIn(tween(TAB_CROSSFADE_MS)) togetherWith fadeOut(tween(TAB_CROSSFADE_MS / 2))
+                        },
+                        contentAlignment = Alignment.TopStart,
+                        label = "settingsTab",
+                        modifier = Modifier.fillMaxSize(),
+                    ) { tab ->
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(tabScrollStates.getValue(selectedTab), overscrollEffect = null)
+                            .verticalScroll(tabScrollStates.getValue(tab), overscrollEffect = null)
                             // A trailing Spacer inside a spacedBy column made the bottom inset
                             // 20 + 8 against a 16 dp top; the column states its own bottom instead.
                             .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 24.dp),
@@ -411,7 +493,7 @@ internal fun ProSheet(
                         // sibling controls, and 24 dp above a SectionHeader (which adds its own 12).
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        when (selectedTab) {
+                        when (tab) {
                             ProSheetTab.MY_MENU -> MyMenuTab(
                                 state,
                                 actions,
@@ -439,6 +521,7 @@ internal fun ProSheet(
                                 onOpenPrivacyInApp = { showPrivacyFallback = true },
                             )
                         }
+                    }
                     }
                 }
             }
@@ -694,10 +777,6 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
 // Tab pages
 // ---------------------------------------------------------------------------
 
-@Composable
-private fun TabTitle(text: String) {
-    Text(text, color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
-}
 
 @Composable
 private fun MyMenuTab(
@@ -710,17 +789,17 @@ private fun MyMenuTab(
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
-    TabTitle(stringResource(R.string.section_my_menu))
     if (state.myMenuSlots.isEmpty()) {
-        Text(stringResource(R.string.mr_slot_state_empty), color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+        Text(stringResource(R.string.mr_slot_state_empty), color = CameraColors.TextSecondary, style = settingCaptionStyle())
     } else {
         state.myMenuSlots.forEach { slot ->
             QuickFnRow(slot, state, actions, availability, openDial)
         }
     }
-    if (state.recentSettingSlots.isNotEmpty()) {
+    val recentRows = myMenuRecentRows(state.myMenuSlots, state.recentSettingSlots)
+    if (recentRows.isNotEmpty()) {
         SectionHeader(stringResource(R.string.section_recent))
-        state.recentSettingSlots.forEach { slot ->
+        recentRows.forEach { slot ->
             QuickFnRow(slot, state, actions, availability, openDial)
         }
     }
@@ -840,7 +919,7 @@ private fun MemoryPresetRow(
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-            Text(summary, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(summary, color = CameraColors.TextSecondary, style = settingCaptionStyle())
         }
         // DES4-3: the d875eea 48 dp sweep covered the three shared selector components; this
         // standalone action chip (writes an MR bank) was left bare at ~32 dp.
@@ -938,7 +1017,6 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
-    TabTitle(stringResource(R.string.settings_tab_shoot))
     SectionHeader(stringResource(R.string.section_format))
     PhotoFormatToggles(
         formats = state.photoFormats,
@@ -1077,7 +1155,6 @@ internal fun TimelapseIntervalSlider(intervalSec: Int, onIntervalSec: (Int) -> U
     val normalized = normalizeTimelapseIntervalSeconds(intervalSec)
     LabeledSlider(
         label = stringResource(R.string.label_interval),
-        hint = stringResource(R.string.hint_interval),
         valueLabel = "${normalized}s",
         value = normalized.toFloat(),
         onValueChange = { onIntervalSec(it.roundToInt()) },
@@ -1095,7 +1172,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // while telemetry ticks recompose the open tab ~10-25 Hz (PERF4-8; TopBar/ManualDials
     // already memoize the identical projection).
     val availability = remember(caps, controls) { controlAvailability(caps?.controlCapabilities(), controls) }
-    TabTitle(stringResource(R.string.settings_tab_exposure))
     SectionHeader(stringResource(R.string.section_exposure))
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
@@ -1145,6 +1221,8 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         },
         valueRange = 0f..(isoMarks.lastIndex.coerceAtLeast(1)).toFloat(),
         keyboardStep = 1f,
+        // Enabled only in ISO and M, i.e. only as a manual sensitivity: amber, as the viewfinder.
+        manual = true,
         enabled = availability.isoDialEnabled && isoMarks.size > 1 &&
             (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
@@ -1153,6 +1231,8 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // exposure group above is the value controls, this one decides what they measure.
     SectionHeader(stringResource(R.string.section_metering))
     SegmentedSelector(
+        // The header right above already says "Metering": the row label would say it twice.
+        labelVisible = false,
         label = stringResource(R.string.label_metering),
         hint = stringResource(R.string.hint_metering),
         options = availability.meteringModes,
@@ -1180,6 +1260,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 
     SectionHeader(stringResource(R.string.section_white_balance))
     SegmentedSelector(
+        labelVisible = false,
         label = stringResource(R.string.label_wb),
         hint = stringResource(R.string.hint_wb),
         options = availability.wbModes,
@@ -1197,6 +1278,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             onValueChange = { actions.onWbKelvin(it.roundToInt()) },
             valueRange = 2000f..10000f,
             enabled = availability.wbDialEnabled,
+            manual = true,
         )
         LabeledSlider(
             label = stringResource(R.string.label_tint),
@@ -1206,6 +1288,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             onValueChange = { actions.onWbTint(it.roundToInt()) },
             valueRange = -50f..50f,
             enabled = availability.wbDialEnabled,
+            manual = true,
         )
     }
     // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
@@ -1248,9 +1331,9 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     // remember(): see PERF4-8 note in ExposureColorTab.
     val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
-    TabTitle(stringResource(R.string.settings_tab_focus))
     SectionHeader(stringResource(R.string.section_autofocus))
     SegmentedSelector(
+        labelVisible = false,
         label = stringResource(R.string.label_af),
         hint = stringResource(R.string.hint_af),
         options = availability.focusModes,
@@ -1345,7 +1428,6 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     val rearRoute = state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back
     val recordingMutable = !state.isRecording
     val rearOpticsMutable = recordingMutable && rearRoute
-    TabTitle(stringResource(R.string.settings_tab_lens))
     SectionHeader(stringResource(R.string.section_optics))
     // Every row in this section shares ONE gate (rearOpticsMutable), so the precondition is stated
     // ONCE for the section instead of once per dimmed row — the selfie route used to stack the same
@@ -1354,7 +1436,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         Text(
             stringResource(R.string.state_rear_camera_only),
             color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+            style = settingCaptionStyle(),
         )
     }
     Captioned(
@@ -1509,7 +1591,6 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     val codec = state.videoCodec
     val recordingMutable = !state.isRecording
-    TabTitle(stringResource(R.string.settings_tab_video))
     if (state.isRecording) {
         LabelValueRow(
             label = stringResource(R.string.label_recording),
@@ -1557,12 +1638,11 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         Text(
             stringResource(R.string.state_no_supported_resolution),
             color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+            style = settingCaptionStyle(),
         )
     } else {
         SegmentedSelector(
             label = stringResource(R.string.label_resolution),
-            hint = stringResource(R.string.hint_resolution),
             options = resolutionOptions,
             selected = state.videoResolution,
             labelFor = ::videoResolutionLabel,
@@ -1581,7 +1661,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         Text(
             stringResource(R.string.state_no_supported_fps),
             color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+            style = settingCaptionStyle(),
         )
     } else {
         SegmentedSelector(
@@ -1619,7 +1699,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     Text(
         "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(encodedSize)} · ${videoFrameRateLabel(state.videoFrameRate)}p · $mbps Mbps",
         color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
+        style = settingCaptionStyle(),
     )
     // The picture profile group (owner request 2026-10-28, "group the menu"): the gamma mode, its log
     // profile and the EI offset, apart from the container/size/rate rows above.
@@ -1635,7 +1715,17 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // the ISP's tone-mapped stream, its native curve, or (accepted truth) the RAW developer. Gated
     // on a non-SDR selection because the caveat is about a CURVE.
     val colorMode = state.videoColorMode
-    val colorModeLabels = state.videoColorModes.associateWith { stringResource(videoColorModeLabel(it)) }
+    // The offered modes plus any the device has but this route rules out, in enum order: a blocked
+    // mode stays in the row dimmed, with its reason under it, instead of vanishing (UX review
+    // 2026-11-02 — OEM Log disappeared the moment Open Gate went on).
+    val colorModeBlocks = state.videoColorModeBlocks
+    val colorModeOptions = VideoColorMode.entries.filter { it in state.videoColorModes || it in colorModeBlocks }
+    val colorModeLabels = colorModeOptions.associateWith { stringResource(videoColorModeLabel(it)) }
+    val blockCaption = colorModeBlocks.entries
+        .sortedBy { it.key.ordinal }
+        .map { (mode, block) -> stringResource(videoColorModeBlockText(block), colorModeLabels.getValue(mode)) }
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString("\n")
     val rawModeCaption = if (colorMode == VideoColorMode.RAW_LOG) {
         // A second line only when the ACCEPTED session still is not RAW log (a refused RAW-only
         // session falls back to native log on the same rung).
@@ -1653,10 +1743,11 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     } else if (colorMode == VideoColorMode.MAKER_LOG && state.cameraReady) {
         stringResource(if (state.glTenBitOutput) R.string.caption_maker_log else R.string.caption_maker_log_8bit)
     } else null
-    Captioned(makerCaption ?: rawModeCaption) {
+    Captioned(listOfNotNull(makerCaption ?: rawModeCaption, blockCaption).takeIf { it.isNotEmpty() }?.joinToString("\n")) {
         SegmentedSelector(
             label = stringResource(R.string.label_gamma),
-            options = state.videoColorModes,
+            options = colorModeOptions,
+            optionEnabled = { it !in colorModeBlocks },
             selected = colorMode,
             labelFor = { colorModeLabels.getValue(it) },
             onSelect = actions::onVideoColorMode,
@@ -1666,7 +1757,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             // The hint compares the modes, so it is withheld where Off is the only one (an encoder
             // without Main10 — device-seen on TB331FC 2026-10-26, where it described three modes
             // the row did not offer).
-            hint = if (state.videoColorModes.size > 1) stringResource(R.string.hint_gamma) else null,
+            hint = if (colorModeOptions.size > 1) stringResource(R.string.hint_gamma) else null,
             // RAW Log is EXPERIMENTAL (A19): its chip carries the caution tint (owner request
             // 2026-10-27) so the row says so before the caption does.
             // The vivo OEM Log chip too: same EXPERIMENTAL status, never measured on a device.
@@ -1684,7 +1775,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         Text(
             stringResource(R.string.warning_native_log_unverified),
             color = CameraColors.Caution,
-            style = MaterialTheme.typography.labelSmall,
+            style = settingCaptionStyle(),
             fontWeight = FontWeight.Medium,
         )
     }
@@ -1708,7 +1799,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             )
         }
     } else if (sourceCaption != null) {
-        Text(sourceCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+        Text(sourceCaption, color = CameraColors.TextSecondary, style = settingCaptionStyle())
     }
     // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it
     // can act (logEiOffsetSettingVisible). Locked while recording like Gamma — it moves the wire
@@ -1747,7 +1838,6 @@ private fun AudioTab(state: CameraUiState, actions: CameraActions) {
     // Video tab. Same recording lock as Video — every row here changes the take's audio track.
     val labelContext = LocalContext.current
     val recordingMutable = !state.isRecording
-    TabTitle(stringResource(R.string.settings_tab_audio))
     if (state.isRecording) {
         LabelValueRow(
             label = stringResource(R.string.label_recording),
@@ -1759,7 +1849,6 @@ private fun AudioTab(state: CameraUiState, actions: CameraActions) {
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
         label = stringResource(R.string.label_record_audio),
-        hint = stringResource(R.string.hint_record_audio),
         checked = state.recordAudio,
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
@@ -1851,7 +1940,6 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     // remember(): see PERF4-8 note in ExposureColorTab.
     val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
-    TabTitle(stringResource(R.string.settings_tab_image))
     SectionHeader(stringResource(R.string.section_processing))
     SegmentedSelector(
         label = stringResource(R.string.label_sharpness),
@@ -1885,7 +1973,6 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     val labelContext = LocalContext.current
-    TabTitle(stringResource(R.string.settings_tab_assist))
     SectionHeader(stringResource(R.string.section_monitor))
     // Gamma Display Assist (Sony): only meaningful while the Gamma is a log profile — the monitor
     // shows the normal image, the recorded file stays log.
@@ -1917,7 +2004,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.zebra,
     )
     ToggleRow(label = stringResource(R.string.label_false_color), checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor, hint = stringResource(R.string.hint_false_color))
-    ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram, hint = stringResource(R.string.hint_histogram))
+    ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
     ToggleRow(label = stringResource(R.string.label_waveform), checked = state.waveform, onCheckedChange = actions::onToggleWaveform, hint = stringResource(R.string.hint_waveform))
     SectionHeader(stringResource(R.string.section_framing))
     // Beside Grid, not under Monitor (UI review #20): both are framing overlays, and filing half of
@@ -1932,13 +2019,12 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_grid),
-        hint = stringResource(R.string.hint_grid),
         options = GridType.entries,
         selected = state.grid,
         labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onGridType,
     )
-    ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel, hint = stringResource(R.string.hint_level))
+    ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel)
     SectionHeader(stringResource(R.string.section_focus_aids))
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
     ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn, hint = stringResource(R.string.hint_loupe))
@@ -1989,11 +2075,9 @@ private fun AdvancedTab(
     onOpenPrivacyInApp: () -> Unit,
 ) {
     val labelContext = LocalContext.current
-    TabTitle(stringResource(R.string.settings_tab_setup))
     SectionHeader(stringResource(R.string.section_startup))
     ToggleRow(
         label = stringResource(R.string.label_remember_settings),
-        hint = stringResource(R.string.hint_remember_settings),
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
@@ -2232,7 +2316,7 @@ private fun FnSlotOrderIdentity(index: Int, name: String, modifier: Modifier = M
         Text(
             text = "%02d".format(Locale.US, index + 1),
             color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+            style = settingCaptionStyle(),
             modifier = Modifier.width(26.dp),
         )
         Text(

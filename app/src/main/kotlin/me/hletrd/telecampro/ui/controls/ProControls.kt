@@ -44,6 +44,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SelectableChipColors
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -175,10 +176,19 @@ internal fun Captioned(caption: String?, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         content()
         if (caption != null) {
-            Text(caption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(caption, color = CameraColors.TextSecondary, style = settingCaptionStyle())
         }
     }
 }
+
+/**
+ * The ONE settings caption style: bodySmall (12 sp / 17 sp), not labelSmall (11 sp / 16 sp). Hangul
+ * renders in the system face (no bundled Inter face carries it), and at 11 sp a two-line Korean hint
+ * under every row read as fine print (UX review 2026-11-02); captions are prose, which is exactly
+ * what bodySmall's taller leading is for. Size, not weight, so the SemiBold label ladder is untouched.
+ */
+@Composable
+internal fun settingCaptionStyle() = MaterialTheme.typography.bodySmall
 
 /**
  * Chip/row label typography: labelMedium with tightened tracking. Material3's default 0.5 sp
@@ -191,21 +201,35 @@ internal fun chipLabelStyle() = MaterialTheme.typography.labelMedium.copy(letter
 /**
  * Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise.
  *
+ * DISABLED is the same chip at [DISABLED_ROW_ALPHA], never a different one (UX review 2026-11-02).
+ * Material's defaults painted a disabled SELECTED chip as a 12% grey slab with a 38% label — the
+ * sole output format that cannot be switched off, or the active zebra level while zebra is off,
+ * looked exactly like an unselected disabled chip, so "selected but locked" read as "off". Material
+ * has ONE disabled label colour for both selection states, which is why [selected] is a parameter:
+ * a disabled selected chip keeps its white fill (dimmed) under a black label.
+ *
  * [caution] marks an EXPERIMENTAL option (Gamma = RAW Log; owner request 2026-10-27, "slightly
  * different so it reads as exp"): the label and the selected fill take [CameraColors.Caution], the
  * menu's "offered but unverified" orange, in place of white. Same chip, same geometry — only the ink
  * changes, so the row stays quiet. The selected option's caption still says "Experimental" in words.
  */
 @Composable
-internal fun pixelChipColors(caution: Boolean = false) = FilterChipDefaults.filterChipColors(
-    containerColor = Color.Transparent,
-    labelColor = if (caution) CameraColors.Caution else CameraColors.TextPrimary,
-    selectedContainerColor = if (caution) CameraColors.Caution else CameraColors.TextPrimary,
-    selectedLabelColor = Color.Black,
-    // The multi-select check (OutputFormatChip) inherits this: without it M3's default
-    // primary-tinted leading icon rendered near-invisible lavender on the filled white chip.
-    selectedLeadingIconColor = Color.Black,
-)
+internal fun pixelChipColors(caution: Boolean = false, selected: Boolean = false): SelectableChipColors {
+    val ink = if (caution) CameraColors.Caution else CameraColors.TextPrimary
+    return FilterChipDefaults.filterChipColors(
+        containerColor = Color.Transparent,
+        labelColor = ink,
+        selectedContainerColor = ink,
+        selectedLabelColor = Color.Black,
+        // The multi-select check (OutputFormatChip) inherits this: without it M3's default
+        // primary-tinted leading icon rendered near-invisible lavender on the filled white chip.
+        selectedLeadingIconColor = Color.Black,
+        disabledContainerColor = Color.Transparent,
+        disabledSelectedContainerColor = ink.copy(alpha = DISABLED_ROW_ALPHA),
+        disabledLabelColor = if (selected) Color.Black else ink.copy(alpha = DISABLED_ROW_ALPHA),
+        disabledLeadingIconColor = Color.Black,
+    )
+}
 
 /**
  * The affordance edge shared by every settings [FilterChip]: [CameraColors.AffordanceEdge]
@@ -256,42 +280,57 @@ internal fun MinTouchTarget48(content: @Composable () -> Unit) {
     }
 }
 
-/** Non-exported test probe mirroring the draw condition of [trailingEdgeFadeScrollHint]. */
+/** Non-exported test probes mirroring the two draw conditions of [edgeFadeScrollHint]. */
 internal val TrailingEdgeFadeVisible = SemanticsPropertyKey<Boolean>("TrailingEdgeFadeVisible")
+internal val LeadingEdgeFadeVisible = SemanticsPropertyKey<Boolean>("LeadingEdgeFadeVisible")
 
 /**
- * Trailing-edge fade for horizontally scrolling chip rows: without the hint, the half-cut trailing
- * chip at the panel edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn
- * dial row). The fix originally landed only there — every settings SegmentedSelector (several with
- * MORE chips than the row that triggered the report) had the identical failure shape. Apply BEFORE
+ * Edge fades for horizontally scrolling chip rows: without the hint, the half-cut chip at the panel
+ * edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn dial row). The fix
+ * originally landed only there — every settings SegmentedSelector (several with MORE chips than the
+ * row that triggered the report) had the identical failure shape. The LEADING edge fades too once
+ * the row is scrolled (UX review 2026-11-02): a row scrolled to its selected chip used to cut the
+ * chip before it raw at the start edge, the same "bug" read on the other side. Apply BEFORE
  * `horizontalScroll` in the modifier chain, sharing its [scrollState].
  */
-internal fun Modifier.trailingEdgeFadeScrollHint(scrollState: ScrollState): Modifier = this
+internal fun Modifier.edgeFadeScrollHint(scrollState: ScrollState): Modifier = this
     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     .drawWithContent {
         drawContent()
-        if (scrollState.canScrollForward) {
-            drawRect(
-                // NOT a colour. `DstIn` keeps the destination weighted by the SOURCE ALPHA and
-                // discards the source's RGB entirely, so these two stops are an opacity ramp
-                // (1 -> 0) that happens to be written as colours. `Color.White` here means "alpha =
-                // 1, keep this pixel"; naming it an ink token would claim the fade paints white,
-                // which it never does — swap in any opaque colour and the render is identical.
-                // Draw space is NOT layout-direction aware but Modifier.horizontalScroll IS: under
-                // an RTL layout the overflow extends past the visual LEFT edge, so a fixed
-                // right-edge ramp faded the wrong side and left the truncated chip cut raw
-                // (2026-08-02 review; the viewfinder consumers sit in a forced-Ltr scope, the two
-                // ProSheet ones do not).
-                brush = if (layoutDirection == LayoutDirection.Rtl) {
-                    Brush.horizontalGradient(0f to Color.Transparent, 0.10f to Color.White)
+        val fadeStart = scrollState.canScrollBackward
+        val fadeEnd = scrollState.canScrollForward
+        if (fadeStart || fadeEnd) {
+            // Draw space is NOT layout-direction aware but Modifier.horizontalScroll IS: under an
+            // RTL layout the logical end is the visual LEFT edge (2026-08-02 review; the viewfinder
+            // consumers sit in a forced-Ltr scope, the two ProSheet ones do not).
+            val rtl = layoutDirection == LayoutDirection.Rtl
+            val fadeLeft = if (rtl) fadeEnd else fadeStart
+            val fadeRight = if (rtl) fadeStart else fadeEnd
+            // NOT colours. `DstIn` keeps the destination weighted by the SOURCE ALPHA and discards
+            // the source's RGB entirely, so these stops are an opacity ramp written as colours.
+            // `Color.White` means "alpha = 1, keep this pixel"; naming it an ink token would claim
+            // the fade paints white, which it never does.
+            val stops = buildList {
+                if (fadeLeft) {
+                    add(0f to Color.Transparent)
+                    add(0.10f to Color.White)
                 } else {
-                    Brush.horizontalGradient(0.90f to Color.White, 1f to Color.Transparent)
-                },
-                blendMode = BlendMode.DstIn,
-            )
+                    add(0f to Color.White)
+                }
+                if (fadeRight) {
+                    add(0.90f to Color.White)
+                    add(1f to Color.Transparent)
+                } else {
+                    add(1f to Color.White)
+                }
+            }
+            drawRect(brush = Brush.horizontalGradient(*stops.toTypedArray()), blendMode = BlendMode.DstIn)
         }
     }
-    .semantics { this[TrailingEdgeFadeVisible] = scrollState.canScrollForward }
+    .semantics {
+        this[TrailingEdgeFadeVisible] = scrollState.canScrollForward
+        this[LeadingEdgeFadeVisible] = scrollState.canScrollBackward
+    }
 
 /** Exclusive segmented selector (FilterChip row) for a fixed set of enum/value options. */
 @Composable
@@ -305,9 +344,17 @@ internal fun <T> SegmentedSelector(
     enabled: Boolean = true,
     hint: String? = null,
     cautionFor: (T) -> Boolean = { false },
+    // One chip the route rules out NOW but the device has (Gamma's OEM Log under Open Gate): shown
+    // dimmed rather than removed, so the choice does not vanish from under the operator.
+    optionEnabled: (T) -> Boolean = { true },
+    // False where a SectionHeader directly above already says the same word ("Metering" over
+    // "Metering"). The label still names every chip for accessibility.
+    labelVisible: Boolean = true,
 ) {
     Captioned(hint) {
-        SegmentedSelectorCore(label, options, selected, labelFor, onSelect, modifier, enabled, cautionFor)
+        SegmentedSelectorCore(
+            label, options, selected, labelFor, onSelect, modifier, enabled, cautionFor, optionEnabled, labelVisible,
+        )
     }
 }
 
@@ -321,13 +368,15 @@ private fun <T> SegmentedSelectorCore(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     cautionFor: (T) -> Boolean = { false },
+    optionEnabled: (T) -> Boolean = { true },
+    labelVisible: Boolean = true,
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        SettingsRowLabel(label, enabled = enabled)
+        if (labelVisible) SettingsRowLabel(label, enabled = enabled)
         val optionScroll = rememberScrollState()
         // The CURRENT value must never sit past the scroll edge: Gamma's default (SDR) is declared
         // last in its enum, so a fresh open showed a selector with NO visible selected chip — the
@@ -345,12 +394,13 @@ private fun <T> SegmentedSelectorCore(
                 // the dial ruler, the settings rail). PhotoFormatToggles must NOT get this — those
                 // chips are multi-select and the group would lie about exclusivity.
                 .selectableGroup()
-                .trailingEdgeFadeScrollHint(optionScroll)
+                .edgeFadeScrollHint(optionScroll)
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             options.forEach { option ->
                 val isSelected = option == selected
+                val chipEnabled = enabled && optionEnabled(option)
                 // Each chip carries the row label in its OWN name: the label is a sibling Text, so an
                 // unnamed chip announced a bare value ("Off") with nothing saying what is off — and
                 // "Sharpness" and "NR" draw the SAME three values back to back in the Image tab.
@@ -359,7 +409,7 @@ private fun <T> SegmentedSelectorCore(
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(option) },
-                        enabled = enabled,
+                        enabled = chipEnabled,
                         // semantics(), not clearAndSetSemantics(): FilterChip's own selectable node
                         // supplies selected / not-selected state while this exclusive selector
                         // supplies the contextual name and radio-button role.
@@ -396,8 +446,8 @@ private fun <T> SegmentedSelectorCore(
                                 softWrap = false,
                             )
                         },
-                        colors = pixelChipColors(caution = cautionFor(option)),
-                        border = pixelChipBorder(isSelected, enabled, caution = cautionFor(option)),
+                        colors = pixelChipColors(caution = cautionFor(option), selected = isSelected),
+                        border = pixelChipBorder(isSelected, chipEnabled, caution = cautionFor(option)),
                     )
                 }
             }
@@ -438,7 +488,7 @@ private fun OutputFormatChip(
                 null
             },
             label = { Text(name, style = chipLabelStyle()) },
-            colors = pixelChipColors(),
+            colors = pixelChipColors(selected = selected),
             border = pixelChipBorder(selected, enabled),
         )
     }
@@ -456,8 +506,13 @@ internal fun LabeledSlider(
     enabled: Boolean = true,
     keyboardStep: Float? = null,
     hint: String? = null,
+    // True only for a value that IS a manual exposure / white-balance override (ISO, Kelvin, Tint):
+    // those read in [CameraColors.ManualActive] here exactly as the viewfinder shows them.
+    manual: Boolean = false,
 ) {
-    Captioned(hint) { LabeledSliderCore(label, valueLabel, value, onValueChange, valueRange, modifier, enabled, keyboardStep) }
+    Captioned(hint) {
+        LabeledSliderCore(label, valueLabel, value, onValueChange, valueRange, modifier, enabled, keyboardStep, manual)
+    }
 }
 
 @Composable
@@ -470,8 +525,10 @@ private fun LabeledSliderCore(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     keyboardStep: Float? = null,
+    manual: Boolean = false,
 ) {
     val span = valueRange.endInclusive - valueRange.start
+    val valueInk = if (manual) CameraColors.ManualActive else CameraColors.Accent
     val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
     val keyboardUnits = sliderDomainKeyUnits(span, keyboardStep, CAMERA_SLIDER_KEY_UNITS)
     val accessibility = sliderSettingSemantics(label, valueLabel)
@@ -488,14 +545,14 @@ private fun LabeledSliderCore(
         ) {
             SettingsRowLabel(label, enabled = enabled)
             // The same right-hand value column as LabelValueRow and DropdownRow: labelMedium,
-            // regular weight, Accent. ManualActive is reserved for a LIVE manual exposure override —
-            // rendering "JPEG Quality 92" and "Interval 5s" in bold amber put plain settings in the
-            // colour that means "the sensor is under manual control", right beside Encoder and Route
-            // in regular blue. The amber stays where it earns the name: this slider's own fill and
-            // needle, and the viewfinder RulerReadout.
+            // regular weight, Accent. ManualActive is reserved for a LIVE manual exposure or WB
+            // override — rendering "JPEG Quality 92" and "Interval 5s" in amber put plain settings in
+            // the colour that means "the sensor is under manual control". It used to be the reverse
+            // too: ISO 6400 read amber in the viewfinder and blue here, while EVERY slider's fill was
+            // amber (UX review 2026-11-02). One rule now covers value, fill and needle: [manual].
             Text(
                 valueLabel,
-                color = if (enabled) CameraColors.Accent else CameraColors.TextSecondary,
+                color = if (enabled) valueInk else CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -511,6 +568,7 @@ private fun LabeledSliderCore(
             semanticLabel = accessibility.label,
             valueDescription = valueLabel,
             keyboardUnits = keyboardUnits,
+            fillColor = valueInk,
         )
     }
 }
@@ -534,12 +592,15 @@ internal fun CameraSlider(
     valueDescription: String,
     modifier: Modifier = Modifier,
     keyboardUnits: Int = CAMERA_SLIDER_KEY_UNITS,
+    // Fill + needle. ManualActive for a manual exposure/WB value, Accent for a plain setting
+    // ([LabeledSlider]'s `manual`); the default keeps a bare slider on the dial rulers' amber.
+    fillColor: Color = CameraColors.ManualActive,
 ) {
     // Fresh callback for the running gesture: see the stale-closure note at the pointerInput below.
     val currentOnFraction by rememberUpdatedState(onFraction)
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     var keyboardFocused by remember { mutableStateOf(false) }
-    val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
+    val accent = if (enabled) fillColor else CameraColors.TextSecondary
     // Two one-off PAIRS, not four numbers: each is an enabled/disabled ramp for one part of this
     // slider, and the pair is what carries the disabled state (the accent needle changes hue, the
     // structure just recedes). A token would have to be either the enabled or the disabled half,
@@ -1156,7 +1217,7 @@ internal fun PhotoFormatToggles(
                     .fillMaxWidth()
                     // Multi-select on purpose: unlike SegmentedSelector, this row must never claim an
                     // exclusive selectableGroup. It shares only that row's RTL-aware overflow owner.
-                    .trailingEdgeFadeScrollHint(optionScroll)
+                    .edgeFadeScrollHint(optionScroll)
                     .horizontalScroll(optionScroll),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {

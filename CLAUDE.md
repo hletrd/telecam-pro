@@ -1111,8 +1111,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   request 2026-10-26):** photo JPEG only (`PhotoFormats.DEFAULT`; the constructor's own defaults stay
   HEIF so derived values do not change meaning, and the OSD format tag stays silent at the default),
   video transfer SDR, Stabilization Standard, bitrate High, AAC-LC 256 kb/s stereo, NR and edge FAST.
-  The persisted blob and the engine seeds carry the same values, and host tests pin each. Every menu
-  setting carries a one-line `hint_*` caption (EN+KO); still quality snaps to 40–100 in steps of 5
+  The persisted blob and the engine seeds carry the same values, and host tests pin each. A menu
+  setting carries a one-line `hint_*` caption (EN+KO, 12 sp `settingCaptionStyle`) where it says
+  something its label does not — the seven that only restated the label (Record Audio, Grid, Level,
+  Histogram, Resolution, Interval, Remember Settings) were removed 2026-11-02 (UX review); still quality snaps to 40–100 in steps of 5
   (`normalizeStillQuality`, also applied on load) and the menu ISO slider moves on the 1/3-stop marks.
 - **Log = NATIVE ISP S-Log3 where the camera takes a programmed tone curve; GL log otherwise
   (rewritten 2026-10-14 — this bullet's title said "GL-only" until the public tone-map path was

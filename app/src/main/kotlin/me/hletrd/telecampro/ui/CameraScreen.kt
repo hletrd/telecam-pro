@@ -1,5 +1,12 @@
 package me.hletrd.telecampro.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.ui.graphics.TransformOrigin
+import me.hletrd.telecampro.ui.controls.SHEET_ENTER_MS
+import me.hletrd.telecampro.ui.controls.SHEET_EXIT_MS
 import me.hletrd.telecampro.R
 
 import android.graphics.SurfaceTexture
@@ -205,7 +212,7 @@ import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.controls.performQuickFn
 import me.hletrd.telecampro.ui.controls.quickManualDialEnabled
 import me.hletrd.telecampro.ui.controls.shutterTimerLabel
-import me.hletrd.telecampro.ui.controls.trailingEdgeFadeScrollHint
+import me.hletrd.telecampro.ui.controls.edgeFadeScrollHint
 import me.hletrd.telecampro.ui.controls.whiteBalanceFnChipEnabled
 import me.hletrd.telecampro.ui.overlays.AspectMask
 import me.hletrd.telecampro.ui.overlays.AudioMeter
@@ -1647,7 +1654,13 @@ fun CameraScreen(
     }
     } // end of the viewfinder's Ltr scope
 
-    if (sheetVisible) {
+    // The scrim fades while ProSheet slides its own panel under this scope (UX review 2026-11-02;
+    // it used to appear and vanish in one frame).
+    androidx.compose.animation.AnimatedVisibility(
+        visible = sheetVisible,
+        enter = fadeIn(tween(SHEET_ENTER_MS)),
+        exit = fadeOut(tween(SHEET_EXIT_MS)),
+    ) {
         ProSheet(
             state = state,
             actions = actions,
@@ -1660,6 +1673,7 @@ fun CameraScreen(
                 restoreFocusAfterModal(settingsFocusRequester)
             },
             onSelectManualDial = ::selectManualDial,
+            animationScope = this,
         )
     }
 
@@ -1677,23 +1691,46 @@ fun CameraScreen(
         )
     }
 
-    val frozenReview = state.openReview
-    if (frozenReview != null) {
-        MediaReviewOverlay(
-            uri = frozenReview.uri,
-            deleteScope = frozenReview.deleteScope,
-            provenance = frozenReview.provenance,
-            overlayRotation = overlayRotation,
-            onClose = {
-                actions.onReviewOpenChange(false, frozenReview.uri)
-            },
-            onDelete = {
-                actions.onDeleteLastMedia(frozenReview.uri, frozenReview.provenance)
-                actions.onReviewOpenChange(false, frozenReview.uri)
-            },
-        )
+    // Review grows out of the gallery thumbnail's corner (bottom-start, where the thumbnail sits in
+    // every orientation — controls never move) and fades away on close (UX review 2026-11-02).
+    // AnimatedContent, not a bare `if`: the closing review keeps rendering ITS frozen capture while
+    // it fades, after state.openReview has already gone null.
+    AnimatedContent(
+        targetState = state.openReview,
+        transitionSpec = {
+            (
+                fadeIn(tween(REVIEW_ENTER_MS)) + scaleIn(
+                    tween(REVIEW_ENTER_MS, easing = LinearOutSlowInEasing),
+                    initialScale = 0.92f,
+                    transformOrigin = TransformOrigin(0f, 1f),
+                )
+                ) togetherWith fadeOut(tween(REVIEW_EXIT_MS)) using null
+        },
+        contentKey = { it?.uri },
+        label = "review",
+        modifier = Modifier.fillMaxSize(),
+    ) { frozenReview ->
+        if (frozenReview != null) {
+            MediaReviewOverlay(
+                uri = frozenReview.uri,
+                deleteScope = frozenReview.deleteScope,
+                provenance = frozenReview.provenance,
+                overlayRotation = overlayRotation,
+                onClose = {
+                    actions.onReviewOpenChange(false, frozenReview.uri)
+                },
+                onDelete = {
+                    actions.onDeleteLastMedia(frozenReview.uri, frozenReview.provenance)
+                    actions.onReviewOpenChange(false, frozenReview.uri)
+                },
+            )
+        }
     }
 }
+
+/** Review open (grow + fade) and close (fade). */
+internal const val REVIEW_ENTER_MS = 200
+internal const val REVIEW_EXIT_MS = 120
 
 /** Central capture/storage truth, kept readable and bounded in the operator's held orientation. */
 @Composable
@@ -1827,7 +1864,7 @@ private fun TopBar(
         TopBarGroup(
             modifier = Modifier
                 .weight(1f)
-                .trailingEdgeFadeScrollHint(topBarScroll)
+                .edgeFadeScrollHint(topBarScroll)
                 .horizontalScroll(topBarScroll),
         ) {
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
@@ -2194,9 +2231,12 @@ internal fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier =
     val offDesc = stringResource(R.string.a11y_state_off)
     val labelTeleconverter = stringResource(R.string.label_teleconverter)
     val activate = onClick
+    // ON is Accent, like every other on/off toggle on this row and the settings switches (Grid,
+    // Timer, Disp; UX review 2026-11-02). White fill means "this one of several" — the lens rail,
+    // the mode carousel, every settings chip — and TELE is not a choice among siblings.
     val bg = when {
-        active && enabled -> CameraColors.TextPrimary
-        active -> CameraColors.TextPrimary.copy(alpha = 0.38f)
+        active && enabled -> CameraColors.Accent
+        active -> CameraColors.Accent.copy(alpha = 0.38f)
         else -> HudPlate
     }
     val fg = when {
@@ -3162,7 +3202,7 @@ internal fun FocalRail(
  * Kept as one production seam so the regression can exercise rendered coordinates directly.
  */
 internal fun Modifier.focalRailViewportScroll(scrollState: ScrollState): Modifier =
-    trailingEdgeFadeScrollHint(scrollState).horizontalScroll(scrollState)
+    edgeFadeScrollHint(scrollState).horizontalScroll(scrollState)
 
 /** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
 internal data class FocalRailVisualColors(

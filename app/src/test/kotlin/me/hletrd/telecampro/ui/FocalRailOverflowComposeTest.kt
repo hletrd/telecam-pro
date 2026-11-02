@@ -20,6 +20,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.ui.controls.LeadingEdgeFadeVisible
 import me.hletrd.telecampro.ui.controls.TrailingEdgeFadeVisible
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
@@ -111,6 +112,7 @@ class FocalRailOverflowComposeTest {
         val initialRange = initial[SemanticsProperties.HorizontalScrollAxisRange]
         assertTrue("fixture must overflow", initialRange.maxValue() > 0f)
         assertTrue("viewport fade missing at logical start", initial[TrailingEdgeFadeVisible])
+        assertFalse("leading fade drawn before any scroll", initial[LeadingEdgeFadeVisible])
 
         repeat(4) {
             rail.performTouchInput { swipeLeft() }
@@ -121,6 +123,7 @@ class FocalRailOverflowComposeTest {
         val terminalRange = terminal[SemanticsProperties.HorizontalScrollAxisRange]
         assertEquals(terminalRange.maxValue(), terminalRange.value(), 1f)
         assertFalse("viewport fade survived at logical end", terminal[TrailingEdgeFadeVisible])
+        assertTrue("leading fade missing once scrolled", terminal[LeadingEdgeFadeVisible])
     }
 
     private companion object {

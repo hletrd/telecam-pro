@@ -73,7 +73,7 @@ import me.hletrd.telecampro.ui.controls.videoResolutionLabel
 import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
 import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.theme.CameraColors
-import me.hletrd.telecampro.ui.controls.trailingEdgeFadeScrollHint
+import me.hletrd.telecampro.ui.controls.edgeFadeScrollHint
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -986,7 +986,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             .background(HudPlate, RoundedCornerShape(8.dp))
             // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
             // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
-            .trailingEdgeFadeScrollHint(scrollState)
+            .edgeFadeScrollHint(scrollState)
             .horizontalScroll(scrollState)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1083,9 +1083,12 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 VideoStabMode.ENHANCED -> stringResource(R.string.osd_stabilization_steady)
                 VideoStabMode.OFF -> stringResource(R.string.osd_stabilization_off)
             }
+            // OFF is a state, not a warning: an operator who switched it off on a tripod read the amber
+            // tag as an alarm (UX review 2026-11-02). Dim secondary says "inactive" in this OSD's own
+            // vocabulary; green still marks stabilization working.
             Text(
                 stabTag,
-                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else CameraColors.StabActive,
+                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.TextSecondary else CameraColors.StabActive,
                 style = MaterialTheme.typography.labelMedium,
             )
         } else {

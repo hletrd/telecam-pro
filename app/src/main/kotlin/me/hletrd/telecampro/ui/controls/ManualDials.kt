@@ -342,7 +342,7 @@ private fun DialChipRow(
     val controls = state.controls
     // The chip row scrolls horizontally and its content is wider than the screen — without a hint
     // the half-cut trailing chip at the screen edge reads as a LAYOUT BUG rather than "scrollable"
-    // (user-reported margin weirdness). The fade lives in the shared trailingEdgeFadeScrollHint,
+    // (user-reported margin weirdness). The fade lives in the shared edgeFadeScrollHint,
     // applied to every horizontally scrolling chip row app-wide (SegmentedSelector included).
     val fnScroll = rememberScrollState()
     // This row is portrait-window camera geometry: Start/End come from the held-device policy, not
@@ -367,7 +367,7 @@ private fun DialChipRow(
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .trailingEdgeFadeScrollHint(fnScroll)
+                    .edgeFadeScrollHint(fnScroll)
                     .horizontalScroll(fnScroll),
                 // 8 dp, the one bottom-cluster gap: this chip row, the focal rail above it, and the
                 // mode pair below it are three stacked rows that read as one control block, and they
@@ -425,18 +425,21 @@ internal fun CompactFnButton(
         // nothing interactive.
         contentAlignment = Alignment.CenterStart,
     ) {
+        // A launcher, so neutral white (Accent now means a toggle that is ON), and bigger and
+        // brighter than the 36 dp / 55% blue ring it was: the door to every Fn tile read as the
+        // quietest control on the screen (UX review 2026-11-02). Still inside the 48 dp touch box.
         Box(
             modifier = Modifier
-                .size(36.dp)
+                .size(42.dp)
                 .clip(RoundedCornerShape(50))
                 .background(HudPlate)
-                .border(1.dp, CameraColors.Accent.copy(alpha = 0.55f), RoundedCornerShape(50)),
+                .border(1.5.dp, CameraColors.TextPrimary.copy(alpha = 0.75f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = stringResource(R.string.label_fn),
-                color = CameraColors.Accent,
-                style = hudGlyph(11.sp),
+                color = CameraColors.TextPrimary,
+                style = hudGlyph(13.sp),
                 modifier = Modifier.rotate(glyphRotation),
             )
         }

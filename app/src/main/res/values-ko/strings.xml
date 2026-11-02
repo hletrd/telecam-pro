@@ -79,7 +79,6 @@
     <string name="label_zebra_level">제브라 레벨</string>
     <string name="label_color">색상</string>
     <string name="label_sharpness">샤프니스</string>
-    <string name="label_menu">메뉴</string>
     <string name="label_route">경로</string>
     <string name="label_photo_ois">사진 OIS</string>
     <string name="label_quick_button">퀵 버튼</string>
@@ -568,6 +567,11 @@
     <string name="hint_drive">단일 촬영, 연속 촬영, 노출 브래킷(AEB), 인터벌 타임랩스 중 선택합니다.</string>
     <string name="hint_exposure_mode">P는 자동입니다. S는 셔터를, ISO는 감도를, M은 둘 다 직접 설정합니다.</string>
     <string name="hint_flicker">인공조명(50/60 Hz)에 맞춰 줄무늬 깜빡임을 막습니다.</string>
+    <string name="gamma_block_open_gate">%1$s: 오픈 게이트에서는 사용할 수 없습니다.</string>
+    <string name="gamma_block_frame_rate">%1$s: 30 fps 이하에서만 사용할 수 있습니다.</string>
+    <string name="gamma_block_rear_only">%1$s: 후면 카메라에서만 사용할 수 있습니다.</string>
+    <string name="gamma_block_camera_pin">%1$s: 카메라 ID를 지정하면 사용할 수 없습니다.</string>
+    <string name="gamma_block_teleconverter">%1$s: 이 휴대폰에서는 텔레컨버터와 함께 사용할 수 없습니다.</string>
     <string name="hint_gamma">Rec. 709는 일반 영상, HLG는 HDR 화면용, 로그와 RAW 로그는 색보정용 평탄한 영상입니다.</string>
     <string name="hint_log_profile">색보정 LUT에 맞는 프로파일을 선택하세요. S-Log3.Cine는 S-Log3보다 색역이 좁습니다.</string>
     <string name="hint_fps">29.97과 59.94는 동영상 표준이고 23.976은 영화 느낌을 줍니다.</string>
@@ -575,10 +579,8 @@
     <string name="hint_full_press_volume">카메라 버튼을 끝까지 누르거나 볼륨 버튼을 눌렀을 때의 동작입니다.</string>
     <string name="hint_gain">마이크 입력의 디지털 레벨입니다. 1.0×를 넘기면 큰 소리가 클리핑될 수 있습니다.</string>
     <string name="hint_gamma_disp_assist">로그 영상을 화면에서만 일반 대비로 보여 줍니다. 파일은 로그 그대로입니다.</string>
-    <string name="hint_grid">뷰파인더의 구도 가이드입니다.</string>
     <string name="hint_half_press">카메라 버튼을 살짝 눌렀을 때의 동작입니다.</string>
     <string name="hint_input">녹음할 마이크를 휴대폰, 유선, USB, 블루투스 중 선택합니다.</string>
-    <string name="hint_interval">타임랩스에서 컷 사이 간격입니다.</string>
     <string name="hint_iso">ISO 및 M 모드의 감도입니다. 높을수록 밝지만 노이즈가 늘어납니다.</string>
     <string name="hint_kelvin">조명에 맞추세요. 텅스텐은 약 3200K, 태양광은 약 5600K입니다.</string>
     <string name="hint_metering">다분할은 화면 전체를, 중앙은 중앙 위주로, 스팟은 탭한 지점을 측광합니다.</string>
@@ -588,11 +590,8 @@
     <string name="hint_peaking_level">강조할 윤곽의 민감도입니다.</string>
     <string name="hint_phone">이 휴대폰의 공식 컨버터와 렌즈 표기를 선택합니다. 인식되는 기종은 미리 선택됩니다.</string>
     <string name="hint_quick_button">측면 퀵 버튼이 이 앱에서 하는 동작입니다.</string>
-    <string name="hint_record_audio">끄면 소리 없이 녹화합니다.</string>
     <string name="hint_remember_lens">마지막으로 사용한 렌즈로 시작합니다.</string>
-    <string name="hint_remember_settings">다음 실행 때 설정을 복원합니다.</string>
     <string name="hint_remember_teleconverter">텔레를 켜 두었다면 켜진 채로 시작합니다.</string>
-    <string name="hint_resolution">해상도가 높을수록 디테일이 많고 용량이 큽니다.</string>
     <string name="hint_self_timer">셔터를 누를 때의 흔들림이 담기지 않도록 촬영을 늦춥니다.</string>
     <string name="hint_sharpness">카메라 내 샤프닝입니다. 끄면 편집할 디테일을 그대로 둡니다.</string>
     <string name="hint_shutter">속도는 1/x초, 각도는 시네 셔터 각도(180° = 프레임 시간의 절반)로 표시합니다.</string>
@@ -606,8 +605,6 @@
     <string name="hint_zebra_level">줄무늬가 시작되는 밝기입니다. 95%와 100%는 명부 클리핑을 경고합니다.</string>
     <string name="hint_zoom">현재 렌즈의 디지털 줌입니다. 광학 범위를 넘으면 디테일이 줄어듭니다.</string>
     <string name="hint_false_color">밝기에 따라 화면을 색으로 표시해 노출 판단을 돕습니다.</string>
-    <string name="hint_histogram">화면의 밝기 분포입니다.</string>
-    <string name="hint_level">수평계를 표시합니다.</string>
     <string name="hint_loupe">초점 지점을 확대해 선명도를 확인합니다.</string>
     <string name="hint_peaking">초점이 맞은 윤곽을 강조해 수동 초점을 돕습니다.</string>
     <string name="hint_photo_ois">사진 광학식 손떨림 보정입니다. 삼각대에서는 끄세요.</string>

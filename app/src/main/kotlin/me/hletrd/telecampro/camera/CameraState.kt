@@ -164,6 +164,51 @@ fun availableVideoColorModes(
 }
 
 /**
+ * Why a Gamma mode the DEVICE can record is ruled out on the CURRENT route (UX review 2026-11-02).
+ * [availableVideoColorModes] drops such a mode, so the Fn cycle never lands on it; the Video tab
+ * shows it dimmed with this reason instead, so OEM Log does not silently vanish when Open Gate goes
+ * on and reappear when it goes off.
+ */
+enum class VideoColorModeBlock { OPEN_GATE, FRAME_RATE, REAR_ONLY, CAMERA_PIN, TELECONVERTER }
+
+/**
+ * The reason [makerLogOffered] refuses, or null when it offers (or the device has no maker
+ * pipeline at all, which is not a block — the chip simply does not exist there). Checked in the
+ * order an operator can act on, and pinned against [makerLogOffered] by test: offered ⇔ no block.
+ */
+fun makerLogBlock(
+    profileAllows: Boolean,
+    teleconverterRouteMeasured: Boolean,
+    route: CameraRoute,
+    teleconverter: Boolean,
+    cameraOverride: String?,
+    frameRate: Double,
+    openGate: Boolean,
+): VideoColorModeBlock? = when {
+    !profileAllows -> null
+    route != CameraRoute.BACK -> VideoColorModeBlock.REAR_ONLY
+    openGate -> VideoColorModeBlock.OPEN_GATE
+    !(frameRate.isFinite() && frameRate > 0.0 && frameRate <= 30.0) -> VideoColorModeBlock.FRAME_RATE
+    cameraOverride != null -> VideoColorModeBlock.CAMERA_PIN
+    teleconverter && !teleconverterRouteMeasured -> VideoColorModeBlock.TELECONVERTER
+    else -> null
+}
+
+/**
+ * RAW Log's one route-side refusal an operator can lift: a RAW-developable rear camera whose RAW
+ * stream cannot sustain the selected rate ([rawLogOffered]). A camera without a developable RAW is
+ * not a block — RAW Log does not exist there.
+ */
+fun rawLogBlock(caps: CameraCaps, fps: Double): VideoColorModeBlock? =
+    if (caps.rawLogDevelopable && caps.supportsRaw && caps.rawSize != null && !caps.lensFacingFront &&
+        !rawLogOffered(caps, fps)
+    ) {
+        VideoColorModeBlock.FRAME_RATE
+    } else {
+        null
+    }
+
+/**
  * The mode a request READS as. RAW Log needs the intent, a log transfer it develops into, AND a route
  * that offers it: where the route does not (a rate above the RAW stream, a camera without a
  * developable RAW) the session records native log, so the row says Log while the intent is kept for
@@ -2314,6 +2359,23 @@ data class CameraUiState(
     /** The Gamma modes the Video tab and the Fn cycle offer ([availableVideoColorModes]). */
     val videoColorModes: List<VideoColorMode>
         get() = availableVideoColorModes(videoCodec, tenBitEncodeAvailable, rawLogOffered, makerLogOffered)
+
+    /**
+     * Gamma modes this device records but the current route rules out, with the reason
+     * ([makerLogBlock], [rawLogBlock]). Empty where the codec offers no log at all.
+     */
+    val videoColorModeBlocks: Map<VideoColorMode, VideoColorModeBlock>
+        get() = if (videoColorModes == listOf(VideoColorMode.SDR)) {
+            emptyMap()
+        } else {
+            buildMap {
+                makerLogBlock(
+                    makerLogVendor != null, makerLogTeleAvailable, activeCameraRoute, teleconverterMode,
+                    cameraOverrideId, videoFrameRate.encoderRate, openGate,
+                )?.let { put(VideoColorMode.MAKER_LOG, it) }
+                caps?.let { rawLogBlock(it, videoFrameRate.encoderRate) }?.let { put(VideoColorMode.RAW_LOG, it) }
+            }
+        }
 
     /** The Gamma mode the request reads as on this route ([videoColorModeOf]). */
     val videoColorMode: VideoColorMode
