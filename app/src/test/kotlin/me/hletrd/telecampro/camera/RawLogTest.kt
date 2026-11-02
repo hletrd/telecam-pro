@@ -82,6 +82,40 @@ class RawLogTest {
     }
 
     @Test
+    fun `the UI state lists the Gamma modes the route rules out, each with its reason`() {
+        val logCapable = CameraUiState(
+            videoCodec = VideoCodec.HEVC,
+            tenBitEncodeAvailable = true,
+            makerLogSupported = true,
+            caps = pma110Rear,
+            videoFrameRate = VideoFrameRate.FPS_29_97,
+        )
+        assertEquals(emptyMap<VideoColorMode, VideoColorModeBlock>(), logCapable.videoColorModeBlocks)
+        assertEquals(
+            mapOf(VideoColorMode.MAKER_LOG to VideoColorModeBlock.OPEN_GATE),
+            logCapable.copy(openGate = true).videoColorModeBlocks,
+        )
+        assertEquals(
+            mapOf(
+                VideoColorMode.MAKER_LOG to VideoColorModeBlock.FRAME_RATE,
+                VideoColorMode.RAW_LOG to VideoColorModeBlock.FRAME_RATE,
+            ),
+            logCapable.copy(videoFrameRate = VideoFrameRate.FPS_59_94).videoColorModeBlocks,
+        )
+        // No log on this codec at all: nothing is "blocked", the row is Rec. 709 alone.
+        assertEquals(
+            emptyMap<VideoColorMode, VideoColorModeBlock>(),
+            logCapable.copy(videoCodec = VideoCodec.AVC, openGate = true).videoColorModeBlocks,
+        )
+        // Without caps there is no RAW verdict, and without a maker pipeline no OEM Log chip.
+        assertEquals(
+            emptyMap<VideoColorMode, VideoColorModeBlock>(),
+            logCapable.copy(caps = null, makerLogSupported = false, videoFrameRate = VideoFrameRate.FPS_59_94)
+                .videoColorModeBlocks,
+        )
+    }
+
+    @Test
     fun `RAW Log is offered only where it can act`() {
         assertTrue(rawLogOffered(pma110Rear, 29.97))
         assertFalse("60 fps", rawLogOffered(pma110Rear, 59.94))
