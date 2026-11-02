@@ -2,11 +2,11 @@
 
 Use this sheet for the parts that must be entered manually in Play Console.
 
-<!-- release-state: target=v1.0.5 artifact=none -->
+<!-- release-state: target=v1.1.0 artifact=none -->
 
 ## Upload Artifact
 
-> ## 🚫 NOT UPLOAD-READY — v1.0.5 must be cut from the finalized current HEAD.
+> ## 🚫 NOT UPLOAD-READY — v1.1.0 must be cut from the finalized current HEAD.
 >
 > The previously attested `8d5f461` cut predates current source changes. Its historical digest and
 > device evidence remain below as provenance, but they do not attest the current candidate and that
@@ -14,7 +14,7 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > output, not an immutable release identity: any later build can replace its bytes without changing
 > the path.
 >
-> Current source declares `versionCode 7` / `versionName 1.0.5`; it is the current
+> Current source declares `versionCode 7` / `versionName 1.1.0`; it is the current
 > source/release target, but **no current artifact candidate exists**. A new upload candidate exists
 > only after the final source commit is built, verified without inventing device evidence, copied to
 > a commit-and-digest-qualified path, and accepted by `tools/check_release_artifact.py` against a

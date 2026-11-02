@@ -1868,7 +1868,7 @@ stock Camera 7.006.119). Route found with an isolated probe on 2026-10-30/31, th
 (`OemEightKVideo.kt`, `OemEightKInputBridge.kt`, `DeviceProfile.oemEightKVideo`, commit `d0f80724`);
 probe evidence in the private `.context/8k-2026-10-30/` (NOTES.md, probe-runs/, probe-source/).
 
-**Removed 2026-11-02, before the v1.0.5 cut (owner decision: "remove 8k").** The route never reached
+**Removed 2026-11-02, before the v1.1.0 cut (owner decision: "remove 8k").** The route never reached
 a release. The owner's review that day, converter mounted: "in 8K the TC stabilization does not work;
 only the 3× camera's stabilization works" — 0x80A9's EIS is the bare lens's, forced ON on this route,
 so through the inverting converter it corrects −f·θ of a −M·f·θ image motion. The three files above

@@ -509,7 +509,8 @@ android {
         // under the Photo and Video Permissions policy, 2026-10-19) and 6 (v1.0.4, uploaded per the
         // owner 2026-10-25) are all SPENT. Play rejects a re-used versionCode outright, so every
         // upload must be strictly greater, including a re-upload of otherwise identical bytes. 7 is
-        // the candidate (v1.0.5).
+        // the candidate (v1.1.0 — prepared as 1.0.5 until the owner made it a minor release,
+        // 2026-11-02: four Gamma modes, maker converter presets and the reworked settings UI).
         //
         // 1.0.1 SHIPPED, which is what makes 1.0.2 a real release rather than a re-cut: its notes
         // told tablet owners they were getting "a landscape layout with a side control rail", and
@@ -518,7 +519,7 @@ android {
         // release notes, and those notes must not re-announce the Korean UI or the smaller download
         // that 1.0.1 already delivered.
         versionCode = 7
-        versionName = "1.0.5"
+        versionName = "1.1.0"
 
         // On-device instrumented smoke tier (app/src/androidTest). The external device-tests/
         // harness owns functional depth; the instrumented suite exists to exercise real code

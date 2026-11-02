@@ -942,7 +942,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   33.3 ms minimum for 3840×2160 yet records ~60 fps there, so `DeviceProfile.
   videoMinFrameDurationsUnderstated` skips that gate on the PMA110 profile. High-speed 120 fps is
   excluded because its constrained session crashes this HAL.
-- **8K is REMOVED (owner decision 2026-11-02, before the v1.0.5 cut).** PMA110's OEM route (operation
+- **8K is REMOVED (owner decision 2026-11-02, before the v1.1.0 cut).** PMA110's OEM route (operation
   mode 0x80A9 on the standalone main and 3× tele, the SDK/extension tag pair, a non-flexible PRIVATE
   bridge into GL) recorded real 8K in Rec. 709 (`docs/FIELD_CHECKS.md` A32), but its EIS is the bare
   lens's and cannot serve the converter, and the owner withdrew it. `OemEightKVideo.kt`,
