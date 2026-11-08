@@ -544,7 +544,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   WITH it (`seamSpanTopPx`): the seam rule used to lift the rail alone, onto those chips, upright and
   sideways alike (device-seen 2026-11-09). Pinned by `LandscapeHoldLayoutComposeTest`, which must run
   `@GraphicsMode(NATIVE)`: the legacy shadow measures a label as a few pixels and hides all three.
-  Host-rendered at PMA110's 411 x 905 dp; the on-device look is pending.
+  Device-checked on PMA110 2026-11-09 (immutable debug `0694f2f0`) at 90° only, TC Video M with
+  the shooting info, histogram, waveform and AF Lock on, not recording: lanes clear, rail and mode
+  row where they sit upright, the AFL badge leading the strip. 270° and a rolling take are
+  host-rendered only.
 - **Sensor orientation = 90; the activity is portrait-locked ON PHONES (see the entry above for
   large screens); preview verified upright on device.** The
   camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
