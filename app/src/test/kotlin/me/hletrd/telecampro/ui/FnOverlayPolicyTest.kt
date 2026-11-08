@@ -311,6 +311,19 @@ class FnOverlayPolicyTest {
         assertEquals(lit("AF-S"), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.AUTO) }))
         assertEquals(lit("AF-C"), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.CONTINUOUS) }))
         assertEquals(word(R.string.fn_tile_macro), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.MACRO) }))
+        // AF Lock outranks the mode it froze, highlighted like a manual value; MF owns the lens.
+        assertEquals(
+            word(R.string.osd_afl, manual = true),
+            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.CONTINUOUS, afLock = true) }),
+        )
+        assertEquals(
+            word(R.string.osd_afl, manual = true),
+            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.AUTO, afLock = true) }),
+        )
+        assertEquals(
+            lit("MF", manual = true),
+            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.MANUAL, afLock = true) }),
+        )
 
         assertEquals(lit("AWB"), fnTileReadout(FnSlot.WB, controls { copy(wbMode = WbMode.AUTO) }))
         assertEquals(

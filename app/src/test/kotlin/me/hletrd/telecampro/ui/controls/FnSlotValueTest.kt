@@ -61,6 +61,14 @@ class FnSlotValueTest {
     }
 
     @Test
+    fun `a locked autofocus says so after the mode, and manual focus ignores the lock`() {
+        val locked = CameraUiState().let { it.copy(controls = it.controls.copy(afLock = true)) }
+        assertEquals("AF-C, AF Lock", fnSlotValue(FnSlot.FOCUS, locked))
+        val manual = locked.copy(controls = locked.controls.copy(focusMode = me.hletrd.telecampro.camera.FocusMode.MANUAL))
+        assertEquals("MF", fnSlotValue(FnSlot.FOCUS, manual))
+    }
+
+    @Test
     fun `program shutter and iso show the live AE-resolved values`() {
         val state = CameraUiState(liveExposureNs = 8_000_000L, liveIso = 800)
         assertEquals("Auto 1/125s", fnSlotValue(FnSlot.SHUTTER, state))

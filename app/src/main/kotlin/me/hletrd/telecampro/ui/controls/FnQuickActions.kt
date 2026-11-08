@@ -6,6 +6,7 @@ import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.controlAvailability
@@ -53,7 +54,15 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         ?: if (value) "On" else "Off"
     return when (slot) {
         FnSlot.EXPOSURE_MODE -> exposureModeLetter(c.exposureMode)
-        FnSlot.FOCUS -> context?.localizedLabel(c.focusMode) ?: focusModeLabel(c.focusMode)
+        FnSlot.FOCUS -> {
+            val focusMode = context?.localizedLabel(c.focusMode) ?: focusModeLabel(c.focusMode)
+            // Same lock rule as the tile (fnTileReadout): spoken and in the info line too.
+            if (c.afLock && c.focusMode != FocusMode.MANUAL) {
+                "$focusMode, ${context?.getString(R.string.label_af_lock) ?: "AF Lock"}"
+            } else {
+                focusMode
+            }
+        }
         FnSlot.SHUTTER -> when {
             c.exposureMode == ExposureMode.PROGRAM -> auto(autoShutterText(state))
             c.autoShutterDriven -> auto(formatShutterSpeed(c.exposureTimeNs))

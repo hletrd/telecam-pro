@@ -821,6 +821,7 @@ internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
 internal data class StatusBarPriorityResetKey(
     val mode: CaptureMode,
     val compact: Boolean,
+    val locks: StatusBarLockIdentity,
     val focalLabel: String?,
     val teleLensSwitchedTagVisible: Boolean,
     val memorySlot: String?,
@@ -838,6 +839,13 @@ internal data class StatusBarPriorityResetKey(
     val timerTag: ShutterTimer?,
 )
 
+/** The lock badges that LEAD the strip; any change scrolls the strip back to show them. */
+internal data class StatusBarLockIdentity(
+    val ae: Boolean,
+    val awb: Boolean,
+    val af: Boolean,
+)
+
 internal data class StatusBarVideoOutputIdentity(
     val width: Int,
     val height: Int,
@@ -853,8 +861,9 @@ internal data class StatusBarDriveIdentity(
 
 /**
  * Stable reset policy for the OSD scroll. Fields follow the leading tag order rendered below and
- * are populated only when that slot is visible in the active mode/compactness. The tail begins at
- * metering: locks, focus analysis, loupe/overview, and all live telemetry deliberately stay out.
+ * are populated only when that slot is visible in the active mode/compactness. The lock badges come
+ * first; the tail begins at metering: focus analysis, loupe/overview, and all live telemetry
+ * deliberately stay out.
  */
 internal fun statusBarPriorityResetKey(
     state: CameraUiState,
@@ -867,6 +876,11 @@ internal fun statusBarPriorityResetKey(
     return StatusBarPriorityResetKey(
         mode = state.mode,
         compact = compact,
+        locks = StatusBarLockIdentity(
+            ae = state.controls.aeLock,
+            awb = state.controls.awbLock,
+            af = state.controls.afLock,
+        ),
         focalLabel = focalLabel,
         teleLensSwitchedTagVisible = teleconverterLensSwitchedTagVisible(
             teleconverter = state.teleconverterMode,
@@ -911,6 +925,25 @@ internal fun statusBarPriorityResetKey(
             oisEnabled = state.controls.oisEnabled,
         ),
         timerTag = state.timer.takeIf { photoMode && !compact && it != ShutterTimer.OFF },
+    )
+}
+
+/**
+ * A lock state (AEL/AWL/AFL) as a filled amber badge: the same ManualActive amber the plain tags
+ * use, inverted so it reads at a glance among them. Lock states are togglable (Fn, hardware key,
+ * the Focus tab) and a silently locked AE/AWB/AF reads as a broken camera, so they belong in the
+ * OSD per UX policy ("important states belong in the OSD").
+ */
+@Composable
+private fun LockBadge(text: String) {
+    Text(
+        text,
+        color = CameraColors.Background,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier
+            .background(CameraColors.ManualActive, RoundedCornerShape(4.dp))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
     )
 }
 
@@ -992,6 +1025,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Locks LEAD the strip as filled badges (owner request 2026-11-08, "make AFL easy to see").
+        // At the tail they were the first tags the strip's own scroll pushed out of view: a full
+        // DISP strip on the 411 dp PMA110 ended "... SPOT AEL AWL", and a held-landscape strip is
+        // shorter still. A lock is the one state that makes the camera look broken when missed.
+        if (state.controls.aeLock) LockBadge(stringResource(R.string.osd_ael))
+        if (state.controls.awbLock) LockBadge(stringResource(R.string.osd_awl))
+        if (state.controls.afLock) LockBadge(stringResource(R.string.osd_afl))
         focalLabel?.let {
             Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         }
@@ -1151,18 +1191,6 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelMedium,
             )
-        }
-        // Lock states are togglable (Fn/hardware key) but had NO on-screen indicator — a locked AE
-        // silently "ignoring" the scene reads as a broken camera. Amber tags, Sony-style, in the OSD
-        // row per UX policy ("important states belong in the OSD").
-        if (state.controls.aeLock) {
-            Text(stringResource(R.string.osd_ael), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
-        }
-        if (state.controls.awbLock) {
-            Text(stringResource(R.string.osd_awl), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
-        }
-        if (state.controls.afLock) {
-            Text(stringResource(R.string.osd_afl), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         // Focus confidence: ONE compact amber tag whose text follows whichever proof holds —
         // TOO CLOSE (AF admitted defeat with the lens racked at its close limit, optionally

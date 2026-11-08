@@ -29,6 +29,14 @@ class StatusBarScrollPolicyTest {
     )
 
     @Test
+    fun `a lock change returns the strip to its leading lock badges`() {
+        val key = statusBarPriorityResetKey(base, "70 mm", compact = false)
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(controls = base.controls.copy(aeLock = true)), "70 mm", false))
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(controls = base.controls.copy(awbLock = true)), "70 mm", false))
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(controls = base.controls.copy(afLock = true)), "70 mm", false))
+    }
+
+    @Test
     fun `telemetry and trailing tag changes do not yank an inspected OSD tail`() {
         val key = statusBarPriorityResetKey(base, "70 mm", compact = false)
         assertEquals(key, statusBarPriorityResetKey(base.copy(recordElapsedMs = 42_000), "70 mm", false))
@@ -38,7 +46,7 @@ class StatusBarScrollPolicyTest {
             statusBarPriorityResetKey(
                 base.copy(
                     focusConfidence = FocusConfidenceSource.FRAME_DETAIL,
-                    controls = base.controls.copy(meteringMode = MeteringMode.SPOT, aeLock = true),
+                    controls = base.controls.copy(meteringMode = MeteringMode.SPOT),
                     punchIn = true,
                 ),
                 "70 mm",

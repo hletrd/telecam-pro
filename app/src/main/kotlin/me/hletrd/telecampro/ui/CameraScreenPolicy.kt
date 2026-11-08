@@ -623,12 +623,17 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
     val c = state.controls
     return when (slot) {
         FnSlot.EXPOSURE_MODE -> FnTileReadout(FnTileText.Literal(exposureModeLetter(c.exposureMode)))
-        FnSlot.FOCUS -> when (c.focusMode) {
-            FocusMode.MANUAL -> FnTileReadout(FnTileText.Literal("MF"), manual = true)
+        FnSlot.FOCUS -> when {
+            // AF Lock outranks the mode it froze (owner request 2026-11-08): the tile is where the
+            // operator looks for focus state, and "AF-C" over a locked lens claims a hunt that is
+            // not happening. MF owns the lens, so the lock is inert there and the tile says MF.
+            c.afLock && c.focusMode != FocusMode.MANUAL ->
+                FnTileReadout(FnTileText.Word(R.string.osd_afl), manual = true)
+            c.focusMode == FocusMode.MANUAL -> FnTileReadout(FnTileText.Literal("MF"), manual = true)
             // AUTO is the one-shot scan (CONTROL_AF_MODE_AUTO): what every body prints as AF-S.
-            FocusMode.AUTO -> FnTileReadout(FnTileText.Literal("AF-S"))
-            FocusMode.CONTINUOUS -> FnTileReadout(FnTileText.Literal("AF-C"))
-            FocusMode.MACRO -> FnTileReadout(FnTileText.Word(R.string.fn_tile_macro))
+            c.focusMode == FocusMode.AUTO -> FnTileReadout(FnTileText.Literal("AF-S"))
+            c.focusMode == FocusMode.CONTINUOUS -> FnTileReadout(FnTileText.Literal("AF-C"))
+            else -> FnTileReadout(FnTileText.Word(R.string.fn_tile_macro))
         }
         // Same branch order as fnSlotValue, so the tile and its spoken state can never disagree on
         // whether the value is the camera's or the operator's.
