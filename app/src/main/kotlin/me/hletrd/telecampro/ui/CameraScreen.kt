@@ -737,6 +737,9 @@ fun CameraScreen(
         // Published by the preview placement below and consumed by the Loupe Overview border; the
         // engine forwards the same value to GL so the scissor box and this border stay one rect.
         var finderBottomClearanceFraction by remember { mutableFloatStateOf(0f) }
+        // The drawn overview's top in root coordinates (MAX while it is not drawn): held sideways it
+        // sits on the scope stack's edge, so that lane stops above it.
+        var finderTopPx by remember { mutableIntStateOf(Int.MAX_VALUE) }
         val sixteenDpPx = with(LocalDensity.current) { 16.dp.roundToPx() }
         // The preview box's resolved top, exported for the TopBar's seam rule (the bar renders in a
         // SIBLING scope of the BoxWithConstraints that computes it).
@@ -1081,6 +1084,7 @@ fun CameraScreen(
             // border must not mirror to bottom-left under RTL system locales. Square corners trace
             // the sharp GL scissor rect.
             if (finderVisible) {
+                DisposableEffect(Unit) { onDispose { finderTopPx = Int.MAX_VALUE } }
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val rect = finderRect(
                         boxWidth = maxWidth.value,
@@ -1092,6 +1096,7 @@ fun CameraScreen(
                             .align(AbsoluteAlignment.BottomLeft)
                             .absoluteOffset(x = rect.x.dp, y = (-rect.y).dp)
                             .size(rect.width.dp, rect.height.dp)
+                            .onGloballyPositioned { finderTopPx = it.positionInRoot().y.roundToInt() }
                             // One-off structural stroke, not ink and not a composition guide: it
                             // traces the GL scissor rect of a SECOND rendering of the camera frame,
                             // so it must read against arbitrary live pixels on both of its sides.
@@ -1249,7 +1254,8 @@ fun CameraScreen(
         val scopesMaxPx = landscapeLaneMaxPx(
             held = landscapeHeld,
             topPx = scopesTopPx + scopesShiftPx,
-            limitPx = bottomChromeTopPx,
+            // The Loupe Overview sits at the image's bottom-right, on this lane's edge.
+            limitPx = minOf(bottomChromeTopPx, finderTopPx),
             gapPx = laneGapPx,
         )
 

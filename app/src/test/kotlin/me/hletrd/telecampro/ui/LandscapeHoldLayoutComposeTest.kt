@@ -158,6 +158,21 @@ class LandscapeHoldLayoutComposeTest {
         }
     }
 
+    // The Loupe Overview sits at the bottom-right of the image, on the stack's edge once the phone
+    // turns; the stack ran over it (host sweep 2026-11-09, both turns, shooting info open).
+    @Test fun `held sideways the stack stops above the Loupe Overview`() {
+        show(busyVideo.copy(teleFinder = true), details = true)
+        val stack = listOf("Recording", "Audio level meter", "Histogram", "Waveform")
+        for (orientation in listOf(90, 270)) {
+            hold(orientation)
+            val overview = described(context.getString(R.string.a11y_loupe_overview))
+            assertTrue("overview drawn at $orientation", visible(overview))
+            stack.map(::described).filter(::visible).forEach { rect ->
+                assertTrue("stack item at $orientation $rect over overview $overview", !rect.overlaps(overview))
+            }
+        }
+    }
+
     /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
     private fun slot(description: String): Rect =
         compose.onAllNodes(hasContentDescription(description), useUnmergedTree = true)

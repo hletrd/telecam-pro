@@ -544,8 +544,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   focal rail ~105 dp onto the image whenever the phone was held sideways. The two long-edge lanes
   stop above what sits below them on their edge (`landscapeLaneMaxPx`): the turned OSD strip above
   the M exposure meter and the bottom chrome (its own scroll takes the rest), and the
-  REC/audio/scope stack below the battery pill and above the bottom chrome, wrapping into a second
-  column inboard (`EndWrapColumn`). With the shooting info open, the dial chips above the rail lift
+  REC/audio/scope stack below the battery pill and above both the bottom chrome and the Loupe
+  Overview (`finderTopPx`; the overview sits at the image's bottom-right, on the stack's edge once
+  the phone turns, and the stack ran over it), wrapping into a second column inboard
+  (`EndWrapColumn`). A host sweep (2026-11-09: eight states, shooting info on and off, an open Fn
+  menu and dial ruler, 0/90/180/270, at 905 and 840 dp) finds no other overlap; the Fn tray
+  covering chrome under its scrim is the modal's design in every orientation. With the shooting info open, the dial chips above the rail lift
   WITH it (`seamSpanTopPx`): the seam rule used to lift the rail alone, onto those chips, upright and
   sideways alike (device-seen 2026-11-09). Pinned by `LandscapeHoldLayoutComposeTest`, which must run
   `@GraphicsMode(NATIVE)`: the legacy shadow measures a label as a few pixels and hides all three.
