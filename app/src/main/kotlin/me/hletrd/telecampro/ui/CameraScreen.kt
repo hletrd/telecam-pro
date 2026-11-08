@@ -93,6 +93,7 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -132,6 +133,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -149,6 +151,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1204,6 +1207,46 @@ fun CameraScreen(
             0
         }
 
+        // Held sideways, the OSD strip and the REC/scope stack turn into tall columns down the two
+        // long edges. On a 411 x 905 dp render (2026-11-08) the strip ran through the M exposure
+        // meter, the battery pill sat on the REC timer, and the stack reached the Fn chips, so each
+        // lane now stops above what sits below it on its edge (landscapeLaneMaxPx). Portrait never
+        // reaches either limit, so its layout is unchanged.
+        val landscapeHeld = glyphRotationDeg % 180 != 0
+        val laneDensity = LocalDensity.current
+        val laneGapPx = with(laneDensity) { 8.dp.roundToPx() }
+        var osdStripTopPx by remember { mutableIntStateOf(0) }
+        var infoPillBottomPx by remember { mutableIntStateOf(0) }
+        var scopesTopPx by remember { mutableIntStateOf(0) }
+        var exposureMeterTopPx by remember { mutableIntStateOf(Int.MAX_VALUE) }
+        var bottomClusterTopPx by remember { mutableIntStateOf(Int.MAX_VALUE) }
+        val exposureMeterShown = !fnOverlayVisible &&
+            shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)
+        val infoPillShown = detailsVisible && (state.batteryPct >= 0 || state.freeBytes > 0)
+        // A rail section the seam rule lifted onto the image is the top of the bottom chrome.
+        val bottomChromeTopPx = minOf(
+            bottomClusterTopPx,
+            if (railSeamOffsetPx < 0) railSectionTopPx + railSeamOffsetPx else Int.MAX_VALUE,
+        )
+        val osdStripMaxPx = landscapeLaneMaxPx(
+            held = landscapeHeld,
+            topPx = osdStripTopPx,
+            limitPx = minOf(bottomChromeTopPx, if (exposureMeterShown) exposureMeterTopPx else Int.MAX_VALUE),
+            gapPx = laneGapPx,
+        )
+        // The battery pill shares the strip's row at the top-END corner, the same edge as the stack.
+        val scopesShiftPx = if (landscapeHeld && infoPillShown && scopesTopPx > 0) {
+            (infoPillBottomPx + laneGapPx - scopesTopPx).coerceAtLeast(0)
+        } else {
+            0
+        }
+        val scopesMaxPx = landscapeLaneMaxPx(
+            held = landscapeHeld,
+            topPx = scopesTopPx + scopesShiftPx,
+            limitPx = bottomChromeTopPx,
+            gapPx = laneGapPx,
+        )
+
         Row(
             // The full-width CONTAINER stays fixed — spinning a fillMaxWidth row would swing a
             // screen-wide box off screen no matter how the slot is reserved. Its children rotate
@@ -1235,6 +1278,9 @@ fun CameraScreen(
                 // screen-wide box the old comment warned about.
                 modifier = Modifier
                     .weight(1f, fill = false)
+                    .onGloballyPositioned { osdStripTopPx = it.positionInRoot().y.roundToInt() }
+                    // Bounds the turned strip's LENGTH; its own horizontalScroll takes the rest.
+                    .then(osdStripMaxPx?.let { Modifier.heightIn(max = with(laneDensity) { it.toDp() }) } ?: Modifier)
                     .rotateLayout(overlayRotation),
             )
             // Battery/shots-remaining lives in the chrome row, not floating inside the image: on
@@ -1243,7 +1289,16 @@ fun CameraScreen(
             // Same treatment for its row-mate: leaving battery/shots screen-fixed beside a rotating
             // status plate would just move the inconsistency one element to the right.
             if (detailsVisible) {
-                StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
+                StatusInfoPill(
+                    state = state,
+                    modifier = Modifier
+                        // OUTSIDE rotateLayout: that node is the turned pill's reserved bounds; the
+                        // node inside it is the unrotated pill.
+                        .onGloballyPositioned {
+                            infoPillBottomPx = (it.positionInRoot().y + it.size.height).roundToInt()
+                        }
+                        .rotateLayout(overlayRotation),
+                )
             }
         }
 
@@ -1323,7 +1378,11 @@ fun CameraScreen(
         // fixed before).
         // Keep camera controls spatially stable across portrait/landscape holds. Only compact labels
         // counter-rotate; the shutter/mode/Fn cluster stays anchored like a camera body control layout.
-        Column(
+        EndWrapColumn(
+            // Held sideways the stack wraps into a second column inboard instead of running into
+            // the bottom chrome; upright it is one column, as before.
+            maxHeightPx = scopesMaxPx,
+            spacing = 12.dp,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
@@ -1331,9 +1390,10 @@ fun CameraScreen(
                 // Same seam shift as the OSD row it clears: in a 16:9 Video finder the bar and row
                 // move down ~49 dp on PMA110 and the fixed clearance left the audio meter resting on
                 // the battery chip (release QA 2026-11-02), a histogram/waveform across the row.
-                .offset { IntOffset(0, topBarSeamOffsetPx) },
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .offset { IntOffset(0, topBarSeamOffsetPx) }
+                // Measured BEFORE the battery-pill shift below, so the shift cannot feed itself.
+                .onGloballyPositioned { scopesTopPx = it.positionInRoot().y.roundToInt() }
+                .offset { IntOffset(0, scopesShiftPx) },
         ) {
             if (state.isRecording && !state.isRecordingStarting) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs, modifier = Modifier.rotateLayout(overlayRotation))
@@ -1443,7 +1503,8 @@ fun CameraScreen(
                 .onSizeChanged { exposureMeterHeightPx = it.height }
                 // Home stays the vertical centre; it rises only as far as an open dial's cluster
                 // would otherwise cover its scale (exposureMeterLiftPx).
-                .offset { IntOffset(0, -exposureMeterLift) },
+                .offset { IntOffset(0, -exposureMeterLift) }
+                .onGloballyPositioned { exposureMeterTopPx = it.positionInRoot().y.roundToInt() },
             // Only the READOUT turns, not the scale. Rotating the whole meter was tried and
             // rejected on device: the bar is a vertical scale whose position carries the value and
             // it reads at any angle, while its figures do not (user-specified 2026-07-29).
@@ -1639,6 +1700,7 @@ fun CameraScreen(
                     if (openManualDial == null) bottomClusterRestHeightPx = it.height
                     bottomClusterLiveHeightPx = it.height
                 }
+                .onGloballyPositioned { bottomClusterTopPx = it.positionInRoot().y.roundToInt() }
                 .then(operatorChrome)
                 // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the
                 // shutter nearly touching the home-bar swipe zone (user-reported 2026-07-25).
@@ -1760,6 +1822,49 @@ internal fun CriticalCameraStatusPlate(
 
 // (The pure status/rotation/Fn-overlay/meter/rail policy helpers live in CameraScreenPolicy.kt —
 // hoisted to a non-composable file so they stay host-testable apart from Compose emission.)
+
+/**
+ * A top-down stack anchored at its END edge that starts a new column INBOARD (toward the start
+ * edge) when the next child would pass [maxHeightPx] — the held-landscape REC/audio/scope stack.
+ * With [maxHeightPx] null it is exactly the one End-aligned column it replaced.
+ */
+@Composable
+private fun EndWrapColumn(
+    maxHeightPx: Int?,
+    spacing: Dp,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val gap = spacing.roundToPx()
+        val limit = maxHeightPx?.coerceAtMost(constraints.maxHeight) ?: constraints.maxHeight
+        val placeables = measurables.map {
+            it.measure(Constraints(maxWidth = constraints.maxWidth, maxHeight = limit))
+        }
+        val columns = endWrapColumns(placeables.map { it.height }, limit, gap)
+        val widths = columns.map { column -> column.maxOf { placeables[it].width } }
+        val totalWidth = widths.sum() + gap * (columns.size - 1).coerceAtLeast(0)
+        val totalHeight = columns.maxOfOrNull { column ->
+            column.sumOf { placeables[it].height } + gap * (column.size - 1)
+        } ?: 0
+        layout(
+            totalWidth.coerceIn(constraints.minWidth, constraints.maxWidth),
+            totalHeight.coerceIn(constraints.minHeight, constraints.maxHeight),
+        ) {
+            var columnEnd = totalWidth
+            columns.forEachIndexed { index, column ->
+                var y = 0
+                column.forEach { child ->
+                    val placeable = placeables[child]
+                    // The viewfinder is an Ltr scope, so absolute placement is the END edge.
+                    placeable.place(columnEnd - placeable.width, y)
+                    y += placeable.height + gap
+                }
+                columnEnd -= widths[index] + gap
+            }
+        }
+    }
+}
 
 /** Rotates content while reserving its exact animated axis-aligned bounds in layout. */
 // `internal`, not private, so a host Compose test can render the real status plate through the real
@@ -3342,27 +3447,35 @@ private fun ModeCarousel(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
             // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
-            // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit.
+            // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit,
+            // drawn inside the unrotated slot (see ModeLabel's glyphRotation).
             ModeLabel(
                 text = stringResource(R.string.mode_photo),
                 active = mode == CaptureMode.PHOTO,
                 enabled = enabled,
                 onClick = { onModeChange(CaptureMode.PHOTO) },
-                modifier = Modifier.rotateLayout(glyphRotation),
+                glyphRotation = glyphRotation,
             )
             ModeLabel(
                 text = stringResource(R.string.mode_video),
                 active = mode == CaptureMode.VIDEO,
                 enabled = enabled,
                 onClick = { onModeChange(CaptureMode.VIDEO) },
-                modifier = Modifier.rotateLayout(glyphRotation),
+                glyphRotation = glyphRotation,
             )
         }
     }
 }
 
 @Composable
-internal fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ModeLabel(
+    text: String,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
+) {
     val modeButtonDescription = stringResource(R.string.a11y_mode_button, text)
     val presentation = modeCarouselState(active, enabled)
     val selectionDescription = stringResource(
@@ -3394,6 +3507,15 @@ internal fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick:
     ) {
         Column(
             modifier = Modifier
+                // DRAW-only turn, not rotateLayout: the vertical pill (~30 x 63 dp) would make its
+                // slot 63 dp tall in a held landscape instead of 48, and that 16 dp grew the whole
+                // bottom cluster. The cluster's rest height places the preview (previewTopPx) and
+                // the rail seam rule, so turning the phone moved the image and lifted the focal
+                // rail ~105 dp onto it (PMA110 411 x 905 dp, 2026-11-08). Drawn about the slot's
+                // centre the pill overhangs the 48 dp slot by ~8 dp each way, inside the 8 dp row
+                // gap plus the rail chip's own transparent margin, and the touch target keeps the
+                // portrait slot.
+                .graphicsLayer { rotationZ = glyphRotation }
                 // The one HUD text element that had no scrim of its own: over a bright subject (sky,
                 // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
                 // contrast. Same treatment as every sibling HUD element.

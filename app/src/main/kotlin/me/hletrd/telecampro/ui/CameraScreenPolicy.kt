@@ -906,6 +906,38 @@ internal fun bottomRailSeamOffsetPx(
     return if (straddles) previewBottomPx - gapPx - railBottomPx else 0
 }
 
+/**
+ * The longest a held-landscape overlay lane may run (px), or null when it is free: upright, or
+ * before either edge has been measured. A lane starting at [topPx] stops [gapPx] above [limitPx],
+ * the first thing below it on its edge, but never shrinks under 48 dp (6 gaps), so a lane squeezed
+ * by an unusual window still shows a scrollable stub rather than vanishing.
+ */
+internal fun landscapeLaneMaxPx(held: Boolean, topPx: Int, limitPx: Int, gapPx: Int): Int? {
+    if (!held || topPx <= 0 || limitPx == Int.MAX_VALUE || limitPx <= 0) return null
+    return (limitPx - topPx - gapPx).coerceAtLeast(gapPx * 6)
+}
+
+/**
+ * Splits a top-down stack of [heights] into columns no taller than [limitPx] with [gapPx] between
+ * items; a child taller than the limit still gets a column of its own. Indices keep their order.
+ */
+internal fun endWrapColumns(heights: List<Int>, limitPx: Int, gapPx: Int): List<List<Int>> {
+    val columns = mutableListOf<MutableList<Int>>()
+    var used = 0
+    heights.forEachIndexed { index, height ->
+        val current = columns.lastOrNull()
+        val needed = if (current.isNullOrEmpty()) height else used + gapPx + height
+        if (current == null || (current.isNotEmpty() && needed > limitPx)) {
+            columns += mutableListOf(index)
+            used = height
+        } else {
+            current += index
+            used = needed
+        }
+    }
+    return columns
+}
+
 internal data class FocalRailState(
     val selected: Boolean,
     val enabled: Boolean,

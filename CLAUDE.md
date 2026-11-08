@@ -531,6 +531,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   large screens); preview verified upright on device.** The
   camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
   the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
+  **Turning the phone must not move the layout either (owner report 2026-11-08: held sideways the
+  UI overlapped and sat in odd places).** The bottom cluster's rest height places the preview
+  (`previewTopPx`) and drives the rail seam rule, so anything that turns INSIDE the cluster keeps its
+  portrait slot: the Photo/Video labels turn draw-only (`graphicsLayer`), because under
+  `rotateLayout` their turned ~63 dp pills grew the cluster 16 dp and the seam rule then lifted the
+  focal rail ~105 dp onto the image whenever the phone was held sideways. The two long-edge lanes
+  stop above what sits below them on their edge (`landscapeLaneMaxPx`): the turned OSD strip above
+  the M exposure meter and the bottom chrome (its own scroll takes the rest), and the
+  REC/audio/scope stack below the battery pill and above the bottom chrome, wrapping into a second
+  column inboard (`EndWrapColumn`). Pinned by `LandscapeHoldLayoutComposeTest`, which must run
+  `@GraphicsMode(NATIVE)`: the legacy shadow measures a label as a few pixels and hides all three.
+  Host-rendered at PMA110's 411 x 905 dp; the on-device look is pending.
   returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
   device). It still passes `sensorOrientation` to the renderer purely to pick the preview **aspect**
   (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 −
