@@ -507,10 +507,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `engine.pause`. `TerminalAcquisitionGate` closes before release's final
   `gl.stop`, so queued cold start cannot resurrect a GL generation afterward. Preview-window tasks
   also carry synchronous invalidation generations; stale/released native windows cannot bind later.
-- **Large screens take a LANDSCAPE window; phones do not (2026-08-04).** The manifest carries no
-  `screenOrientation` restriction. `MainActivity.lockPortraitOnHandsets` applies the portrait lock
-  only when `smallestScreenWidthDp < 600`; PMA110 measures **411 dp**, so the phone remains
-  device-fixed portrait while sw600dp+ is left free for Android 16/17 large-screen behavior.
+- **Large screens take a LANDSCAPE window; phones do not (2026-08-04).** The manifest declares
+  `screenOrientation="portrait"` (again since 2026-11-09), and `MainActivity.lockPortraitOnHandsets`
+  releases it to UNSPECIFIED when `smallestScreenWidthDp >= 600` (Android 16+ ignores both there);
+  PMA110 measures **411 dp**, so the phone remains device-fixed portrait while sw600dp+ is left free
+  for Android 16/17 large-screen behavior. From 2026-08-04 the lock lived in code alone, because
+  Play's large-screen check reads the attribute statically and flags it; but the window manager
+  then learned it only in `onCreate`, after showing the starting window in the display's rotation,
+  so a launch from an app held landscape drew the splash sideways and animated it upright (owner
+  report and PMA110 screen recording 2026-11-09). That Play advisory is the accepted cost.
   `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` is also GONE. Four things take a window term —
   preview rotation, displayed aspect, tap mapping
   (`RotationMath.unrotateViewPoint` inside `mapTapFocusGeometry`), and glyph counter-rotation — and

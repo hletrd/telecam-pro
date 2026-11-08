@@ -346,14 +346,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Portrait-locks HANDSETS at runtime, and leaves anything sw600dp+ free to rotate.
+     * Keeps HANDSETS portrait, and releases the manifest's portrait at sw600dp+ so large screens
+     * rotate freely.
      *
-     * This used to be `android:screenOrientation="portrait"` in the manifest. The behaviour is the
-     * same — Android 16 already ignores that attribute at sw600dp+ and API 37 removes the opt-out
-     * entirely, so the lock was only ever reaching handsets. What changed is that Play's
-     * large-screen check reads the manifest STATICALLY: it cannot see that the lock is conditional,
-     * so the attribute earned a permanent advisory claiming the app is orientation-locked on
-     * tablets when it is not. Expressing the same rule in code says the true thing to both.
+     * The manifest declares `portrait` so the window is portrait from its first frame. From
+     * 2026-08-04 to 2026-11-09 this call was the ONLY lock (Play's large-screen check reads the
+     * manifest statically and flags the attribute), and the window manager learned it here, after
+     * it had shown the starting window in the display's current rotation: started from an app held
+     * landscape, the splash came up sideways and animated upright. On a large screen Android 16+
+     * ignores both the attribute and this call; on Android 13-15 the UNSPECIFIED below is what
+     * frees it.
      *
      * Briefly lifted on 2026-08-05 so a sideways phone would get a re-laid-out landscape window, and
      * restored the same day: the owner's rule is that orientation moves NO control ("placing shutter

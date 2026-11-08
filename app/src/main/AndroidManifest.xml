@@ -77,16 +77,20 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.TeleCamPro"
-            tools:ignore="DiscouragedApi">
+            tools:ignore="DiscouragedApi,LockedOrientationActivity">
 
-            <!-- android:screenOrientation is GONE (2026-08-04). The portrait lock still applies on
-                 PHONES, but MainActivity now sets it at RUNTIME from the smallest width instead
-                 (see lockPortraitOnHandsets). Same behaviour, and Play's large-screen check stops
-                 flagging the app: that check is STATIC — it reads this attribute out of the merged
-                 manifest and cannot see that the lock is already conditional. Leaving the attribute
-                 in place to be ignored on tablets meant carrying a permanent advisory that says the
-                 opposite of what the app does.
+            <!-- portrait is DECLARED again (2026-11-09, owner report: the launch screen came up
+                 sideways and turned). From 2026-08-04 the lock lived only in code
+                 (lockPortraitOnHandsets), so the window manager learned it in onCreate, after it
+                 had already shown the starting window in the display's current rotation: started
+                 from an app held landscape, PMA110 drew the splash sideways and animated it upright
+                 (~0.5 s, screen-recorded). Declared here, the window is portrait from its first
+                 frame. Android 16+ ignores this attribute at sw600dp+, and lockPortraitOnHandsets
+                 releases it there on Android 13-15, so large screens stay free as before. The cost
+                 is the reason it was removed: Play's large-screen check reads the attribute
+                 STATICALLY and flags it, although the lock never reaches a large screen.
 
                  The whole app — glyph counter-rotation, capture masks, encoder framing — is built
                  around a device-fixed portrait layout on handsets. PMA110 behaviour is unchanged.

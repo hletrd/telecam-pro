@@ -2140,11 +2140,14 @@ check(
 manifest = read("app/src/main/AndroidManifest.xml")
 main_activity = read("app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt")
 claude = read("CLAUDE.md")
+main_activity_decl = re.search(r"<activity\b[^>]*android:name=\"\.MainActivity\"[^>]*>", manifest, re.S)
 check(
-    re.search(r"<activity\b[^>]*\bandroid:screenOrientation=", manifest, re.S) is None
+    main_activity_decl is not None
+    and 'android:screenOrientation="portrait"' in main_activity_decl.group(0)
     and "lockPortraitOnHandsets" in main_activity
-    and "manifest carries no" in claude,
-    "committed orientation authority joins absent manifest restriction to handset runtime lock",
+    and "ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED" in main_activity
+    and 'The manifest declares\n  `screenOrientation="portrait"`' in claude,
+    "committed orientation authority joins the manifest portrait to the large-screen runtime release",
 )
 ui_snapshot_activity = read(
     "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt"
@@ -2162,11 +2165,11 @@ check(
     "snapshot host pins dark system bars through the production helper",
 )
 if backlog is None:
-    skip_private("release board records the removed orientation restriction", "docs/BACKLOG.md")
+    skip_private("release board records the restored manifest portrait", "docs/BACKLOG.md")
 else:
     check(
-        "manifest orientation restriction is" in backlog,
-        "release board records the removed orientation restriction",
+        "The manifest declares portrait again (2026-11-09)" in backlog,
+        "release board records the restored manifest portrait",
     )
 check(
     "current TELE capture is eligible" not in architecture
