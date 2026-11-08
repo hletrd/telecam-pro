@@ -748,6 +748,12 @@ fun CameraScreen(
         var railSectionTopPx by remember { mutableIntStateOf(0) }
         var railSectionBottomPx by remember { mutableIntStateOf(0) }
         var railSeamOffsetPx by remember { mutableIntStateOf(0) }
+        // The dial chips above the rail (shooting info open) ride the same lift, so the span the
+        // rule tests starts at their rest top. Lifting the rail alone landed it on them (device-seen
+        // 2026-11-09). Zero height in the compact rest state, where the span is the rail section.
+        var dialClusterRestTopPx by remember { mutableIntStateOf(0) }
+        var dialClusterRestHeightPx by remember { mutableIntStateOf(0) }
+        val seamSpanTopPx = if (dialClusterRestHeightPx > 0) dialClusterRestTopPx else railSectionTopPx
         val eightDpSeamGapPx = with(LocalDensity.current) { 8.dp.roundToPx() }
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
         // must align with the image frame) lives in a box sized to the displayed preview aspect, so
@@ -785,7 +791,7 @@ fun CameraScreen(
             val previewBottomPx = topOffsetPx + previewHeightPx
             railSeamOffsetPx = bottomRailSeamOffsetPx(
                 previewBottomPx = previewBottomPx,
-                railTopPx = railSectionTopPx,
+                railTopPx = seamSpanTopPx,
                 railBottomPx = railSectionBottomPx,
                 gapPx = eightDpSeamGapPx,
             )
@@ -800,7 +806,7 @@ fun CameraScreen(
             finderBottomClearanceFraction = if (previewHeightPx > 0) {
                 val chromeTopPx = constraints.maxHeight - bottomReserveForLayoutPx
                 val liftedRailTopPx = if (railSeamOffsetPx < 0) {
-                    railSectionTopPx + railSeamOffsetPx
+                    seamSpanTopPx + railSeamOffsetPx
                 } else {
                     Int.MAX_VALUE
                 }
@@ -1226,7 +1232,7 @@ fun CameraScreen(
         // A rail section the seam rule lifted onto the image is the top of the bottom chrome.
         val bottomChromeTopPx = minOf(
             bottomClusterTopPx,
-            if (railSeamOffsetPx < 0) railSectionTopPx + railSeamOffsetPx else Int.MAX_VALUE,
+            if (railSeamOffsetPx < 0) seamSpanTopPx + railSeamOffsetPx else Int.MAX_VALUE,
         )
         val osdStripMaxPx = landscapeLaneMaxPx(
             held = landscapeHeld,
@@ -1483,7 +1489,8 @@ fun CameraScreen(
             targetValue = exposureMeterLiftPx(
                 rootHeightPx = rootHeightPx,
                 meterHeightPx = exposureMeterHeightPx,
-                clusterHeightPx = bottomClusterLiveHeightPx,
+                // Plus the seam lift: an open ruler rides it with the dial chips.
+                clusterHeightPx = bottomClusterLiveHeightPx - railSeamOffsetPx.coerceAtMost(0),
                 gapPx = eightDpPx,
                 minTopPx = topBarDefaultTopPx + topBarSeamOffsetPx + topBarHeightPx + eightDpPx,
             ),
@@ -1708,8 +1715,21 @@ fun CameraScreen(
             verticalArrangement = Arrangement.Top,
         ) {
             // Keep the dial cluster composed at zero height in compact rest state. Disposing it
-            // on close skipped the MF-assist cleanup and left the auto loupe enabled.
-            manualPane()
+            // on close skipped the MF-assist cleanup and left the auto loupe enabled. It lifts with
+            // the rail section (seamSpanTopPx), measured at rest before the offset like the rail.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coordinates ->
+                        if (openManualDial == null) {
+                            dialClusterRestTopPx = coordinates.positionInRoot().y.roundToInt()
+                            dialClusterRestHeightPx = coordinates.size.height
+                        }
+                    }
+                    .offset { IntOffset(0, railSeamOffsetPx) },
+            ) {
+                manualPane()
+            }
             if (detailsVisible || openManualDial != null) Spacer(modifier = Modifier.height(8.dp))
             capturePane()
         }

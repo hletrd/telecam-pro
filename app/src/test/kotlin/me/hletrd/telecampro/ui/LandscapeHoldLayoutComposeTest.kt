@@ -10,6 +10,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.toSize
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
 import me.hletrd.telecampro.R
@@ -154,6 +155,25 @@ class LandscapeHoldLayoutComposeTest {
                     assertTrue("stack items overlap at $orientation: $a / $b", !a.overlaps(b))
                 }
             }
+        }
+    }
+
+    /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
+    private fun slot(description: String): Rect =
+        compose.onAllNodes(hasContentDescription(description), useUnmergedTree = true)
+            .fetchSemanticsNodes().first().let { Rect(it.positionInRoot, it.size.toSize()) }
+
+    // 840 dp tall puts the 4:3 preview's bottom edge across the focal rail, so the seam rule lifts
+    // it. On PMA110 the status bar does the same at 905 dp (device-seen 2026-11-09, held sideways
+    // with the shooting info open): the lifted rail landed on the dial chips above it.
+    @Config(qualifiers = "w411dp-h840dp-xxhdpi")
+    @Test fun `a rail the seam rule lifts takes the dial chips with it`() {
+        show(busyVideo.copy(isRecording = false), details = true)
+        for (orientation in listOf(0, 90)) {
+            hold(orientation)
+            val dial = slot(context.getString(R.string.label_mode))
+            val rail = slot("13× zoom")
+            assertTrue("dial row at $orientation ends ${dial.bottom} over rail ${rail.top}", dial.bottom <= rail.top)
         }
     }
 

@@ -882,8 +882,9 @@ internal fun previewTopPx(
 
 /**
  * Vertical offset (px, never positive) for the bottom cluster's RAIL SECTION — the M exposure
- * readout, the focal rail and the compact Fn button. The bottom twin of the TopBar seam rule: chrome
- * sits wholly on the image or wholly on the band, never across the edge.
+ * readout, the focal rail and the compact Fn button — and, with the shooting info open, the dial
+ * chips above it, which lift by the same amount so the rail never lands on them. The bottom twin of
+ * the TopBar seam rule: chrome sits wholly on the image or wholly on the band, never across the edge.
  *
  * [previewTopPx] lifts a 4:3 preview to clear the cluster but may not climb into the top chrome, so
  * where status bar + top row + the 3:4 image + the cluster outgrow the window, the image's bottom
@@ -892,8 +893,9 @@ internal fun previewTopPx(
  * broken PHOTO layout. The band below is what is too short, so the section moves UP onto the image,
  * its bottom [gapPx] above the edge, exactly when its rest span — widened by [gapPx] so a bare touch
  * counts too — contains the edge. 16:9 (the whole cluster already on the image) and any preview that
- * clears the cluster answer 0. [railTopPx]/[railBottomPx] are the section's REST span (measured
- * before the offset is applied), in the same coordinates as [previewBottomPx].
+ * clears the cluster answer 0. [railTopPx]/[railBottomPx] are the lifted span's REST extent (the
+ * dial chips' top when they show, else the section's; measured before the offset is applied), in
+ * the same coordinates as [previewBottomPx].
  */
 internal fun bottomRailSeamOffsetPx(
     previewBottomPx: Int,
