@@ -122,7 +122,8 @@ test -n "$EVIDENCE_APK" && test -f "$EVIDENCE_APK"
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
 adb connect <device-ip>:<port>
 # debug installs as me.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
-# release me.hletrd.telecampro, so runtime permissions must be granted once per package.
+# release me.hletrd.telecampro, so runtime permissions must be granted once per package, and each
+# keeps its own settings file. Its launcher entry is "TeleCam Debug" (app/src/debug/res).
 adb install -r "$EVIDENCE_APK"
 adb shell am start -n me.hletrd.telecampro.debug/me.hletrd.telecampro.MainActivity
 
@@ -137,6 +138,9 @@ adb exec-out screencap -p > /tmp/shot.png
 investigation, install and retain the latest verified product build with the accumulated fixes.
 Do not restore an older product APK as cleanup. Temporary probe packages and scoped test settings
 may be cleaned up separately; verify the final installed product hash and report its build.
+A release smoke test leaves a SECOND app beside the debug one, with its own (default) settings.
+Under one shared launcher name the owner opened the other entry and read it as "every setting
+resets on relaunch" (2026-11-08), which is why the debug build now carries its own name.
 
 `pm grant` for runtime permissions **fails on ColorOS** (`GRANT_RUNTIME_PERMISSIONS not allowed`) —
 the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once.
@@ -527,10 +531,6 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   re-find it after every turn. Do not reintroduce a layout keyed on window aspect: a turned handset
   window is ~420 dp tall, so a top bar plus a bottom cluster eat it from both ends and push the rest
   of the chrome back onto the image — measured on PMA110 when exactly that was tried.
-- **Sensor orientation = 90; the activity is portrait-locked ON PHONES (see the entry above for
-  large screens); preview verified upright on device.** The
-  camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
-  the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
   **Turning the phone must not move the layout either (owner report 2026-11-08: held sideways the
   UI overlapped and sat in odd places).** The bottom cluster's rest height places the preview
   (`previewTopPx`) and drives the rail seam rule, so anything that turns INSIDE the cluster keeps its
@@ -543,6 +543,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   column inboard (`EndWrapColumn`). Pinned by `LandscapeHoldLayoutComposeTest`, which must run
   `@GraphicsMode(NATIVE)`: the legacy shadow measures a label as a few pixels and hides all three.
   Host-rendered at PMA110's 411 x 905 dp; the on-device look is pending.
+- **Sensor orientation = 90; the activity is portrait-locked ON PHONES (see the entry above for
+  large screens); preview verified upright on device.** The
+  camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
+  the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
   returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
   device). It still passes `sensorOrientation` to the renderer purely to pick the preview **aspect**
   (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 −

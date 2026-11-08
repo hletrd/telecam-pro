@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The debug build is a separate app (applicationIdSuffix ".debug") with its own settings
+         file. Under the release name the two launcher entries were indistinguishable, so opening
+         the other one read as "every setting reset" (owner report 2026-11-08). -->
+    <string name="app_name" translatable="false">TeleCam Debug</string>
+</resources>
