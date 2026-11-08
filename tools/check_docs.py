@@ -2675,37 +2675,51 @@ else:
         and "\"nativelog\"" not in read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"),
         "native-log history records the retired debug EGL flag without reviving vendor plumbing",
     )
+# Owner decision 2026-11-08: the Loupe Overview turns with the main view (afocal 180° in TELE plus
+# the window term), superseding the 2026-07-28 rule under which it declined the afocal term and showed
+# the converter-fed stream upside down. The public summary and both top-level authorities must name
+# the overview among the corrected views and must not revive the retired exception or its anchor.
 readme = read("README.md")
 check(
     "flip corrected everywhere" not in readme
     and "main viewfinder, stills, and video" in readme
-    and "Loupe Overview" in readme
-    and "raw delivered" in readme,
-    "README scopes afocal correction around the honest same-stream overview exception",
+    and "the Loupe Overview turns with the main view" in re.sub(r"\s+", " ", readme)
+    and "raw delivered" not in readme,
+    "README lists the Loupe Overview among the afocal-corrected views",
 )
-loupe_exception_anchor = "#loupe-overview-afocal-exception"
+loupe_orientation_anchor = "#loupe-overview-orientation"
+retired_loupe_exception_anchor = "loupe-overview-afocal-exception"
 unqualified_afocal_claim = re.compile(
     r"\b(?:all\s+)?(?:the\s+)?(?:live\s+)?preview\b.{0,100}"
     r"\b(?:saved|results?|outputs?)\b.{0,60}\bcorrect",
     re.IGNORECASE | re.DOTALL,
 )
+claude_intro = claude.split("## Non-negotiable constraints", 1)[0]
+architecture_intro = architecture.split("## Module Map", 1)[0]
 check(
-    unqualified_afocal_claim.search(claude.split("## Non-negotiable constraints", 1)[0]) is None
-    and unqualified_afocal_claim.search(architecture.split("## Module Map", 1)[0]) is None
+    unqualified_afocal_claim.search(claude_intro) is None
+    and unqualified_afocal_claim.search(architecture_intro) is None
     and re.search(r"main viewfinder and\s+saved still/video results must be corrected", claude)
     and re.search(r"main viewfinder and\s+saved still/video results must be corrected", architecture)
-    and loupe_exception_anchor in claude
-    and loupe_exception_anchor in architecture
-    and 'id="loupe-overview-afocal-exception"' in read("docs/FIELD_CHECKS.md")
-    and "raw, inverted field" in claude
-    and "raw, inverted field" in architecture,
-    "top-level afocal authorities scope correction around the Loupe Overview exception",
+    and re.search(r"\[Loupe Overview turns with the main view\]\(docs/FIELD_CHECKS\.md"
+                  + re.escape(loupe_orientation_anchor) + r"\)", claude_intro)
+    and re.search(r"\[Loupe Overview turns with the main view\]\(FIELD_CHECKS\.md"
+                  + re.escape(loupe_orientation_anchor) + r"\)", architecture_intro)
+    and 'id="loupe-overview-orientation"' in read("docs/FIELD_CHECKS.md")
+    and all(
+        retired_loupe_exception_anchor not in text
+        for text in (claude, architecture, read("docs/FIELD_CHECKS.md"))
+    )
+    and "deliberate exception" not in claude_intro
+    and "deliberate exception" not in architecture_intro,
+    "top-level afocal authorities include the Loupe Overview in the corrected views",
 )
 
-# The overview once shared renderer rotation state with the main draw. It now owns an explicit
-# per-draw window-only override, which intentionally leaves the same converter-fed stream raw and
-# inverted. Join executable code, current authority, rerunnable field criteria, and the preserved
-# historical backlog label so none can independently revive the old "structurally impossible" rule.
+# The overview first shared renderer rotation state with the main draw; from 2026-07-28 it owned a
+# per-draw window-only override that left the converter-fed stream upside down; since 2026-11-08
+# (owner decision) the same per-draw override carries the main view's content rotation plus the
+# window term. Join executable code, current authority, the OPEN rerunnable field criterion, and the
+# preserved historical backlog labels so none can independently revive either retired rule.
 gl_pipeline = read("app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt")
 flip_renderer = read("app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt")
 field_checks = read("docs/FIELD_CHECKS.md")
@@ -2739,18 +2753,35 @@ check(
     and "radius by 1.2" not in rec_border_authority,
     "REC border authority keeps the device-accepted platform radius unscaled",
 )
+finder_rotation_expression = (
+    "renderer.contentRotationDegrees() + RotationMath.windowPreviewRotationDegrees(windowRotationDeg)"
+)
 check(
-    "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)" in gl_pipeline
-    and "raw and 180° inverted relative to the corrected main" in gl_pipeline
-    and "not an upright or pre-converter-world reference" in gl_pipeline
-    and "same converter-fed stream" in flip_renderer
-    and "making it raw and inverted relative to the main view" in flip_renderer
-    and "window-rotation term" in claude
-    and "raw, inverted field" in claude
+    "val finderRotationDeg = RotationMath.normalize(" in gl_pipeline
+    and finder_rotation_expression in gl_pipeline
+    and "rotationOverrideDeg = finderRotationDeg" in gl_pipeline
+    and "rotationDegrees = finderRotationDeg" in gl_pipeline
+    and "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)"
+    not in gl_pipeline
+    and "rotationDegrees = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)"
+    not in gl_pipeline
+    and "afocal 180° included since 2026-11-08" in flip_renderer
+    and "The Loupe Overview turns with the main view (owner decision 2026-11-08" in claude
+    and "`finderRotationDeg`" in claude
+    and "`finderRotationDeg`" in architecture
     and "The Loupe Overview draws UPRIGHT" not in claude
     and all(
         stale not in "\n".join((claude, architecture, flip_renderer, gl_pipeline))
         for stale in (
+            # The 2026-07-28 rule (window term only, afocal declined), retired 2026-11-08.
+            "omits the afocal term",
+            "raw, inverted field",
+            "raw and 180° inverted relative to the corrected main",
+            "making it raw and inverted relative to the main view",
+            "not an upright or pre-converter-world reference",
+            "this overview (window term only)",
+            "Loupe Overview is the deliberate exception",
+            # Its earlier "upright pre-converter world" framing.
             "operator wants UPRIGHT",
             "UPRIGHT, deliberately NOT carrying",
             "world the right way up in the corner",
@@ -2758,8 +2789,12 @@ check(
             "upright overview stands in for the PRE-CONVERTER world",
         )
     )
-    and "one-call `rotationOverrideDeg`" in field_checks
-    and "raw, inverted field" in field_checks,
+    and "C2. Loupe Overview turns with the main view — ◯ OPEN 2026-11-08" in field_checks
+    and "`rotationOverrideDeg` = `finderRotationDeg`" in field_checks
+    and "the corner overview is upright too, in the same orientation as the main view"
+    in re.sub(r"\s+", " ", field_checks)
+    and "raw, inverted field" not in field_checks
+    and "C2. Loupe overview per-draw orientation — ✅ DEVICE-VERIFIED" not in field_checks,
     "committed Loupe Overview criteria match the per-draw orientation authority",
 )
 check(
@@ -2778,11 +2813,15 @@ check(
     "pipeline rollback and REC authorities preserve independent packet ownership",
 )
 if backlog is None:
-    skip_private("Loupe history labels the superseded orientation rule", "docs/BACKLOG.md")
+    skip_private("Loupe history labels both superseded orientation rules", "docs/BACKLOG.md")
 else:
     check(
-        "SUPERSEDED — Loupe Overview" in backlog and "predates the later per-draw" in backlog,
-        "Loupe history labels the superseded orientation rule",
+        "SUPERSEDED — Loupe Overview" in backlog
+        and "predates the later per-draw" in backlog
+        and "**2026-11-08 (owner decision):** that 2026-07-28 orientation rule is itself superseded"
+        in backlog
+        and "today's same-stream overview therefore shows the raw, inverted field" not in backlog,
+        "Loupe history labels both superseded orientation rules",
     )
 camera_state = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt")
 finder_tests = read("app/src/test/kotlin/me/hletrd/telecampro/camera/TeleFinderVisibilityTest.kt")

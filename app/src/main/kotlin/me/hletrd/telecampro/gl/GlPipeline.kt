@@ -1234,6 +1234,14 @@ class GlPipeline(
                 // the one case the single stream makes it genuinely wider than the main view.
                 if (teleFinder && punchIn && previewW > 0 && previewH > 0) {
                     val rect = finderRectFor(previewW.toFloat(), previewH.toFloat())
+                    // The overview turns exactly like the main view: the shared content rotation
+                    // (the afocal 180° in TELE unless the accepted source arrives pre-rotated) plus
+                    // the window term. It shows the same corrected field, only wider, and its
+                    // framing hint must take the same rotation (owner decision 2026-11-08; it used
+                    // to decline the afocal term and show the converter-fed stream inverted).
+                    val finderRotationDeg = RotationMath.normalize(
+                        renderer.contentRotationDegrees() + RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
+                    )
                     // Bottom-right corner in GL's bottom-left-origin pixel space (the Compose border
                     // mirrors the same rect from its top-left-origin space via the shared seam).
                     val fx = rect.x.toInt()
@@ -1258,18 +1266,8 @@ class GlPipeline(
                                 // of our own (moot today — the finder requires TC, which the front
                                 // route forces off).
                                 mirrorX = false,
-                                // Deliberately omit the afocal 180° applied to the magnified main
-                                // view, while retaining the window term. Today both draws consume
-                                // the SAME converter-fed stream, so this overview truthfully shows
-                                // that stream raw and 180° inverted relative to the corrected main
-                                // view. It is not an upright or pre-converter-world reference.
-                                //
-                                // A genuinely upright overview requires the future second WIDE
-                                // stream from a lens the converter is not clamped to. Window-relative
-                                // uprightness applies only to that future source; this same-stream
-                                // exception merely declines the afocal term. The window term stays
-                                // 0 on a portrait-locked phone.
-                                rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
+                                // Same rotation as the main view (see finderRotationDeg above).
+                                rotationOverrideDeg = finderRotationDeg,
                             )
                             // iPhone-style framing hint: a thin rectangle inside the overview
                             // marking WHERE THE MAGNIFIED MAIN VIEW IS LOOKING. Drawn with
@@ -1286,21 +1284,18 @@ class GlPipeline(
                                     (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(0.01f),
                                 centerTexX = loupeX,
                                 centerTexY = loupeY,
-                                // TELE: although today's overview pixels are the raw/inverted
-                                // converter-fed stream, the framing rectangle still expresses the
-                                // main view's field on the declared pre-converter scale — a 4.3×
-                                // converter shrinks it 4.3× beyond the loupe fraction
-                                // (operator-specified 2026-07-31; see loupeHintRect).
+                                // TELE: the framing rectangle expresses the main view's field on
+                                // the declared pre-converter scale — a 4.3× converter shrinks it
+                                // 4.3× beyond the loupe fraction (operator-specified 2026-07-31;
+                                // see loupeHintRect).
                                 fieldScale = finderFieldScale,
-                                // MUST match the overview draw's own rotation above — not
-                                // previewRotationDeg. The hint marks a position INSIDE that box, so
-                                // if the box rotates and the hint does not, the mark lands
-                                // point-mirrored from the field it claims to describe (the same
-                                // class of bug the y-sign bisect chased). This was a literal 0 while
-                                // the box was pinned upright; once the box took the WINDOW term the
-                                // two silently diverged in a landscape window, so it reads the same
-                                // expression. Still 0 on any phone, where the window never rotates.
-                                rotationDegrees = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
+                                // MUST match the overview draw's own rotation above. The hint marks
+                                // a position INSIDE that box, so if the box rotates and the hint
+                                // does not, the mark lands point-mirrored from the field it claims
+                                // to describe (the same class of bug the y-sign bisect chased). In
+                                // TELE that rotation is the afocal 180°, so an off-centre loupe is
+                                // what exposes a mismatch here.
+                                rotationDegrees = finderRotationDeg,
                             )
                             val hx = hint.x.toInt()
                             val hy = hint.y.toInt()

@@ -20,10 +20,11 @@ teleconverter** that clamps onto the phone's **3× / 70 mm periscope** lens (tur
 
 Two consequences of the afocal converter drive the whole design:
 1. **The image arrives rotated 180°** (afocal telescope, no erecting prism). The main viewfinder and
-   saved still/video results must be corrected. The same-stream
-   [Loupe Overview is the deliberate exception](docs/FIELD_CHECKS.md#loupe-overview-afocal-exception):
-   it omits the afocal term and may show the raw, inverted field. Vertical + horizontal flip = 180°
-   rotation (parity-preserving, NOT a mirror).
+   saved still/video results must be corrected, and the same-stream
+   [Loupe Overview turns with the main view](docs/FIELD_CHECKS.md#loupe-overview-orientation)
+   (owner decision 2026-11-08; from 2026-07-28 it declined the afocal term and showed the
+   converter-fed stream upside down). Vertical + horizontal flip = 180° rotation (parity-preserving,
+   NOT a mirror).
 2. **Exit light is ~collimated**, so the phone lens focuses **near infinity** → manual focus, with a
    nonlinear slider that gives resolution around ∞, is essential.
 
@@ -281,20 +282,24 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
-- **The Loupe Overview omits the afocal term per draw (user-specified 2026-07-28).** Today's inset
-  re-draws the SAME converter-fed stream, so omitting the afocal correction leaves that box showing
-  the raw, inverted field relative to the converter-corrected main view. The omission becomes an
-  upright world view only when the overview is fed by a future true-WIDE lens that the converter is
-  not clamped to. The current finder draw passes only the window-rotation term through
-  `rotationOverrideDeg` (0 on the portrait-locked phone), and the framing hint takes that same term
-  to match (a hint that kept the afocal rotation inside a box that declined it would land
-  point-mirrored). Rotation is otherwise renderer STATE shared by every draw role, so this override
-  is an explicit per-call opt-in used by exactly two draws — the main preview (content + window term,
-  only when the window is rotated) and this overview (window term only) — never a settable field.
-  Device-verified by A/B: the overview's
-  vertical gradient inverted (top-brighter −7.3 → bottom-brighter +10.4) while the main view's was
-  unchanged (+0.9 → +0.5). **HONESTY LIMIT:** the genuinely upright version is the second-stream
-  wide finder on the BACKLOG; declining a rotation on the current same stream cannot manufacture it.
+- **The Loupe Overview turns with the main view (owner decision 2026-11-08, superseding the
+  user-specified 2026-07-28 rule; NOT yet device-verified).** In teleconverter mode the corner box
+  must be flipped like the main view (owner, 2026-11-08). `GlPipeline` draws it with
+  `finderRotationDeg` = the shared content rotation (`renderer.contentRotationDegrees()`: the afocal
+  180° in TELE, 0 when the accepted source arrives pre-rotated) + the window term
+  (`RotationMath.windowPreviewRotationDegrees`, 0 on the portrait-locked phone), so the box shows the
+  same corrected field as the main view, only wider while the loupe magnifies. The framing hint takes
+  that SAME `finderRotationDeg`: a hint rotated differently from its box lands point-mirrored, and
+  only an off-centre loupe exposes it (180° maps the centre onto itself). Rotation is otherwise
+  renderer STATE shared by every draw role, so `rotationOverrideDeg` is an explicit per-call opt-in
+  used by exactly two draws — the main preview (content + window term, only when the window is
+  rotated) and this overview (content + window term, every frame) — never a settable field; the
+  encoder/analysis draws keep gravity framing. History: from 2026-07-28 the overview passed the
+  window term alone and so showed the converter-fed stream upside down beside the corrected main
+  view (device A/B then: overview vertical gradient −7.3 → +10.4, main +0.9 → +0.5); that rule and
+  its evidence are superseded. The new rule remains a field check (`docs/FIELD_CHECKS.md` C2) until
+  run on PMA110 with the converter mounted. **HONESTY LIMIT:** turning the box does not make it a
+  second camera; the genuinely wide finder is the second-stream design on the BACKLOG.
 - **Loupe Overview is HONEST about the single stream (gate corrected 2026-07-29).**
   The Assist toggle (default OFF, persisted) draws a bottom-right corner viewport re-drawing the
   FULL current camera frame while the PUNCH-IN LOUPE is active at either TELE or unified zoom >= 3x.

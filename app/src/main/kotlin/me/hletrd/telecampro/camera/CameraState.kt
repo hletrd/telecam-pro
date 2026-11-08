@@ -971,12 +971,13 @@ fun finderRect(
  * quotient, already computed by the caller from the values it passed to the main draw, so the hint
  * cannot drift from the framing it claims to describe.
  *
- * [rotationDegrees] is the renderer's own texcoord rotation. Both draws apply it identically, so a
- * texcoord point lands at the same relative place in both — but that place is ROTATED, and the
- * finder is only ever reachable in tele, where the afocal correction is 180°. A centred loupe is
- * therefore unaffected (180° maps 0.5 to 0.5) and only a tapped, off-centre loupe can expose a sign
- * error here; the device check for this feature is to tap off-centre and confirm the hint follows
- * the same corner the magnified view actually shows.
+ * [rotationDegrees] is the overview draw's own texcoord rotation, which since 2026-11-08 (owner
+ * decision) is the main view's: the shared content rotation plus the window term. Both draws apply
+ * it identically, so a texcoord point lands at the same relative place in both — but that place is
+ * ROTATED, and in TELE the rotation is the afocal 180°. A centred loupe is therefore unaffected
+ * (180° maps 0.5 to 0.5) and only a tapped, off-centre loupe can expose a sign error here; the
+ * device check for this feature (docs/FIELD_CHECKS.md C2) is to tap off-centre and confirm the hint
+ * follows the same corner the magnified view actually shows.
  *
  * The result is clamped INSIDE the finder box: at zoomComp < 1 (transient, mid-gesture zoom-out) the
  * main view can genuinely be looking wider than the delivered frame, and a hint spilling past its
@@ -990,11 +991,12 @@ fun loupeHintRect(
     rotationDegrees: Int,
     // The overview PRETENDS to be this many times wider than the delivered frame. 1 = honest
     // single-stream geometry (the hint marks the loupe crop within the frame the box actually
-    // draws). In TELE the operator reads the upright corner box as the PRE-CONVERTER world — the
-    // naked-eye orientation reference the un-rotated draw already role-plays — so the hint must
-    // mark the main view's field ON THAT SCALE: a 4.3× converter makes the magnified view 4.3×
-    // narrower against the world than against the delivered frame (operator-specified 2026-07-31,
-    // same class of deliberate declination as the overview's rotationOverrideDeg = 0). Both the
+    // draws). In TELE the operator reads the corner box as the wider world around the magnified
+    // view on the PRE-CONVERTER scale, so the hint must mark the main view's field ON THAT SCALE:
+    // a 4.3× converter makes the magnified view 4.3× narrower against the world than against the
+    // delivered frame (operator-specified 2026-07-31). This is a SCALE role-play only — the box's
+    // pixels are still the one delivered stream, and its orientation is the main view's (owner
+    // decision 2026-11-08), which the hint follows through [rotationDegrees]. Both the
     // size AND the centre offset divide by it: a point in the delivered frame sits at
     // 0.5 + (p − 0.5)/scale of the pretend-wide field the box stands in for.
     fieldScale: Float = 1f,

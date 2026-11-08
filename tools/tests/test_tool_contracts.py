@@ -544,6 +544,10 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
+            "top-level afocal authorities include the Loupe Overview in the corrected views",
+            result.stdout,
+        )
+        self.assertIn(
             "active open FIELD_CHECKS references name a runnable field-check identity",
             result.stdout,
         )
@@ -728,18 +732,24 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
-    def test_committed_export_rejects_unqualified_upright_loupe_claim(self) -> None:
-        def restore_upright_claim(root: Path) -> None:
+    def test_committed_export_rejects_restored_afocal_omission_in_loupe_authority(self) -> None:
+        # Owner decision 2026-11-08: the overview turns with the main view. Reviving the retired
+        # 2026-07-28 rule (afocal term declined) in the CLAUDE authority must fail the gate.
+        def restore_omission_rule(root: Path) -> None:
             path = root / "CLAUDE.md"
             text = path.read_text(encoding="utf-8")
-            marker = "The Loupe Overview omits the afocal term per draw"
+            marker = "The Loupe Overview turns with the main view (owner decision 2026-11-08"
             self.assertIn(marker, text)
             path.write_text(
-                text.replace(marker, "The Loupe Overview draws UPRIGHT", 1),
+                text.replace(
+                    marker,
+                    "The Loupe Overview omits the afocal term per draw (user-specified 2026-07-28",
+                    1,
+                ),
                 encoding="utf-8",
             )
 
-        result, _ = run_documentation_gate_from_committed_export(restore_upright_claim)
+        result, _ = run_documentation_gate_from_committed_export(restore_omission_rule)
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
@@ -751,15 +761,36 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         fixtures = (
             (
                 "app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt",
+                "afocal 180° included since 2026-11-08",
                 "making it raw and inverted relative to the main view",
-                "the operator wants UPRIGHT",
                 "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
             ),
             (
+                # The retired 2026-07-28 overview draw: window term only, afocal declined.
                 "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
-                "It is not an upright or pre-converter-world reference.",
-                "The operator wants UPRIGHT.",
+                "rotationOverrideDeg = finderRotationDeg,",
+                "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),",
                 "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
+            ),
+            (
+                # A framing hint that no longer takes its box's rotation lands point-mirrored.
+                "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
+                "rotationDegrees = finderRotationDeg,",
+                "rotationDegrees = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),",
+                "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
+            ),
+            (
+                "README.md",
+                "the Loupe Overview turns\n  with the main view.",
+                "the Loupe Overview shows\n  the raw delivered stream.",
+                "FAIL  README lists the Loupe Overview among the afocal-corrected views",
+            ),
+            (
+                "CLAUDE.md",
+                "[Loupe Overview turns with the main view](docs/FIELD_CHECKS.md#loupe-overview-orientation)",
+                "[Loupe Overview is the deliberate exception]"
+                "(docs/FIELD_CHECKS.md#loupe-overview-afocal-exception)",
+                "FAIL  top-level afocal authorities include the Loupe Overview in the corrected views",
             ),
             (
                 "docs/ARCHITECTURE.md",

@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-11-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Thirty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-11-08):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · A20 ◐ · A21 ◐ · A22 ✅ · A23 ◐ · A24 ✅ · A25 ✅ · A26 ✅ · A27 ◐ · A28 ◐ · A29 ✅ · A30 ✅ · A31 ☐ · A32 ✅ · B1 ✅ · C1 ✅ · C2 ☐ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Thirty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -27,6 +27,7 @@ inside it, **A16** needs a face in front of the rear, TELE and front routes with
 **A27** needs the POCO cadence root cause, a decision on TB331FC's 2688×1512 offer and the S20, S23 Ultra and PMA110 runs,
 **A28** needs the RAW still profile on the Flip6, S23 Ultra, S20, POCO and PMA110,
 **A31** needs a first run of the experimental vivo OEM Log on a vivo X300 Ultra or X500 Pro Max (none was ever available),
+**C2** needs the converter mounted with Loupe and Loupe Overview on, to confirm the corner box now turns with the main view,
 **D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -1979,32 +1980,43 @@ Procedure, kept for re-runs after any rotation change:
 > the converter **off**, that is expected and not a bug — TELE applies a 180° correction for an
 > inversion the optic would be causing.
 
-<a id="loupe-overview-afocal-exception"></a>
+<a id="loupe-overview-orientation"></a>
 
-### C2. Loupe overview per-draw orientation — ✅ DEVICE-VERIFIED 2026-07-28
+### C2. Loupe Overview turns with the main view — ◯ OPEN 2026-11-08
 
-The corner overview deliberately does **not** share the main view's afocal 180° correction. Its
-one-call `rotationOverrideDeg` carries only the window-rotation term (0 on the portrait-locked
-phone), and the framing hint uses the same term. With the converter mounted, the main view must be
-upright while today's same-stream overview shows the converter-fed **raw, inverted field**. That is
-the current executable contract, not a claim that the inset is already a true upright wide finder.
-The optional private `docs/BACKLOG.md`, when present, carries the second-stream design history; this
-section is the committed clean-clone authority for today's same-stream limitation.
+Owner decision 2026-11-08: in teleconverter mode the corner overview must be flipped like the main
+view. `GlPipeline` draws the overview, and places its yellow framing hint, with one per-call
+`rotationOverrideDeg` = `finderRotationDeg`: the shared content rotation (the afocal 180° in TELE,
+0 when the accepted source arrives pre-rotated) plus the window-rotation term (0 on the
+portrait-locked phone). The box still re-draws the one camera stream and is only wider than the main
+view while the loupe magnifies, so this check is about ORIENTATION, not a true wide finder. The
+change is host-built only; the PMA110 was offline when it landed.
 
-Procedure, kept for re-runs:
-
+- Install the immutable debug build that carries the 2026-11-08 change.
 - Mount the converter, enter TELE photo mode, enable **Loupe** and **Loupe Overview** (Menu →
-  Assist), and activate the punch-in loupe against a scene with an unmistakable top and bottom.
+  Assist), and activate the punch-in loupe against a scene with an unmistakable top and bottom and
+  left and right (legible text works).
+- Tap the main view well off centre (upper-left, say) so the loupe moves there.
 
-**Pass:** the main view is converter-corrected upright; the corner overview shows the same delivered
-stream without that afocal correction and is therefore 180° inverted relative to the main view. In
-a rotated large-screen window, the overview and its framing hint must take the same window term.
+**Pass:** the main view is converter-corrected upright and the corner overview is upright too, in
+the same orientation as the main view (text reads the same way in both); the framing hint marks the
+same corner of the scene the magnified main view shows (an upper-left tap moves it toward the box's
+upper-left). In a rotated large-screen window, the overview and its hint take the same window term
+as the main view. Record the build hash, the device, and a screenshot of the off-centre case.
+**Fail:** the overview is upside down relative to the main view → `finderRotationDeg` in
+`GlPipeline`; the hint sits in the point-mirrored corner → the hint's `rotationDegrees` no longer
+matches the box's rotation.
 
-Device A/B evidence for the override is preserved in `CLAUDE.md`: the overview's vertical gradient
-changed sign while the main view stayed unchanged. **Superseded historical result:** on 2026-07-29
-the operator recorded the two draws as “the same way up” under the old criterion. Keep that report as
-historical evidence, but do not reuse it as the current pass condition; the contradictory 2026-07-28
-backlog conclusion is explicitly marked superseded.
+> With TELE on and the converter **off**, the main view and the overview both read upside down.
+> That is expected (see C1), not a C2 failure.
+
+**Superseded history.** From 2026-07-28 to 2026-11-08 the overview deliberately declined the afocal
+term (window term alone) and showed the converter-fed stream upside down beside the corrected main
+view. C2 was recorded DEVICE-VERIFIED for that rule on 2026-07-28 (the A/B preserved in `CLAUDE.md`:
+the overview's vertical gradient changed sign while the main view's did not); that result says
+nothing about the current rule. On 2026-07-29 the operator recorded the two draws as "the same way
+up" under the earlier criterion, with no recorded build; it matches today's pass condition but
+predates the current code, so it does not close C2.
 
 ### C3. TC OIS (optional) — ✅ CLOSED 2026-07-28 (operator; no observable difference)
 

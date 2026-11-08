@@ -24,8 +24,8 @@ phone's periscope lens.
 
 ## Features
 
-- 180° converter flip corrected in the main viewfinder, stills, and video (the Loupe Overview shows
-  the raw delivered stream).
+- 180° converter flip corrected in the main viewfinder, stills, and video; the Loupe Overview turns
+  with the main view.
 - Converter presets per phone, with true focal length in the OSD and EXIF.
 - Manual focus tuned for near-infinity, PASM, 1/3-stop ISO, WB / Kelvin, face-priority AF, AEB,
   timelapse.

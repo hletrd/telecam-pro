@@ -473,12 +473,12 @@ class FlipRenderer internal constructor(
         mirrorX: Boolean = false,
         // Per-draw content-rotation override, in place of the shared [rotationDeg] field.
         //
-        // Exists for ONE caller: the TELE corner overview deliberately omits the afocal 180° that
-        // corrects the magnified main view. Today's overview re-draws the same converter-fed stream,
-        // making it raw and inverted relative to the main view; only a
-        // future true-wide source can be genuinely upright. Rotation is otherwise renderer STATE,
-        // so this stays an explicit per-call opt-in rather than a settable field — null keeps the
-        // shared value, and encoder/analysis/main-preview roles never pass it.
+        // The two preview-space draws add the WINDOW term on top of the shared content rotation:
+        // the main preview only while a large-screen window is rotated, and the Loupe Overview on
+        // every frame, so the corner box shows the same corrected field as the main view (the
+        // afocal 180° included since 2026-11-08). Rotation is otherwise renderer STATE, so this
+        // stays an explicit per-call opt-in rather than a settable field — null keeps the shared
+        // value, and the encoder/analysis roles never pass it (they frame by gravity).
         rotationOverrideDeg: Int? = null,
     ) {
         val contentRotationDeg = rotationOverrideDeg ?: rotationDeg

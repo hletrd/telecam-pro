@@ -35,7 +35,7 @@ the user asks. Important states belong in the OSD, Fn, or menu rows. This paragr
 [`UX_POLICY.md`](UX_POLICY.md) adds maintainer examples when present.
 
 Two critical consequences of the afocal converter drive the entire design:
-- **Image rotation**: The afocal telescope delivers light rotated 180° (no erecting prism). The main viewfinder and saved still/video results must be corrected. The same-stream [Loupe Overview is the deliberate exception](FIELD_CHECKS.md#loupe-overview-afocal-exception): it omits the afocal term and may show the raw, inverted field. Vertical flip + horizontal flip = 180° rotation (parity-preserving, not a mirror).
+- **Image rotation**: The afocal telescope delivers light rotated 180° (no erecting prism). The main viewfinder and saved still/video results must be corrected, and the same-stream [Loupe Overview turns with the main view](FIELD_CHECKS.md#loupe-overview-orientation) (owner decision 2026-11-08; from 2026-07-28 it declined the afocal term and showed the converter-fed stream upside down). Vertical flip + horizontal flip = 180° rotation (parity-preserving, not a mirror).
 - **Near-infinity focus**: Exit light is approximately collimated, so the phone lens focuses near infinity. Manual focus with a nonlinear slider is essential for fine-tuning that critical zone.
 
 ---
@@ -900,6 +900,15 @@ and cannot perturb renderer state the preview and encoder share). Its size is th
 — device-measured at 39.5% of the overview against the 40% `PUNCH_IN_CROP` implies. Its placement
 sign was device-bisected on the converter route, where the afocal correction is 180°, so a centred
 loupe is unaffected and only an off-centre tap exposes an error.
+**Orientation (owner decision 2026-11-08):** the overview turns with the main view. `GlPipeline`
+draws the box, and places its hint, with one `finderRotationDeg` = the shared content rotation
+(`renderer.contentRotationDegrees()`: the afocal 180° in TELE, 0 for a pre-rotated accepted source)
+plus `RotationMath.windowPreviewRotationDegrees(windowRotationDeg)`, passed as the per-call
+`rotationOverrideDeg` and never written into the shared rotation state the encoder/analysis draws
+frame by. In TELE the corner box is therefore flipped exactly like the main view. From 2026-07-28 to
+2026-11-08 it took the window term alone and showed the converter-fed stream upside down beside the
+corrected main view; that rule and its device A/B are superseded. The new orientation is not yet
+device-verified (`FIELD_CHECKS.md` C2).
 Since the row is a sub-option of the loupe, the Assist toggle is DISABLED while the loupe is off
 (same shape as Zebra Level under Zebra) — ungated it reported "On" while provably drawing nothing,
 with its parent switch under a different section header. **Single-stream honesty**: the HAL's
