@@ -232,6 +232,22 @@ internal fun showHalfPressLabel(
  */
 internal fun chromeToggleVisible(compact: Boolean, isDefault: Boolean): Boolean = !compact || !isDefault
 
+/** The compact top-bar toggles that keep a fixed slot (the timer draws only while armed). */
+internal enum class ChromeToggle { FLASH, ASPECT, GRID }
+
+internal enum class ChromeSlot { DRAWN, RESERVED, ABSENT }
+
+/**
+ * One top-bar toggle's slot. Compact hides a default-state toggle but RESERVES its slot, so each
+ * button sits where it does with DISP on and none slides under the thumb when a neighbour hides; a
+ * toggle [touched] in compact stays drawn until DISP changes (UI review 2026-11-09).
+ */
+internal fun chromeSlot(drawn: Boolean, touched: Boolean, compact: Boolean): ChromeSlot = when {
+    drawn || (compact && touched) -> ChromeSlot.DRAWN
+    compact -> ChromeSlot.RESERVED
+    else -> ChromeSlot.ABSENT
+}
+
 /** Which of the four top-bar chrome toggles draw, from live state. */
 internal data class ChromeToggles(
     val flash: Boolean,

@@ -209,6 +209,30 @@ class LandscapeHoldLayoutComposeTest {
         assertEquals("Fn side", compact.left, fnNodes.single().boundsInRoot.left, 0.5f)
     }
 
+    // UI review 2026-11-09: compact packed the visible toggles left, so Grid sat at 12 dp there and
+    // 124 dp with DISP on, and a toggle cycled back to its default vanished under the thumb.
+    @Test fun `compact top-bar toggles keep their DISP slots and stay once touched`() {
+        show(ready.copy(grid = me.hletrd.telecampro.camera.GridType.THIRDS), details = false)
+        val grid = context.getString(R.string.label_grid)
+        val compactGrid = described(grid)
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_show_shooting_info)).performClick()
+        compose.waitForIdle()
+        assertEquals("grid slot", described(grid).left, compactGrid.left, 0.5f)
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_hide_shooting_info)).performClick()
+        compose.waitForIdle()
+        compose.onNode(hasContentDescription(grid), useUnmergedTree = true).performClick()
+        state.value = state.value.copy(grid = me.hletrd.telecampro.camera.GridType.NONE)
+        compose.waitForIdle()
+        assertTrue("a touched toggle stays at its default", visible(described(grid)))
+    }
+
+    @Test fun `a compact toggle slot is drawn, reserved, or absent`() {
+        assertEquals(ChromeSlot.DRAWN, chromeSlot(drawn = true, touched = false, compact = true))
+        assertEquals(ChromeSlot.DRAWN, chromeSlot(drawn = false, touched = true, compact = true))
+        assertEquals(ChromeSlot.RESERVED, chromeSlot(drawn = false, touched = false, compact = true))
+        assertEquals(ChromeSlot.ABSENT, chromeSlot(drawn = false, touched = true, compact = false))
+    }
+
     /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
     private fun slot(description: String): Rect =
         compose.onAllNodes(hasContentDescription(description), useUnmergedTree = true)

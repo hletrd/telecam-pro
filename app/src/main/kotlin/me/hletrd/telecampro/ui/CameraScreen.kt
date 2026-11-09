@@ -2040,6 +2040,9 @@ private fun TopBar(
     // Session-scoped on purpose — the grid TYPE itself is the persisted value (SettingsStore).
     var lastActiveGrid by rememberSaveable { mutableStateOf(GridType.THIRDS) }
     LaunchedEffect(state.grid) { if (state.grid != GridType.NONE) lastActiveGrid = state.grid }
+    // Compact toggles the operator touched stay until DISP changes (UI review 2026-11-09): cycling
+    // Flash back to OFF made the button vanish under the thumb, and the next tap hit whatever slid in.
+    var touchedInCompact by remember(compact) { mutableStateOf(emptySet<ChromeToggle>()) }
     TopBarContainer(modifier) {
         TopBarGroup(
             modifier = Modifier
@@ -2069,10 +2072,22 @@ private fun TopBar(
                 aspect = state.aspectRatio,
                 grid = state.grid,
             )
-            if (chrome.flash) {
+            // A hidden compact toggle keeps its slot, so every button sits where it does with DISP on.
+            @Composable
+            fun ChromeSlotted(toggle: ChromeToggle, drawn: Boolean, content: @Composable (onTouched: () -> Unit) -> Unit) {
+                when (chromeSlot(drawn = drawn, touched = toggle in touchedInCompact, compact = compact)) {
+                    ChromeSlot.DRAWN -> content { if (compact) touchedInCompact = touchedInCompact + toggle }
+                    ChromeSlot.RESERVED -> Spacer(modifier = Modifier.size(48.dp))
+                    ChromeSlot.ABSENT -> Unit
+                }
+            }
+            ChromeSlotted(ChromeToggle.FLASH, chrome.flash) { touched ->
                 FlashButton(
                     mode = flashDisplay,
-                    onClick = { actions.onFlash(nextAvailable(flashDisplay, flashChoices)) },
+                    onClick = {
+                        touched()
+                        actions.onFlash(nextAvailable(flashDisplay, flashChoices))
+                    },
                     enabled = !recordingLocked && flashChoices.size > 1,
                     modifier = glyphSpin,
                 )
@@ -2085,20 +2100,29 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (chrome.aspect) {
-                AspectButton(
-                    ratio = state.aspectRatio,
-                    onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
-                    enabled = !recordingLocked,
-                    modifier = glyphSpin,
-                )
+            // Aspect is a PHOTO-only axis: in video it has no slot at all, as with DISP on.
+            if (state.mode == CaptureMode.PHOTO) {
+                ChromeSlotted(ChromeToggle.ASPECT, chrome.aspect) { touched ->
+                    AspectButton(
+                        ratio = state.aspectRatio,
+                        onClick = {
+                            touched()
+                            actions.onAspectRatio(nextAspect(state.aspectRatio))
+                        },
+                        enabled = !recordingLocked,
+                        modifier = glyphSpin,
+                    )
+                }
             }
             // An ACTIVE grid keeps its button in compact too: the grid lines are drawn unconditionally
             // over the live image, and this is the only control that clears them.
-            if (chrome.grid) {
+            ChromeSlotted(ChromeToggle.GRID, chrome.grid) { touched ->
                 GridButton(
                     type = state.grid,
-                    onClick = { actions.onGridType(toggledGridType(state.grid, lastActiveGrid)) },
+                    onClick = {
+                        touched()
+                        actions.onGridType(toggledGridType(state.grid, lastActiveGrid))
+                    },
                     modifier = glyphSpin,
                 )
             }
