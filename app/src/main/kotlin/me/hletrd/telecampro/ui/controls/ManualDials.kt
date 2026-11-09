@@ -226,11 +226,17 @@ internal fun manualDialTransition(
         openDial = null,
         openExposureSheet = true,
     )
-    requested == DialType.SHUTTER &&
-        (exposureMode == ExposureMode.PROGRAM || exposureMode == ExposureMode.ISO) ->
+    // Taking the OTHER axis in a priority mode means owning both, i.e. M, with the value already set
+    // kept: ISO priority -> S used to hand the chosen ISO back to the loop (and S -> ISO the chosen
+    // shutter), the opposite of what the tap asked for (UI review 2026-11-09). onIso / onShutterNs
+    // already drop to M when a ruler is DRAGGED from an auto axis.
+    requested == DialType.SHUTTER && exposureMode == ExposureMode.ISO ->
+        ManualDialTransition(openDial = requested, exposureMode = ExposureMode.MANUAL)
+    requested == DialType.ISO && exposureMode == ExposureMode.SHUTTER ->
+        ManualDialTransition(openDial = requested, exposureMode = ExposureMode.MANUAL)
+    requested == DialType.SHUTTER && exposureMode == ExposureMode.PROGRAM ->
         ManualDialTransition(openDial = requested, exposureMode = ExposureMode.SHUTTER)
-    requested == DialType.ISO &&
-        (exposureMode == ExposureMode.PROGRAM || exposureMode == ExposureMode.SHUTTER) ->
+    requested == DialType.ISO && exposureMode == ExposureMode.PROGRAM ->
         ManualDialTransition(openDial = requested, exposureMode = ExposureMode.ISO)
     requested == DialType.FOCUS && focusMode != FocusMode.MANUAL ->
         ManualDialTransition(openDial = requested, focusMode = FocusMode.MANUAL)

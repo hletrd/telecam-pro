@@ -204,8 +204,17 @@ class QuickManualDialEnablementTest {
                 WbMode.AUTO,
             ),
         )
+        // The other axis in a priority mode owns both: M, never a swap to the other priority.
+        assertEquals(
+            ManualDialTransition(openDial = DialType.ISO, exposureMode = ExposureMode.MANUAL),
+            manualDialTransition(DialType.ISO, null, ExposureMode.SHUTTER, FocusMode.MANUAL, WbMode.MANUAL),
+        )
         assertEquals(
             ManualDialTransition(openDial = DialType.SHUTTER, exposureMode = ExposureMode.SHUTTER),
+            manualDialTransition(DialType.SHUTTER, null, ExposureMode.PROGRAM, FocusMode.MANUAL, WbMode.MANUAL),
+        )
+        assertEquals(
+            ManualDialTransition(openDial = DialType.SHUTTER, exposureMode = ExposureMode.MANUAL),
             manualDialTransition(
                 DialType.SHUTTER,
                 null,
@@ -219,7 +228,7 @@ class QuickManualDialEnablementTest {
             manualDialTransition(
                 DialType.ISO,
                 null,
-                ExposureMode.SHUTTER,
+                ExposureMode.PROGRAM,
                 FocusMode.MANUAL,
                 WbMode.MANUAL,
             ),
