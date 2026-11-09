@@ -579,7 +579,7 @@ class SettingsStore(
 
     private fun SharedPreferences.Editor.putModeExposure(key: String, m: ModeExposure?) {
         if (m == null) {
-            MODE_EXPOSURE_SUFFIXES.forEach { remove("$key$it") }
+            listOf("Mode", "TimeNs", "Shutter", "Angle", "Iso", "Ev").forEach { remove("$key$it") }
             return
         }
         putString("${key}Mode", m.exposureMode.name)
@@ -628,7 +628,6 @@ class SettingsStore(
         const val MAX_PERSISTED_WB_GAIN = 32f
         // Generous outer bounds only; the selected route's advertised range (and PMA110's 4 s still
         // ceiling) still clamps at the capability seam.
-        val MODE_EXPOSURE_SUFFIXES = listOf("Mode", "TimeNs", "Shutter", "Angle", "Iso", "Ev")
         const val MIN_PERSISTED_EXPOSURE_NS = 1L
         const val MAX_PERSISTED_EXPOSURE_NS = 60_000_000_000L
         const val MIN_PERSISTED_FPS = 1

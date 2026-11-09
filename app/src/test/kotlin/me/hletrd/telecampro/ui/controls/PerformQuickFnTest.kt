@@ -76,7 +76,7 @@ class PerformQuickFnTest {
         override fun onWbMode(mode: WbMode) = hit("onWbMode($mode)")
         override fun onWbKelvin(kelvin: Int) = hit("onWbKelvin")
         override fun onWbTint(tint: Int) = hit("onWbTint")
-        override fun onToggleAwbLock(locked: Boolean) = hit("onToggleAwbLock")
+        override fun onToggleAwbLock(locked: Boolean) = hit("onToggleAwbLock($locked)")
         override fun onMeteringMode(mode: MeteringMode) = hit("onMeteringMode($mode)")
         override fun onAfSpotSize(size: AfSpotSize) = hit("onAfSpotSize")
         override fun onToggleFacePriorityAf(enabled: Boolean) = hit("onToggleFacePriorityAf")
@@ -275,6 +275,10 @@ class PerformQuickFnTest {
         assertEquals(
             listOf("onAfLock(false)"),
             dispatched(FnSlot.AF_LOCK, CameraUiState(controls = ManualControls(afLock = true))),
+        )
+        assertEquals(
+            listOf("onToggleAwbLock(false)"),
+            dispatched(FnSlot.AWB_LOCK, CameraUiState(controls = ManualControls(awbLock = true))),
         )
     }
 
