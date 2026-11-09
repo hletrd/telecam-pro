@@ -209,23 +209,33 @@ class ReviewSurfacedSeamsTest {
     @Test
     fun `tele zoom marks share the rail's availability wording`() {
         assertEquals(
-            CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING,
-            teleZoomMarkState(selected = true, cameraReady = true, reopenInProgress = false, recording = true).state,
-        )
-        assertEquals(
             CameraControlSelectionState.CAMERA_RECONFIGURING,
-            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = true, recording = false).state,
+            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = true).state,
         )
         // AGG6-9: a cold start or the terminal is not "reconfiguring".
         assertEquals(
             CameraControlSelectionState.UNAVAILABLE,
-            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = false, recording = false).state,
+            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = false).state,
         )
-        val selected = teleZoomMarkState(selected = true, cameraReady = true, reopenInProgress = false, recording = false)
+        val selected = teleZoomMarkState(selected = true, cameraReady = true, reopenInProgress = false)
         assertEquals(CameraControlSelectionState.SELECTED, selected.state)
         assertTrue(selected.enabled)
+        assertFalse(teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = false).enabled)
+    }
+
+    @Test
+    fun `tele zoom marks stay live while recording, like the pinch they stand in for`() {
+        // A lens chip still locks: its pick reopens the camera.
+        assertTrue(teleZoomMarkState(selected = false, cameraReady = true, reopenInProgress = false).enabled)
         assertFalse(
-            teleZoomMarkState(selected = false, cameraReady = true, reopenInProgress = false, recording = true).enabled,
+            me.hletrd.telecampro.ui.focalRailState(
+                choice = me.hletrd.telecampro.camera.LensChoice.MAIN,
+                selectedLens = me.hletrd.telecampro.camera.LensChoice.TELE3X,
+                teleconverter = false,
+                cameraReady = true,
+                reopenInProgress = false,
+                recording = true,
+            ).enabled,
         )
     }
 

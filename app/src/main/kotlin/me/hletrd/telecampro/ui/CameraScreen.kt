@@ -3327,7 +3327,6 @@ internal fun FocalRail(
                             selected = mark == activeMark,
                             cameraReady = state.cameraReady,
                             reopenInProgress = state.reopenInProgress,
-                            recording = state.isRecording,
                         ),
                         onClick = { onTeleZoomMark(mark) },
                         glyphRotation = glyphRotation,

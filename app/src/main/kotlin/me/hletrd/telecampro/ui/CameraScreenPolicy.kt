@@ -994,16 +994,19 @@ internal fun focalRailState(
  * [railChipState], so the two faces of one rail cannot drift apart) and the same
  * RadioButton relationship — a free pinch can leave every mark unselected, and a radio group with no
  * selection announces exactly that truthfully.
+ *
+ * Unlike a lens chip, a mark stays live while recording (UI review 2026-11-09): it zooms within the
+ * session like a pinch, which was never gated, and costs the same one request swap. Only a lens pick
+ * reopens the camera, which is what the rail's recording lock exists for.
  */
 internal fun teleZoomMarkState(
     selected: Boolean,
     cameraReady: Boolean,
     reopenInProgress: Boolean,
-    recording: Boolean,
 ): FocalRailState = FocalRailState(
     selected = selected,
-    enabled = cameraReady && !recording,
-    state = railChipState(selected, cameraReady, reopenInProgress, recording),
+    enabled = cameraReady,
+    state = railChipState(selected, cameraReady, reopenInProgress, recording = false),
     accessibilityRole = Role.RadioButton,
 )
 
