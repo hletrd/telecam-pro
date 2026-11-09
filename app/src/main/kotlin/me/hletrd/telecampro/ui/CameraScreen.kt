@@ -211,6 +211,7 @@ import me.hletrd.telecampro.ui.controls.gridTypeLabel
 import me.hletrd.telecampro.ui.controls.hardwareKeyActionLabel
 import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
+import me.hletrd.telecampro.ui.controls.evCompStops
 import me.hletrd.telecampro.ui.controls.manualDialForFnSlot
 import me.hletrd.telecampro.ui.controls.manualFocusBarPinned
 import me.hletrd.telecampro.ui.controls.lockSlotAvailable
@@ -233,7 +234,7 @@ import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.overlays.HorizonAccessibilityDirection
 import me.hletrd.telecampro.ui.overlays.LevelOverlay
 import me.hletrd.telecampro.camera.effectiveExposureNs
-import me.hletrd.telecampro.ui.overlays.manualExposureReadout
+import me.hletrd.telecampro.ui.overlays.exposureReadoutTokens
 import me.hletrd.telecampro.ui.overlays.ManualExposureReadout
 import me.hletrd.telecampro.ui.overlays.RecordingIndicator
 import me.hletrd.telecampro.ui.overlays.StatusBar
@@ -1616,14 +1617,19 @@ fun CameraScreen(
                         .offset { IntOffset(0, railSeamOffsetPx) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // M shows its exposure triple at all times; with the info overlay open the Fn chips
-                    // already carry the same values, so the line would only duplicate them.
-                    if (!detailsVisible && state.controls.exposureMode == ExposureMode.MANUAL) {
+                    // The exposure line shows in every mode (UI review 2026-11-09; it was M-only); with
+                    // the info overlay open the Fn chips already carry the same values, so the line
+                    // would only duplicate them.
+                    if (!detailsVisible) {
                         ManualExposureReadout(
-                            text = manualExposureReadout(
+                            tokens = exposureReadoutTokens(
+                                mode = state.controls.exposureMode,
                                 apertureF = state.caps?.lensApertureF,
                                 exposureNs = state.controls.effectiveExposureNs(),
                                 iso = state.controls.iso,
+                                liveExposureNs = state.liveExposureNs,
+                                liveIso = state.liveIso,
+                                evStops = evCompStops(state),
                             ),
                         )
                     }

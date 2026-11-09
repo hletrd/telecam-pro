@@ -83,6 +83,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import me.hletrd.telecampro.camera.ExposureMode
 
 /**
  * Small HUD text must remain readable over a white frame. At 82% black, opaque secondary text
@@ -1538,18 +1542,59 @@ fun TimerCountdown(
  * entrance pupil together, so the phone lens's f-number is the honest figure. A missing or
  * non-positive aperture (no caps yet) drops that field instead of printing "F0.0".
  */
-internal fun manualExposureReadout(apertureF: Float?, exposureNs: Long, iso: Int): String {
-    val fields = buildList {
-        if (apertureF != null && apertureF > 0f) add("F" + "%.1f".format(java.util.Locale.US, apertureF))
-        add(me.hletrd.telecampro.ui.controls.formatShutterSpeed(exposureNs))
-        add("ISO $iso")
-    }
-    return fields.joinToString("   ")
+internal fun manualExposureReadout(apertureF: Float?, exposureNs: Long, iso: Int): String =
+    exposureReadoutTokens(ExposureMode.MANUAL, apertureF, exposureNs, iso, null, null, 0f)
+        .joinToString(READOUT_GAP) { it.text }
+
+/** One readout field; [auto] marks a value the camera is choosing, drawn dim. */
+internal data class ReadoutToken(val text: String, val auto: Boolean = false)
+
+private const val READOUT_GAP = "   "
+
+/**
+ * The compact exposure line in every mode (UI review 2026-11-09: outside M nothing showed the
+ * exposure, and a non-zero EV vanished with the transient meter). M keeps its triple; P, S and ISO
+ * lead with the mode, draw the camera-chosen axes dim from the LIVE values, and add EV when it is
+ * not zero.
+ */
+internal fun exposureReadoutTokens(
+    mode: ExposureMode,
+    apertureF: Float?,
+    exposureNs: Long,
+    iso: Int,
+    liveExposureNs: Long?,
+    liveIso: Int?,
+    evStops: Float,
+): List<ReadoutToken> = buildList {
+    val shutterAuto = mode == ExposureMode.PROGRAM || mode == ExposureMode.ISO
+    val isoAuto = mode == ExposureMode.PROGRAM || mode == ExposureMode.SHUTTER
+    if (mode != ExposureMode.MANUAL) add(ReadoutToken(me.hletrd.telecampro.ui.controls.exposureModeLetter(mode)))
+    if (apertureF != null && apertureF > 0f) add(ReadoutToken("F" + "%.1f".format(java.util.Locale.US, apertureF)))
+    add(
+        ReadoutToken(
+            me.hletrd.telecampro.ui.controls.formatShutterSpeed(if (shutterAuto) liveExposureNs ?: exposureNs else exposureNs),
+            auto = shutterAuto,
+        ),
+    )
+    add(ReadoutToken("ISO ${if (isoAuto) liveIso ?: iso else iso}", auto = isoAuto))
+    if (mode != ExposureMode.MANUAL && evStops != 0f) add(ReadoutToken(me.hletrd.telecampro.ui.controls.formatEvComp(evStops)))
 }
 
 /** Screen-fixed (a wide row, like the OSD — CLAUDE.md glyph rules), centred above the focal rail. */
 @Composable
-fun ManualExposureReadout(text: String, modifier: Modifier = Modifier) {
+internal fun ManualExposureReadout(tokens: List<ReadoutToken>, modifier: Modifier = Modifier) {
+    val text = remember(tokens) {
+        buildAnnotatedString {
+            tokens.forEachIndexed { index, token ->
+                if (index > 0) append(READOUT_GAP)
+                if (token.auto) {
+                    withStyle(SpanStyle(color = CameraColors.TextSecondary)) { append(token.text) }
+                } else {
+                    append(token.text)
+                }
+            }
+        }
+    }
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text(
             text = text,
@@ -1557,7 +1602,8 @@ fun ManualExposureReadout(text: String, modifier: Modifier = Modifier) {
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
-                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                // The HUD contrast floor every other text plate rides (it was a lone 0.55 black).
+                .background(HudPlate, RoundedCornerShape(8.dp))
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
     }

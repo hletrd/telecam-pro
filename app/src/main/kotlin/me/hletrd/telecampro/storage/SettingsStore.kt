@@ -36,6 +36,7 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.ModeExposure
 import me.hletrd.telecampro.camera.offerLockSlots
+import me.hletrd.telecampro.camera.offerVideoEv
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.WbGains
@@ -451,9 +452,12 @@ class SettingsStore(
                     offered = safeBoolean("${prefix}fnLocksOffered", false),
                 ),
                 videoFnSlots = offerLockSlots(
-                    normalizeFnSlots(
-                        enumListOr(safeString("${prefix}videoFnSlots", null), ed.videoFnSlots),
-                        ed.videoFnSlots,
+                    offerVideoEv(
+                        normalizeFnSlots(
+                            enumListOr(safeString("${prefix}videoFnSlots", null), ed.videoFnSlots),
+                            ed.videoFnSlots,
+                        ),
+                        offered = safeBoolean("${prefix}fnVideoEvOffered", false),
                     ),
                     offered = safeBoolean("${prefix}fnLocksOffered", false),
                 ),
@@ -562,6 +566,7 @@ class SettingsStore(
         putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
         putString("${prefix}videoFnSlots", e.videoFnSlots.joinToString(",") { it.name })
         putBoolean("${prefix}fnLocksOffered", true)
+        putBoolean("${prefix}fnVideoEvOffered", true)
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
         putString("${prefix}halfPressAction", e.halfPressAction.name)

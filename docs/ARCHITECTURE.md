@@ -1727,8 +1727,9 @@ category's selected state. Its existing 48 dp-plus geometry and visual treatment
 **Quick Fn controls (ManualDials.kt):**
 
 Photo and video have separate configurable Fn bars with up to eight slots. The photo default exposes
-exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, stabilization, and audio
-scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
+exposure mode, focus, shutter, ISO, WB, EV, and the AE/AF locks; the video default has exposure mode,
+focus, shutter, ISO, WB, EV, gamma, and stabilization (EV replaced the audio scene on 2026-11-09; a
+saved bar still exactly the old default moves once, `offerVideoEv`). Capability-dependent taps cycle only through the selected route's advertised choices.
 The shooting-screen Fn overlay renders only that active mode's distinct configured slots (maximum
 eight, with its mode-specific default as the empty fallback); it never merges My Menu or Recent.
 Since 2026-10-28 it is a compact Sony-style strip on an opaque true-black plate (a translucent HUD

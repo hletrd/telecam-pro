@@ -367,7 +367,11 @@ enum class FnSlot {
 
     companion object {
         val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV, AE_LOCK, AF_LOCK)
-        val VIDEO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, TRANSFER, STABILIZATION, AUDIO_SCENE)
+        // EV in place of Directionality (UI review 2026-11-09): EV in video P otherwise meant the
+        // settings sheet, and Directionality sat beside Stabilization reading the same STD.
+        val VIDEO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV, TRANSFER, STABILIZATION)
+        // The video default before 2026-11-09, for the one-time move of untouched bars.
+        internal val VIDEO_DEFAULT_BEFORE_EV = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, TRANSFER, STABILIZATION, AUDIO_SCENE)
         val DEFAULT = PHOTO_DEFAULT
         val MY_MENU_DEFAULT = listOf(STABILIZATION, PEAKING, ZEBRA, DRIVE, METERING, TRANSFER)
     }
@@ -421,6 +425,13 @@ internal fun normalizeFnSlots(
     return slots.distinct().take(safeLimit)
         .ifEmpty { fallback.distinct().take(safeLimit) }
 }
+
+/**
+ * A video bar still exactly the old default takes the new one ONCE (EV for Directionality); a bar
+ * the operator changed is theirs and is left alone.
+ */
+internal fun offerVideoEv(slots: List<FnSlot>, offered: Boolean): List<FnSlot> =
+    if (!offered && slots == FnSlot.VIDEO_DEFAULT_BEFORE_EV) FnSlot.VIDEO_DEFAULT else slots
 
 /**
  * A bar saved before the lock tiles existed gets AE and AF lock appended ONCE, where it has room
