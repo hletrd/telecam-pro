@@ -5,7 +5,7 @@ import androidx.annotation.StringRes
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.*
 
-@StringRes private fun FocusMode.labelRes() = when (this) { FocusMode.MANUAL -> R.string.value_manual; FocusMode.AUTO -> R.string.value_auto; FocusMode.CONTINUOUS -> R.string.value_continuous; FocusMode.MACRO -> R.string.value_macro }
+@StringRes private fun FocusMode.labelRes() = when (this) { FocusMode.MANUAL -> R.string.value_mf; FocusMode.AUTO -> R.string.value_af_s; FocusMode.CONTINUOUS -> R.string.value_af_c; FocusMode.MACRO -> R.string.value_macro }
 @StringRes private fun Antibanding.labelRes() = when (this) { Antibanding.AUTO -> R.string.value_auto; Antibanding.HZ50 -> R.string.value_50hz; Antibanding.HZ60 -> R.string.value_60hz; Antibanding.OFF -> R.string.value_off }
 @StringRes private fun ProcessingLevel.labelRes() = when (this) { ProcessingLevel.OFF -> R.string.value_off; ProcessingLevel.FAST -> R.string.value_fast; ProcessingLevel.HIGH_QUALITY -> R.string.value_high_quality }
 @StringRes private fun ColorEffect.labelRes() = when (this) { ColorEffect.NONE -> R.string.value_none; ColorEffect.MONO -> R.string.value_monochrome; ColorEffect.NEGATIVE -> R.string.value_negative; ColorEffect.SEPIA -> R.string.value_sepia; ColorEffect.AQUA -> R.string.value_aqua; ColorEffect.POSTERIZE -> R.string.value_posterize }

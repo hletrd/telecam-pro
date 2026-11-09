@@ -1319,7 +1319,7 @@ fun CameraScreen(
                         else -> currentActions.value.onToggleAwbLock(false)
                     }
                 },
-                // The status plate (STEADY/OIS+/MUTE/4:3, the focal readout, the lock tags) now
+                // The status plate (STAB/MUTE/4:3, the focal readout, the lock tags) now
                 // counter-rotates with the phone like every other readout. It was left screen-fixed
                 // when the only tool was `Modifier.rotate`, a DRAW transform that leaves the
                 // unrotated box in layout — which is what "swings it off screen" meant. rotateLayout

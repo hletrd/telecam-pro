@@ -79,7 +79,7 @@ internal fun segmentedOptionName(label: String, option: String): String = "$labe
 
 internal fun focusModeLabel(mode: FocusMode): String = when (mode) {
     FocusMode.MANUAL -> "MF"
-    FocusMode.AUTO -> "AF"
+    FocusMode.AUTO -> "AF-S"
     FocusMode.CONTINUOUS -> "AF-C"
     FocusMode.MACRO -> "Macro"
 }

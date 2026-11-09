@@ -374,7 +374,6 @@
     <string name="label_output">출력</string>
     <string name="value_manual">수동</string>
     <string name="value_auto">자동</string>
-    <string name="value_continuous">연속</string>
     <string name="value_macro">매크로</string>
     <string name="value_50hz">50 Hz</string>
     <string name="value_60hz">60 Hz</string>
@@ -435,6 +434,7 @@
     <string name="fn_tile_off">끔</string>
     <string name="fn_tile_standard">표준</string>
     <string name="fn_tile_active">액티브</string>
+    <string name="fn_tile_audio_normal">일반</string>
     <string name="fn_tile_macro">매크로</string>
     <string name="fn_tile_wb_tungsten">텅스텐</string>
     <string name="fn_tile_wb_fluorescent">형광등</string>
@@ -559,7 +559,7 @@
     <string name="legal_app_license">TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. 소스: github.com/hletrd/telecam-pro</string>
     <!-- One-line menu hints (owner request 2026-10-25), one per setting row. -->
     <string name="hint_ae_lock">구도를 바꾸는 동안 현재 노출을 고정합니다.</string>
-    <string name="hint_af">연속은 초점을 계속 맞추고 자동은 한 번 맞춘 뒤 고정합니다. 수동은 초점 눈금으로 맞춥니다.</string>
+    <string name="hint_af">AF-C는 초점을 계속 맞추고 AF-S는 한 번 맞춘 뒤 고정합니다. MF는 초점 눈금으로 맞춥니다.</string>
     <string name="hint_af_lock">초점을 현재 거리에 고정합니다.</string>
     <string name="hint_aspect">4:3은 센서 전체를 사용하고 16:9는 위아래를 자릅니다.</string>
     <string name="hint_audio_bitrate">높을수록 음질이 좋습니다. AAC-LC 256 kbps면 대부분 원음과 구분하기 어렵습니다.</string>

@@ -666,6 +666,10 @@ approved_nontranslatable_resources = {
     "label_fps",
     "label_fn",
     "label_open_gate",
+    # Focus modes print their camera abbreviations in every surface, untranslated (2026-11-09).
+    "value_af_s",
+    "value_af_c",
+    "value_mf",
     # Phone and kit names IDENTIFY a rightsholder's product (CLAUDE.md, EN+KO rule): the official
     # teleconverter catalog of 2026-10-25 (camera/Teleconverter.kt).
     "phone_oppo_find_x9_ultra",

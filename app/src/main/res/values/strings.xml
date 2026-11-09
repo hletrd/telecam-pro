@@ -410,7 +410,12 @@
     <string name="label_output">Output</string>
     <string name="value_manual">Manual</string>
     <string name="value_auto">Auto</string>
-    <string name="value_continuous">Continuous</string>
+    <!-- Focus modes print the camera abbreviations everywhere (menu, Fn tile, dial chip), untranslated
+         like ISO: "Continuous" here beside "AF-C" there named one setting twice, and the Korean
+         "연속" was also the Burst drive word (UI review 2026-11-09). -->
+    <string name="value_af_s" translatable="false">AF-S</string>
+    <string name="value_af_c" translatable="false">AF-C</string>
+    <string name="value_mf" translatable="false">MF</string>
     <string name="value_macro">Macro</string>
     <string name="value_50hz">50 Hz</string>
     <string name="value_60hz">60 Hz</string>
@@ -475,6 +480,7 @@
     <string name="fn_tile_off">OFF</string>
     <string name="fn_tile_standard">STD</string>
     <string name="fn_tile_active">ACT</string>
+    <string name="fn_tile_audio_normal">NORM</string>
     <string name="fn_tile_macro">MACRO</string>
     <string name="fn_tile_wb_tungsten">TUNG</string>
     <string name="fn_tile_wb_fluorescent">FLUOR</string>
@@ -582,7 +588,7 @@
     <string name="a11y_saturated_hours_minutes_remaining">Over %1$s %2$s remaining</string>
     <string name="a11y_status_join">%1$s, %2$s</string>
     <string name="osd_stabilization_standard">STAB STD</string>
-    <string name="osd_stabilization_steady">STEADY</string>
+    <string name="osd_stabilization_steady">STAB ACT</string>
     <string name="osd_stabilization_off">STAB OFF</string>
     <string name="osd_drive_burst">BURST</string>
     <string name="osd_metering_spot">SPOT</string>
@@ -603,7 +609,7 @@
     <string name="legal_app_license">TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. Source: github.com/hletrd/telecam-pro</string>
     <!-- One-line menu hints (owner request 2026-10-25), one per setting row. -->
     <string name="hint_ae_lock">Holds the current exposure while you recompose.</string>
-    <string name="hint_af">Continuous keeps tracking focus, Auto locks once, Manual uses the focus ruler.</string>
+    <string name="hint_af">AF-C keeps tracking focus, AF-S locks once, MF uses the focus ruler.</string>
     <string name="hint_af_lock">Freezes focus at its current distance.</string>
     <string name="hint_aspect">4:3 uses the whole sensor; 16:9 crops the top and bottom.</string>
     <string name="hint_audio_bitrate">Higher keeps more detail; 256 kbps AAC-LC is transparent for most listeners.</string>

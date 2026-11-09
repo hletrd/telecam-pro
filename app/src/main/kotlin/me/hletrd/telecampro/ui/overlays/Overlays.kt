@@ -1138,8 +1138,8 @@ fun StatusBar(
             val stabTag = when (state.videoStabMode) {
                 // One word family for one control (UI review #7): STANDARD used to read "OIS+",
                 // borrowing the word of the SEPARATE photo "OIS OFF" tag, so across a mode flip two
-                // independent controls read as one. STEADY stays — it is the marketing-free name
-                // the ENHANCED value already owns app-wide.
+                // independent controls read as one. ENHANCED reads STAB ACT, the "Active"/ACT every
+                // other surface names it (it said STEADY until the 2026-11-09 UI review).
                 VideoStabMode.STANDARD -> stringResource(R.string.osd_stabilization_standard)
                 VideoStabMode.ENHANCED -> stringResource(R.string.osd_stabilization_steady)
                 VideoStabMode.OFF -> stringResource(R.string.osd_stabilization_off)

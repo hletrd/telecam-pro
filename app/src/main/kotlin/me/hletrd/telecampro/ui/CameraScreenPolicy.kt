@@ -703,7 +703,8 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
         FnSlot.AUDIO_SCENE -> FnTileReadout(
             FnTileText.Word(
                 when (state.audioScene) {
-                    AudioScene.STANDARD -> R.string.fn_tile_standard
+                    // Not STD: it sat beside Stabilization's STD in the default video bar (2026-11-09).
+                    AudioScene.STANDARD -> R.string.fn_tile_audio_normal
                     AudioScene.SOUND_FOCUS -> R.string.fn_tile_sound_focus
                     AudioScene.SOUND_STAGE -> R.string.fn_tile_sound_stage
                 },

@@ -358,7 +358,7 @@ class FnOverlayPolicyTest {
         assertEquals(word(R.string.fn_tile_standard), fnTileReadout(FnSlot.STABILIZATION, CameraUiState(videoStabMode = VideoStabMode.STANDARD)))
         assertEquals(word(R.string.fn_tile_active), fnTileReadout(FnSlot.STABILIZATION, CameraUiState(videoStabMode = VideoStabMode.ENHANCED)))
 
-        assertEquals(word(R.string.fn_tile_standard), fnTileReadout(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.STANDARD)))
+        assertEquals(word(R.string.fn_tile_audio_normal), fnTileReadout(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.STANDARD)))
         assertEquals(word(R.string.fn_tile_sound_focus), fnTileReadout(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.SOUND_FOCUS)))
         assertEquals(word(R.string.fn_tile_sound_stage), fnTileReadout(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.SOUND_STAGE)))
 
@@ -553,7 +553,7 @@ class FnOverlayPolicyTest {
         // so a new mode fails here instead of shipping a silently modeless chip.
         val expected = mapOf(
             FocusMode.MANUAL to "MF, ∞+42",
-            FocusMode.AUTO to "AF, ∞+42",
+            FocusMode.AUTO to "AF-S, ∞+42",
             FocusMode.CONTINUOUS to "AF-C, ∞+42",
             FocusMode.MACRO to "Macro, ∞+42",
         )

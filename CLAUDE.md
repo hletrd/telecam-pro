@@ -52,7 +52,7 @@ deprecated APIs, latest stable everything.
 - **User-facing text is ENGLISH + KOREAN (corrected 2026-08-08 — this said "everything user-facing
   in English", which stopped being true when v1.0.1 shipped 126 Korean strings and `localeConfig`).**
   New user-facing text needs a `values-ko` entry too. Two standing exceptions, both deliberate:
-  camera-standard abbreviations (ISO, WB, SS, EV, AF, NR, FPS, Fn, Open Gate) are
+  camera-standard abbreviations (ISO, WB, SS, EV, AF, AF-S, AF-C, MF, NR, FPS, Fn, Open Gate) are
   `translatable="false"` because Korean camera bodies print them in Latin as well; and company and
   trademark names stay in the original inside translated text, because they IDENTIFY a rightsholder
   and translating them changes who is named. Prose is not covered by either exception — the Setup

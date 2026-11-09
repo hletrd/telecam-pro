@@ -48,7 +48,7 @@ class ControlLabelsTest {
     fun `focus mode labels`() = assertLabels(
         mapOf(
             FocusMode.MANUAL to "MF",
-            FocusMode.AUTO to "AF",
+            FocusMode.AUTO to "AF-S",
             FocusMode.CONTINUOUS to "AF-C",
             FocusMode.MACRO to "Macro",
         ),
