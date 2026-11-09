@@ -991,6 +991,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   capability-gated extended-raster admission stays: a camera that ADVERTISES a size above
   4096×3072 may still offer it by explicit pick (no device in the lab does). A32 and the private
   `.context/8k-2026-10-30/` keep the measured protocol; re-adding the route starts with the owner.
+  v1.1.0 (versionCode 7) is on Play without it (owner, 2026-11-09): the custom 8K route is
+  abandoned, and 8K exists only where stock Camera2 advertises the size.
 - **The SENSOR cannot be asked for an NTSC rate, so the FILE is retimed onto the exact grid (device-
   measured 2026-10-05 and 2026-10-26; grid since 2026-10-26, owner decision "29.97, 59.94 and 23.976
   are the standard").** Encoder PTS USED TO BE the SurfaceTexture sensor timestamps, so a file's frame
