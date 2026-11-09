@@ -2482,7 +2482,28 @@ class CameraViewModel private constructor(
     }
 
     // ---- Focus ----
+    // The AF mode MF returns to (onToggleManualFocus). Session-only: a launch in MF returns to AF-C.
+    private var lastAfMode = FocusMode.CONTINUOUS
+
+    /**
+     * AF <-> MF in one press (owner request 2026-11-09): every Focus surface (Fn tile, dial chip, My
+     * Menu row, the MF bar's AF key) used to force MF and open the ruler, and nothing on the
+     * viewfinder led back to AF. MF now pins its own bar, so the press only has to switch the mode.
+     */
+    override fun onToggleManualFocus() {
+        val c = _state.value.controls
+        val modes = controlAvailability(_state.value.caps?.controlCapabilities(), c).focusModes
+        val target = when {
+            c.focusMode == FocusMode.MANUAL ->
+                lastAfMode.takeIf { it in modes } ?: modes.firstOrNull { it != FocusMode.MANUAL }
+            FocusMode.MANUAL in modes -> FocusMode.MANUAL
+            else -> null
+        } ?: return
+        onFocusMode(target)
+    }
+
     override fun onFocusMode(mode: FocusMode) {
+        if (mode != FocusMode.MANUAL) lastAfMode = mode
         val before = _state.value
         if (focusModeChangeClearsTapPoint(before.controls.focusMode, mode)) {
             // updateControls below already rebuilds the repeating request for the focus-mode delta.

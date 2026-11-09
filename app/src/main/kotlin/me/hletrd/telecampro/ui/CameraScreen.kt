@@ -210,6 +210,7 @@ import me.hletrd.telecampro.ui.controls.hardwareKeyActionLabel
 import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
 import me.hletrd.telecampro.ui.controls.manualDialForFnSlot
+import me.hletrd.telecampro.ui.controls.manualFocusBarPinned
 import me.hletrd.telecampro.ui.controls.manualDialTransition
 import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.controls.performQuickFn
@@ -1736,7 +1737,13 @@ fun CameraScreen(
             ) {
                 manualPane()
             }
-            if (detailsVisible || openManualDial != null) Spacer(modifier = Modifier.height(8.dp))
+            val mfBarPinned = remember(state.caps, state.controls) {
+                manualFocusBarPinned(
+                    state.controls.focusMode,
+                    controlAvailability(state.caps?.controlCapabilities(), state.controls),
+                )
+            }
+            if (detailsVisible || openManualDial != null || mfBarPinned) Spacer(modifier = Modifier.height(8.dp))
             capturePane()
         }
     }

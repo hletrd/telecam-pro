@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.R
 
+import android.content.Context
 import android.util.Range
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -56,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -124,6 +126,7 @@ import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.hudGlyph
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /**
  * The six quick "Fn" manual dials (focus/shutter/ISO/WB/EV/zoom) — the signature element of the
@@ -161,13 +164,37 @@ internal fun whiteBalanceFnChipEnabled(
     availability.wbModes.size > 1
 }
 
+/**
+ * MF keeps its focus bar on screen (owner request 2026-11-09: "the MF bar seems to be missing" — it
+ * existed only behind Fn or the Focus chip): while focus is MANUAL and the route can drive the lens,
+ * the cluster draws the Focus ruler whenever no other ruler is open.
+ */
+internal fun manualFocusBarPinned(focusMode: FocusMode, availability: ControlAvailability): Boolean =
+    focusMode == FocusMode.MANUAL && quickManualDialEnabled(DialType.FOCUS, availability)
+
+/** The ruler the cluster draws: the one the operator opened, else the pinned MF bar. */
+internal fun shownManualDial(openDial: DialType?, focusBarPinned: Boolean): DialType? =
+    openDial ?: DialType.FOCUS.takeIf { focusBarPinned }
+
+/** AF-S / AF-C / MF / Macro: the Fn tile's words (fnTileReadout), for the DISP Focus chip too. */
+internal fun focusModeShortLabel(mode: FocusMode, context: Context): String = when (mode) {
+    FocusMode.MANUAL -> "MF"
+    // AUTO is the one-shot scan (CONTROL_AF_MODE_AUTO): what every body prints as AF-S.
+    FocusMode.AUTO -> "AF-S"
+    FocusMode.CONTINUOUS -> "AF-C"
+    FocusMode.MACRO -> context.getString(R.string.fn_tile_macro)
+}
+
+/** How long MF assist keeps the loupe after the last focus change (Sony's focus magnifier time). */
+internal const val MF_ASSIST_HOLD_MS = 2_000L
+
 internal fun reconcileOpenManualDial(
     openDial: DialType?,
     availability: ControlAvailability,
 ): DialType? = openDial?.takeIf { quickManualDialEnabled(it, availability) }
 
+// FOCUS opens no ruler: its press toggles AF <-> MF, and MF pins its own bar (manualFocusBarPinned).
 internal fun manualDialForFnSlot(slot: FnSlot): DialType? = when (slot) {
-    FnSlot.FOCUS -> DialType.FOCUS
     FnSlot.SHUTTER -> DialType.SHUTTER
     FnSlot.ISO -> DialType.ISO
     FnSlot.WB -> DialType.WB
@@ -234,7 +261,9 @@ fun ManualDialCluster(
     val availability = remember(caps, controls) {
         controlAvailability(caps?.controlCapabilities(), controls)
     }
-    val dialOpen = openDial != null
+    val focusBarPinned = manualFocusBarPinned(controls.focusMode, availability)
+    val shownDial = shownManualDial(openDial, focusBarPinned)
+    val dialOpen = shownDial != null
 
     // Route changes can replace the exact OFF mode/range behind an already-open ruler. Close it on
     // the first composition with the new capability projection; normalized state remains applied.
@@ -248,20 +277,27 @@ fun ManualDialCluster(
     // falling through to the Activity and backgrounding the camera.
     BackHandler(enabled = manualDialConsumesBack(openDial), onBack = onCloseDial)
 
-    // MF assist: while the Focus ruler is open, punch in on the loupe point (last tap, else center)
-    // so critical focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first
-    // camera ships. Only auto-toggles when the user didn't already have punch-in on, and restores
-    // the previous state when the ruler closes (manual sheet toggles mid-drag win: if the user
-    // turned punch-in off while the ruler was open, closing it won't re-toggle).
-    val focusOpen = openDial == DialType.FOCUS
+    // MF assist: adjusting focus punches in on the loupe point (last tap, else center) so critical
+    // focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first camera ships —
+    // and lets go MF_ASSIST_HOLD_MS after the last change, or as soon as the bar leaves the screen.
+    // It keyed on the ruler being OPEN until the MF bar became permanent (2026-11-09); that would now
+    // magnify the whole time MF is selected. Only auto-toggles when the user didn't already have
+    // punch-in on, and a manual toggle meanwhile wins (turned off mid-drag, it is not re-toggled).
+    val focusShown = shownDial == DialType.FOCUS
+    var focusAdjustTick by remember { mutableIntStateOf(0) }
     var loupeAutoOn by remember { mutableStateOf(false) }
-    LaunchedEffect(focusOpen) {
-        if (focusOpen && !state.punchIn) {
-            loupeAutoOn = true
-            actions.onAutoPunchIn(true)
-        } else if (!focusOpen && loupeAutoOn) {
+    val punchInNow by rememberUpdatedState(state.punchIn)
+    LaunchedEffect(focusAdjustTick, focusShown) {
+        if (focusShown && focusAdjustTick > 0) {
+            if (!loupeAutoOn && !punchInNow) {
+                loupeAutoOn = true
+                actions.onAutoPunchIn(true)
+            }
+            delay(MF_ASSIST_HOLD_MS)
+        }
+        if (loupeAutoOn) {
             loupeAutoOn = false
-            if (state.punchIn) actions.onAutoPunchIn(false)
+            if (punchInNow) actions.onAutoPunchIn(false)
         }
     }
 
@@ -272,8 +308,8 @@ fun ManualDialCluster(
     // therefore never lags a live dial switch); the exit animation renders THAT while `dialOpen`
     // (still keyed on openDial != null) drives visibility.
     var lastOpenDial by remember { mutableStateOf<DialType?>(null) }
-    SideEffect { if (openDial != null) lastOpenDial = openDial }
-    val displayedDial = openDial ?: lastOpenDial
+    SideEffect { if (shownDial != null) lastOpenDial = shownDial }
+    val displayedDial = shownDial ?: lastOpenDial
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AnimatedVisibility(
@@ -283,7 +319,14 @@ fun ManualDialCluster(
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
                 when (displayedDial) {
-                    DialType.FOCUS -> FocusRuler(controls = controls, caps = caps, onFocusSlider = actions::onFocusSlider)
+                    DialType.FOCUS -> FocusRuler(
+                        controls = controls,
+                        caps = caps,
+                        onFocusSlider = {
+                            actions.onFocusSlider(it)
+                            focusAdjustTick++
+                        },
+                    )
                     DialType.SHUTTER -> ShutterRuler(
                         mode = state.mode,
                         controls = controls,
@@ -303,8 +346,19 @@ fun ManualDialCluster(
                     )
                     null -> Unit
                 }
-                if (compact) {
-                    CompactDialCloseButton(
+                if (openDial == null && focusBarPinned) {
+                    // The pinned bar cannot be closed, only left: AF returns to the AF mode in use
+                    // before MF, so MF is never a place the operator has to find the way out of.
+                    DialCornerButton(
+                        glyph = stringResource(R.string.label_af),
+                        description = stringResource(R.string.a11y_return_to_af),
+                        onClick = actions::onToggleManualFocus,
+                        modifier = Modifier.align(Alignment.TopEnd),
+                    )
+                } else if (compact) {
+                    DialCornerButton(
+                        glyph = "×",
+                        description = stringResource(R.string.a11y_close_adjustment),
                         onClick = onCloseDial,
                         modifier = Modifier.align(Alignment.TopEnd),
                     )
@@ -315,7 +369,7 @@ fun ManualDialCluster(
         if (!compact) {
             DialChipRow(
                 state = state,
-                openDial = openDial,
+                openDial = shownDial,
                 onSelect = onSelectDial,
                 actions = actions,
             onOpenFnMenu = onOpenFnMenu,
@@ -447,15 +501,14 @@ internal fun CompactFnButton(
 }
 
 @Composable
-private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val a11yCloseAdjustment = stringResource(R.string.a11y_close_adjustment)
+private fun DialCornerButton(glyph: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val activate = onClick
     Box(
         modifier = modifier
             .size(48.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
-                contentDescription = a11yCloseAdjustment
+                contentDescription = description
                 role = Role.Button
                 onClick {
                     activate()
@@ -472,7 +525,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
                 .border(1.dp, CameraColors.AffordanceEdge, RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
-            Text("×", color = CameraColors.TextPrimary, style = hudGlyph(16.sp, FontWeight.Normal))
+            Text(glyph, color = CameraColors.TextPrimary, style = hudGlyph(if (glyph == "×") 16.sp else 12.sp, FontWeight.Normal))
         }
     }
 }
@@ -509,7 +562,9 @@ private fun FnDialChip(
                 caps?.minFocusDistanceDiopters ?: 0f,
             )
             DialChip(
-                label = labelContext.localizedLabel(controls.focusMode),
+                // The same AF-S / AF-C / MF the Fn tile prints (fnTileReadout): "Continuous" here
+                // beside "AF-C" there named one setting twice and pushed WB and EV off the row.
+                label = focusModeShortLabel(controls.focusMode, labelContext),
                 // The drawn label is the LIVE AF mode, so the node's name has to come from the slot —
                 // and the mode then rides the STATE with the distance, or it is spoken nowhere on the
                 // chip while a sighted user reads it in the pill.
@@ -521,8 +576,8 @@ private fun FnDialChip(
                     labelContext.localizedLabel(controls.focusMode),
                 ),
                 active = openDial == DialType.FOCUS,
-                enabled = policyEnabled && quickManualDialEnabled(DialType.FOCUS, availability),
-                onClick = { onSelect(DialType.FOCUS) },
+                enabled = policyEnabled && availability.focusModes.size > 1,
+                onClick = { performQuickFn(FnSlot.FOCUS, state, actions) },
                 onLongClick = onOpenFnMenu,
             )
         }

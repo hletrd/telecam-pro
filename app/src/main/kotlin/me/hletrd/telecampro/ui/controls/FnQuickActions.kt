@@ -110,7 +110,11 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.EXPOSURE_MODE -> actions.onExposureMode(
             nextAvailable(state.controls.exposureMode, availability.exposureModes),
         )
-        FnSlot.FOCUS -> actions.onFocusMode(nextAvailable(state.controls.focusMode, availability.focusModes))
+        FnSlot.FOCUS -> if (FocusMode.MANUAL in availability.focusModes) {
+            actions.onToggleManualFocus()
+        } else {
+            actions.onFocusMode(nextAvailable(state.controls.focusMode, availability.focusModes))
+        }
         FnSlot.SHUTTER -> if (availability.shutterDialEnabled) actions.onShutterMode(
             if (state.controls.shutterMode == ShutterMode.SPEED) ShutterMode.ANGLE else ShutterMode.SPEED,
         )

@@ -166,7 +166,6 @@ class QuickManualDialEnablementTest {
     @Test
     fun `numeric Fn slots open adjustments instead of destructive quick actions`() {
         val expected = mapOf(
-            FnSlot.FOCUS to DialType.FOCUS,
             FnSlot.SHUTTER to DialType.SHUTTER,
             FnSlot.ISO to DialType.ISO,
             FnSlot.WB to DialType.WB,
@@ -175,6 +174,22 @@ class QuickManualDialEnablementTest {
         )
         expected.forEach { (slot, dial) -> assertEquals(slot.name, dial, manualDialForFnSlot(slot)) }
         assertNull(manualDialForFnSlot(FnSlot.EXPOSURE_MODE))
+        // Focus toggles AF <-> MF instead; MF pins its own bar (2026-11-09).
+        assertNull(manualDialForFnSlot(FnSlot.FOCUS))
+    }
+
+    @Test
+    fun `MF pins the focus bar only where the route can drive the lens, and any opened ruler wins`() {
+        val mf = controlAvailability(
+            CameraControlCapabilities(supportsManualFocus = true, hasFocusDistanceRange = true, afModes = intArrayOf(0, 4)),
+            ManualControls(focusMode = FocusMode.MANUAL),
+        )
+        assertTrue(manualFocusBarPinned(FocusMode.MANUAL, mf))
+        assertFalse(manualFocusBarPinned(FocusMode.CONTINUOUS, mf))
+        assertFalse(manualFocusBarPinned(FocusMode.MANUAL, controlAvailability(null, ManualControls(focusMode = FocusMode.MANUAL))))
+        assertEquals(DialType.FOCUS, shownManualDial(null, focusBarPinned = true))
+        assertEquals(DialType.ISO, shownManualDial(DialType.ISO, focusBarPinned = true))
+        assertNull(shownManualDial(null, focusBarPinned = false))
     }
 
     @Test

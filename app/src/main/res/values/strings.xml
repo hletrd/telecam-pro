@@ -136,6 +136,7 @@
     <string name="a11y_open_function_menu">Open function menu</string>
     <string name="a11y_close_function_menu">Close function menu</string>
     <string name="a11y_close_adjustment">Close adjustment</string>
+    <string name="a11y_return_to_af">Back to autofocus</string>
     <string name="a11y_switch_camera">Switch camera</string>
     <string name="a11y_reset_focus_point">Reset focus point</string>
     <string name="a11y_tap_focus_held">Tap focus held</string>

@@ -68,6 +68,8 @@ interface CameraActions {
     fun onShutterNs(ns: Long)
     fun onExposureCompensation(ev: Int)
     fun onExposureMode(mode: ExposureMode)
+    /** AF <-> MF: MF from any AF mode, back to the AF mode in use before from MF. */
+    fun onToggleManualFocus()
     fun onToggleAeLock(locked: Boolean)
     fun onAntibanding(mode: Antibanding)
     fun onShutterMode(mode: ShutterMode)

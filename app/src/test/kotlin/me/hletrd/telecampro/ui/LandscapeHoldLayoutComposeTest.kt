@@ -17,6 +17,7 @@ import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
@@ -171,6 +172,28 @@ class LandscapeHoldLayoutComposeTest {
                 assertTrue("stack item at $orientation $rect over overview $overview", !rect.overlaps(overview))
             }
         }
+    }
+
+    // Owner report 2026-11-09: "the MF bar seems to be missing" — it lived only behind Fn or the Focus
+    // chip. MF now keeps it on screen, with an AF key back, and the rest of the bottom chrome in place.
+    @Test fun `MF keeps the focus bar and its AF key on screen, upright and sideways`() {
+        val mfCaps = ViewModelTestAccess.caps().copy(minFocusDistanceDiopters = 10f, afModes = intArrayOf(0, 1, 4))
+        show(ready.copy(caps = mfCaps, controls = ready.controls.copy(focusMode = FocusMode.MANUAL)), details = false)
+        val bar = context.getString(R.string.a11y_focus_distance)
+        val af = context.getString(R.string.a11y_return_to_af)
+        val rail = context.getString(R.string.a11y_mode_button, context.getString(R.string.mode_video))
+        for (orientation in listOf(0, 90, 270)) {
+            hold(orientation)
+            assertTrue("MF bar drawn at $orientation", visible(described(bar)))
+            assertTrue("AF key drawn at $orientation", visible(described(af)))
+            assertTrue("bar above the mode row at $orientation", described(bar).bottom <= described(rail).top)
+        }
+        state.value = state.value.copy(controls = state.value.controls.copy(focusMode = FocusMode.CONTINUOUS))
+        compose.waitForIdle()
+        assertTrue(
+            "no bar in AF",
+            compose.onAllNodes(hasContentDescription(bar), useUnmergedTree = true).fetchSemanticsNodes().isEmpty(),
+        )
     }
 
     /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
