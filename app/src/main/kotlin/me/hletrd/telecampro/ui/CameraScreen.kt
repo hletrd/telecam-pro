@@ -755,9 +755,11 @@ fun CameraScreen(
         var railSectionTopPx by remember { mutableIntStateOf(0) }
         var railSectionBottomPx by remember { mutableIntStateOf(0) }
         var railSeamOffsetPx by remember { mutableIntStateOf(0) }
-        // The dial chips above the rail (shooting info open) ride the same lift, so the span the
-        // rule tests starts at their rest top. Lifting the rail alone landed it on them (device-seen
-        // 2026-11-09). Zero height in the compact rest state, where the span is the rail section.
+        // The dial chips above the rail (shooting info open) ride the same lift: lifting the rail alone
+        // landed it on them (device-seen 2026-11-09). The rule still TESTS the rail section alone —
+        // testing from the chips' slot top made an edge grazing their transparent touch margin lift
+        // the whole block ~105 dp whenever DISP opened. seamSpanTopPx is the lifted chrome's top.
+        // Zero height in the compact rest state, where that top is the rail section's.
         var dialClusterRestTopPx by remember { mutableIntStateOf(0) }
         var dialClusterRestHeightPx by remember { mutableIntStateOf(0) }
         val seamSpanTopPx = if (dialClusterRestHeightPx > 0) dialClusterRestTopPx else railSectionTopPx
@@ -798,7 +800,7 @@ fun CameraScreen(
             val previewBottomPx = topOffsetPx + previewHeightPx
             railSeamOffsetPx = bottomRailSeamOffsetPx(
                 previewBottomPx = previewBottomPx,
-                railTopPx = seamSpanTopPx,
+                railTopPx = railSectionTopPx,
                 railBottomPx = railSectionBottomPx,
                 gapPx = eightDpSeamGapPx,
             )
@@ -1588,7 +1590,6 @@ fun CameraScreen(
                     currentActions.value.onCameraInputBlockedChange(true)
                     fnOverlayVisible = true
                 },
-                fnButtonModifier = Modifier.focusRequester(functionMenuFocusRequester),
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
@@ -1638,7 +1639,9 @@ fun CameraScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        if (!detailsVisible) {
+                        // Fn stays in this row with the shooting info open too (UI review 2026-11-09):
+                        // DISP used to move it up into the dial-chip row.
+                        run {
                             // Residual, not raw gravity — see the FnOverlay note: with the window free to
                             // turn, gravity alone would move Fn to the thumb edge of a layout that had
                             // already moved. It also made two identical tablets disagree (Fn LEFT of the

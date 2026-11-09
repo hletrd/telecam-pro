@@ -551,7 +551,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   menu and dial ruler, 0/90/180/270, at 905 and 840 dp) finds no other overlap; the Fn tray
   covering chrome under its scrim is the modal's design in every orientation. With the shooting info open, the dial chips above the rail lift
   WITH it (`seamSpanTopPx`): the seam rule used to lift the rail alone, onto those chips, upright and
-  sideways alike (device-seen 2026-11-09). Pinned by `LandscapeHoldLayoutComposeTest`, which must run
+  sideways alike (device-seen 2026-11-09). The rule still TESTS the rail section alone: testing from
+  the chips' slot top lifted the whole block ~105 dp whenever DISP opened, and with it the Fn button,
+  which now stays in the rail row in both states. Pinned by `LandscapeHoldLayoutComposeTest`, which must run
   `@GraphicsMode(NATIVE)`: the legacy shadow measures a label as a few pixels and hides all three.
   Device-checked on PMA110 2026-11-09 (immutable debug `0694f2f0`) at 90° only, TC Video M with
   the shooting info, histogram, waveform and AF Lock on, not recording: lanes clear, rail and mode

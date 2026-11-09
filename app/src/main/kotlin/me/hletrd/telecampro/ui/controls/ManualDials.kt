@@ -257,7 +257,6 @@ fun ManualDialCluster(
     // and a dead button is indistinguishable from a working one until it is pressed.
     onOpenFnMenu: () -> Unit,
     modifier: Modifier = Modifier,
-    fnButtonModifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
     val controls = state.controls
@@ -379,7 +378,6 @@ fun ManualDialCluster(
                 onSelect = onSelectDial,
                 actions = actions,
             onOpenFnMenu = onOpenFnMenu,
-            fnButtonModifier = fnButtonModifier,
                 availability = availability,
                 glyphRotation = glyphRotation,
             )
@@ -397,7 +395,6 @@ private fun DialChipRow(
     availability: ControlAvailability,
     glyphRotation: Float,
     modifier: Modifier = Modifier,
-    fnButtonModifier: Modifier = Modifier,
 ) {
     val controls = state.controls
     // The chip row scrolls horizontally and its content is wider than the screen — without a hint
@@ -413,17 +410,9 @@ private fun DialChipRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // The glyph RESIDUAL, not raw gravity: handsets remain portrait-locked, so a held 90/270
-            // residual keeps this entry on the physical bottom edge. Only sw600dp+ windows may absorb
-            // the turn; there the already-rotated layout leaves this anchor at its raw start edge.
-            val entryAnchor = fnEntryAnchor(glyphRotation.roundToInt())
-            if (entryAnchor == FnEntryAnchor.START) {
-                CompactFnButton(
-                    onClick = onOpenFnMenu,
-                    glyphRotation = glyphRotation,
-                    modifier = fnButtonModifier,
-                )
-            }
+            // No Fn entry here (UI review 2026-11-09): it lives in the rail row in both states, so DISP
+            // no longer moves it up a row, and the chips get the full width. Its side there still
+            // follows the glyph RESIDUAL, not raw gravity: handsets remain portrait-locked.
             Row(
                 modifier = Modifier
                     .weight(1f)
@@ -445,13 +434,6 @@ private fun DialChipRow(
                         availability = availability,
                     )
                 }
-            }
-            if (entryAnchor == FnEntryAnchor.END) {
-                CompactFnButton(
-                    onClick = onOpenFnMenu,
-                    glyphRotation = glyphRotation,
-                    modifier = fnButtonModifier,
-                )
             }
         }
     }

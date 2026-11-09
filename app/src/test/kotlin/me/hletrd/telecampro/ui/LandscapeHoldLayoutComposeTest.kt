@@ -196,6 +196,19 @@ class LandscapeHoldLayoutComposeTest {
         )
     }
 
+    // UI review 2026-11-09: DISP moved Fn up into the dial-chip row, about 56 dp above where it sat.
+    @Test fun `opening the shooting info leaves Fn where it was`() {
+        show(busyVideo.copy(isRecording = false), details = false)
+        val fn = context.getString(R.string.a11y_open_function_menu)
+        val compact = described(fn)
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_show_shooting_info)).performClick()
+        compose.waitForIdle()
+        val fnNodes = compose.onAllNodes(hasContentDescription(fn), useUnmergedTree = true).fetchSemanticsNodes()
+        assertEquals("one Fn entry with the info open", 1, fnNodes.size)
+        assertEquals("Fn row", compact.top, fnNodes.single().boundsInRoot.top, 0.5f)
+        assertEquals("Fn side", compact.left, fnNodes.single().boundsInRoot.left, 0.5f)
+    }
+
     /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
     private fun slot(description: String): Rect =
         compose.onAllNodes(hasContentDescription(description), useUnmergedTree = true)

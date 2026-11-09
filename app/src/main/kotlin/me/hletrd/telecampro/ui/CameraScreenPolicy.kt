@@ -898,9 +898,9 @@ internal fun previewTopPx(
  * broken PHOTO layout. The band below is what is too short, so the section moves UP onto the image,
  * its bottom [gapPx] above the edge, exactly when its rest span — widened by [gapPx] so a bare touch
  * counts too — contains the edge. 16:9 (the whole cluster already on the image) and any preview that
- * clears the cluster answer 0. [railTopPx]/[railBottomPx] are the lifted span's REST extent (the
- * dial chips' top when they show, else the section's; measured before the offset is applied), in
- * the same coordinates as [previewBottomPx].
+ * clears the cluster answer 0. [railTopPx]/[railBottomPx] are the rail section's REST span (measured
+ * before the offset is applied), in the same coordinates as [previewBottomPx]; the dial chips are
+ * not part of the test, only of the lift.
  */
 internal fun bottomRailSeamOffsetPx(
     previewBottomPx: Int,
