@@ -6,6 +6,8 @@ import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.ModeExposure
+import me.hletrd.telecampro.camera.modeExposure
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
@@ -344,7 +346,9 @@ class ZoomMathTest {
             toMode = CaptureMode.VIDEO,
             controls = photoControls,
             rememberedPhotoExposureTimeNs = 8_000_000L,
-        )
+        separate = false,
+        memory = ModeExposureMemory(),
+)
         val video = remapModeOptics(
             fromMode = CaptureMode.PHOTO,
             toMode = CaptureMode.VIDEO,
@@ -364,7 +368,9 @@ class ZoomMathTest {
             toMode = CaptureMode.PHOTO,
             controls = video.controls,
             rememberedPhotoExposureTimeNs = entering.photoExposureTimeNs,
-        )
+        separate = false,
+        memory = ModeExposureMemory(),
+)
         val photo = remapModeOptics(
             fromMode = CaptureMode.VIDEO,
             toMode = CaptureMode.PHOTO,
@@ -381,6 +387,51 @@ class ZoomMathTest {
         assertEquals(500_000_000L, photo.controls.exposureTimeNs)
     }
 
+    @Test fun `separate exposure gives each mode its own set back after a round trip`() {
+        val photoM = ManualControls(
+            exposureMode = me.hletrd.telecampro.camera.ExposureMode.MANUAL,
+            exposureTimeNs = 100_000_000L, iso = 400, exposureCompensation = 0, fps = 30,
+        )
+        // First Photo -> Video: Video has no set yet, so it starts from Photo's (shared, as before).
+        val toVideo = modeExposureState(
+            fromMode = CaptureMode.PHOTO, toMode = CaptureMode.VIDEO, controls = photoM,
+            rememberedPhotoExposureTimeNs = photoM.exposureTimeNs, separate = true, memory = ModeExposureMemory(),
+        )
+        assertEquals(photoM.modeExposure(), toVideo.memory.photo)
+        // The operator sets Video to S 1/60, ISO 1600, -1 EV, then visits Photo and comes back.
+        val videoS = toVideo.controls.normalizedForCaptureMode(CaptureMode.VIDEO).copy(
+            exposureMode = me.hletrd.telecampro.camera.ExposureMode.SHUTTER,
+            exposureTimeNs = 16_666_667L, iso = 1600, exposureCompensation = -3,
+        )
+        val toPhoto = modeExposureState(
+            fromMode = CaptureMode.VIDEO, toMode = CaptureMode.PHOTO, controls = videoS,
+            rememberedPhotoExposureTimeNs = toVideo.photoExposureTimeNs, separate = true, memory = toVideo.memory,
+        )
+        assertEquals(photoM.modeExposure(), toPhoto.controls.modeExposure())
+        assertEquals(100_000_000L, toPhoto.photoExposureTimeNs)
+        val back = modeExposureState(
+            fromMode = CaptureMode.PHOTO, toMode = CaptureMode.VIDEO, controls = toPhoto.controls,
+            rememberedPhotoExposureTimeNs = toPhoto.photoExposureTimeNs, separate = true, memory = toPhoto.memory,
+        )
+        assertEquals(videoS.modeExposure(), back.controls.modeExposure())
+    }
+
+    @Test fun `with separate exposure off Video takes Photo's set and only the Photo shutter survives`() {
+        val photo = ManualControls(exposureTimeNs = 100_000_000L, iso = 400, fps = 30)
+        val videoSet = ModeExposure(
+            me.hletrd.telecampro.camera.ExposureMode.SHUTTER, 16_666_667L,
+            me.hletrd.telecampro.camera.ShutterMode.SPEED, 180f, 1600, -3,
+        )
+        val toVideo = modeExposureState(
+            fromMode = CaptureMode.PHOTO, toMode = CaptureMode.VIDEO, controls = photo,
+            rememberedPhotoExposureTimeNs = photo.exposureTimeNs, separate = false,
+            memory = ModeExposureMemory(video = videoSet),
+        )
+        assertEquals(photo, toVideo.controls)
+        // Off still records, so turning it on later returns each mode's latest set.
+        assertEquals(photo.modeExposure(), toVideo.memory.photo)
+    }
+
     @Test fun `angle mode round trip retains its dormant photo speed`() {
         val remembered = modeExposureState(
             fromMode = CaptureMode.PHOTO,
@@ -393,14 +444,18 @@ class ZoomMathTest {
                 fps = 30,
             ),
             rememberedPhotoExposureTimeNs = 8_000_000L,
-        )
+        separate = false,
+        memory = ModeExposureMemory(),
+)
         val video = remembered.controls.normalizedForCaptureMode(CaptureMode.VIDEO)
         val restored = modeExposureState(
             fromMode = CaptureMode.VIDEO,
             toMode = CaptureMode.PHOTO,
             controls = video,
             rememberedPhotoExposureTimeNs = remembered.photoExposureTimeNs,
-        )
+        separate = false,
+        memory = ModeExposureMemory(),
+)
 
         assertEquals(2_000_000_000L, restored.controls.exposureTimeNs)
         assertEquals(me.hletrd.telecampro.camera.ShutterMode.ANGLE, restored.controls.shutterMode)

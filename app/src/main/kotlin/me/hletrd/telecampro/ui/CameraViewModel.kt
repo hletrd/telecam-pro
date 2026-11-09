@@ -263,6 +263,9 @@ class CameraViewModel private constructor(
     // the photographer's Photo shutter (including ANGLE's dormant SPEED value). Persisted through
     // ExtraSettings so a process death while Video is selected still restores Photo faithfully.
     private var photoExposureTimeNs = ManualControls().exposureTimeNs
+    // Each capture mode's last exposure set, recorded as the mode is left ("Separate Photo/Video").
+    // Persisted beside photoExposureTimeNs; an MR recall leaves it alone, like the setting itself.
+    private var modeExposureMemory = ModeExposureMemory()
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var recordStartMs = 0L
@@ -1868,6 +1871,10 @@ class CameraViewModel private constructor(
             photoExposureTimeNs = previousPhotoExposureTimeNs
             return
         }
+        // Launch restore only: an MR recall keeps the live per-mode memory, like the setting itself.
+        if (honorPreserveOptions) {
+            modeExposureMemory = ModeExposureMemory(photo = e.photoModeExposure, video = e.videoModeExposure)
+        }
         // Armed only AFTER both refusal exits (AGG4-11): armed earlier, a REFUSED recall's codec,
         // transfer and formats (DNG included — a route input) were replayed by
         // applyEncoderInventory when the inventory landed, half-applying a bank the operator was
@@ -2047,6 +2054,7 @@ class CameraViewModel private constructor(
                 quickButtonAction = e.quickButtonAction,
                 preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
+                separateModeExposure = if (honorPreserveOptions) e.separateModeExposure else it.separateModeExposure,
                 activeMemorySlot = activeSlot,
                 status = if (statusPublication.shownChanged) statusPublication.plate.shown else it.status,
                 cameraCondition = statusPublication.plate.condition?.message,
@@ -2142,6 +2150,9 @@ class CameraViewModel private constructor(
             frameLines = s.frameLines,
             preserveLensSelection = s.preserveLensSelection,
             preserveTeleconverter = s.preserveTeleconverter,
+            separateModeExposure = s.separateModeExposure,
+            photoModeExposure = modeExposureMemory.photo,
+            videoModeExposure = modeExposureMemory.video,
         )
     }
 
@@ -2972,8 +2983,11 @@ class CameraViewModel private constructor(
             toMode = mode,
             controls = before.controls,
             rememberedPhotoExposureTimeNs = photoExposureTimeNs,
+            separate = before.separateModeExposure,
+            memory = modeExposureMemory,
         )
         photoExposureTimeNs = exposureState.photoExposureTimeNs
+        modeExposureMemory = exposureState.memory
         val optics = remapModeOptics(
             fromMode = before.mode,
             toMode = mode,
@@ -4481,6 +4495,11 @@ class CameraViewModel private constructor(
 
     override fun onTogglePreserveTeleconverter(enabled: Boolean) {
         _state.update { it.copy(preserveTeleconverter = enabled, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onToggleSeparateModeExposure(enabled: Boolean) {
+        _state.update { it.copy(separateModeExposure = enabled, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 

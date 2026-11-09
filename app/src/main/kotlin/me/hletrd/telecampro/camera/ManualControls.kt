@@ -360,6 +360,33 @@ internal fun frameIntervalNs(fps: Int): Long? =
     if (fps > 0) NANOS_PER_SECOND / fps else null
 
 /**
+ * One capture mode's own exposure: the PASM mode, the shutter (speed, angle, and which of the two is
+ * live), ISO and EV. With "Separate Photo/Video" on, the mode not in use keeps this set and gets it
+ * back on return, like Sony's "Different Set for Still/Mv" (owner request 2026-11-09: a 1/60 s video
+ * shutter came back as Photo's 1/10 s clamped to 1/30 s after one visit to Photo).
+ */
+data class ModeExposure(
+    val exposureMode: ExposureMode,
+    val exposureTimeNs: Long,
+    val shutterMode: ShutterMode,
+    val shutterAngle: Float,
+    val iso: Int,
+    val exposureCompensation: Int,
+)
+
+fun ManualControls.modeExposure(): ModeExposure =
+    ModeExposure(exposureMode, exposureTimeNs, shutterMode, shutterAngle, iso, exposureCompensation)
+
+fun ManualControls.withModeExposure(saved: ModeExposure): ManualControls = copy(
+    exposureMode = saved.exposureMode,
+    exposureTimeNs = saved.exposureTimeNs,
+    shutterMode = saved.shutterMode,
+    shutterAngle = saved.shutterAngle,
+    iso = saved.iso,
+    exposureCompensation = saved.exposureCompensation,
+)
+
+/**
  * Capture-mode boundary for shutter state. TeleCam Pro does not expose a video slow-shutter mode:
  * the selected 24/30/60p rate is a delivery contract, so every app-owned video exposure must fit
  * within one frame. Keeping this in the control packet also makes the OSD/ruler show the value the

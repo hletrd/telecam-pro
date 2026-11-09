@@ -1142,7 +1142,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
   main lens with TELE off; separate default-on Setup toggles preserve the last lens selection and
-  TELE mode when restoring saved settings. **Fresh defaults are general-purpose, not pro-flat (owner
+  TELE mode when restoring saved settings. **Photo and Video each keep their own exposure set** (PASM
+  mode, shutter speed/angle, ISO, EV) while the Exposure tab's "Separate Photo/Video" is on (default;
+  owner request 2026-11-09, Sony's "Different Set for Still/Mv"): `modeExposureState` records the set
+  of the mode being left and hands the entered mode its own back; persisted as `photoMx*`/`videoMx*`.
+  Off, the set is shared and only the Photo shutter is retained, as before. **Fresh defaults are general-purpose, not pro-flat (owner
   request 2026-10-26):** photo JPEG only (`PhotoFormats.DEFAULT`; the constructor's own defaults stay
   HEIF so derived values do not change meaning, and the OSD format tag stays silent at the default),
   video transfer SDR, Stabilization Standard, bitrate High, AAC-LC 256 kb/s stereo, NR and edge FAST.

@@ -34,6 +34,7 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.ModeExposure
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.WbGains
@@ -134,6 +135,13 @@ data class ExtraSettings(
     // turn an older operator's remembered non-main lens into the 1x default.
     val preserveLensSelection: Boolean = true,
     val preserveTeleconverter: Boolean = true,
+    // "Separate Photo/Video" (owner request 2026-11-09, default ON): each capture mode keeps its own
+    // exposure set. A preference like the two above, so an MR recall keeps the current value.
+    val separateModeExposure: Boolean = true,
+    // Each mode's last exposure set (null = that mode was never left, or a blob from before the keys
+    // existed: the first switch then shares the set, as it always did).
+    val photoModeExposure: ModeExposure? = null,
+    val videoModeExposure: ModeExposure? = null,
 )
 
 /**
@@ -455,6 +463,9 @@ class SettingsStore(
                 frameLines = enumOr(safeString("${prefix}frameLines", null), ed.frameLines),
                 preserveLensSelection = safeBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
                 preserveTeleconverter = safeBoolean("${prefix}preserveTeleconverter", ed.preserveTeleconverter),
+                separateModeExposure = safeBoolean("${prefix}separateModeExposure", ed.separateModeExposure),
+                photoModeExposure = loadModeExposure("${prefix}photoMx"),
+                videoModeExposure = loadModeExposure("${prefix}videoMx"),
             )
             Loaded(controls, extras)
         }.getOrNull()
@@ -553,6 +564,38 @@ class SettingsStore(
         putString("${prefix}frameLines", e.frameLines.name)
         putBoolean("${prefix}preserveLensSelection", e.preserveLensSelection)
         putBoolean("${prefix}preserveTeleconverter", e.preserveTeleconverter)
+        putBoolean("${prefix}separateModeExposure", e.separateModeExposure)
+        putModeExposure("${prefix}photoMx", e.photoModeExposure)
+        putModeExposure("${prefix}videoMx", e.videoModeExposure)
+    }
+
+    private fun SharedPreferences.Editor.putModeExposure(key: String, m: ModeExposure?) {
+        if (m == null) {
+            MODE_EXPOSURE_SUFFIXES.forEach { remove("$key$it") }
+            return
+        }
+        putString("${key}Mode", m.exposureMode.name)
+        putLong("${key}TimeNs", m.exposureTimeNs)
+        putString("${key}Shutter", m.shutterMode.name)
+        putFloat("${key}Angle", m.shutterAngle)
+        putInt("${key}Iso", m.iso)
+        putInt("${key}Ev", m.exposureCompensation)
+    }
+
+    /** Null unless the set's mode key is present; every value is bounded like its live twin. */
+    private fun loadModeExposure(key: String): ModeExposure? {
+        val mode = safeString("${key}Mode", null) ?: return null
+        val d = ManualControls()
+        return ModeExposure(
+            exposureMode = enumOr(mode, d.exposureMode),
+            exposureTimeNs = safeLong("${key}TimeNs", d.exposureTimeNs)
+                .coerceIn(MIN_PERSISTED_EXPOSURE_NS, MAX_PERSISTED_EXPOSURE_NS),
+            shutterMode = enumOr(safeString("${key}Shutter", null), d.shutterMode),
+            shutterAngle = safeFloat("${key}Angle", d.shutterAngle).coerceIn(1f, 360f),
+            iso = safeInt("${key}Iso", d.iso).coerceIn(MIN_PERSISTED_ISO, MAX_PERSISTED_ISO),
+            exposureCompensation = safeInt("${key}Ev", d.exposureCompensation)
+                .coerceIn(MIN_PERSISTED_EV_INDEX, MAX_PERSISTED_EV_INDEX),
+        )
     }
 
     data class Loaded(val controls: ManualControls, val extras: ExtraSettings)
@@ -577,6 +620,7 @@ class SettingsStore(
         const val MAX_PERSISTED_WB_GAIN = 32f
         // Generous outer bounds only; the selected route's advertised range (and PMA110's 4 s still
         // ceiling) still clamps at the capability seam.
+        val MODE_EXPOSURE_SUFFIXES = listOf("Mode", "TimeNs", "Shutter", "Angle", "Iso", "Ev")
         const val MIN_PERSISTED_EXPOSURE_NS = 1L
         const val MAX_PERSISTED_EXPOSURE_NS = 60_000_000_000L
         const val MIN_PERSISTED_FPS = 1

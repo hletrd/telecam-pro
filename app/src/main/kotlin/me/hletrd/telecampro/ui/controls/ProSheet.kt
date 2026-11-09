@@ -1226,6 +1226,12 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.isoDialEnabled && isoMarks.size > 1 &&
             (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
+    ToggleRow(
+        label = stringResource(R.string.label_separate_mode_exposure),
+        hint = stringResource(R.string.hint_separate_mode_exposure),
+        checked = state.separateModeExposure,
+        onCheckedChange = actions::onToggleSeparateModeExposure,
+    )
 
     // Metering and what holds or steadies it (owner request 2026-10-28, "group the menu"): the
     // exposure group above is the value controls, this one decides what they measure.

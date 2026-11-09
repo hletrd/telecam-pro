@@ -10,6 +10,9 @@ import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.ModeExposure
+import me.hletrd.telecampro.camera.modeExposure
+import me.hletrd.telecampro.camera.withModeExposure
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.LENS_CAPTION_ROUNDING_BAND
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
@@ -344,9 +347,21 @@ internal data class ModeOptics(
     val controls: ManualControls,
 )
 
+/** Each capture mode's own [ModeExposure]; null until that mode has been left once. */
+internal data class ModeExposureMemory(
+    val photo: ModeExposure? = null,
+    val video: ModeExposure? = null,
+) {
+    fun of(mode: CaptureMode): ModeExposure? = if (mode == CaptureMode.VIDEO) video else photo
+
+    fun with(mode: CaptureMode, value: ModeExposure): ModeExposureMemory =
+        if (mode == CaptureMode.VIDEO) copy(video = value) else copy(photo = value)
+}
+
 internal data class ModeExposureState(
     val controls: ManualControls,
     val photoExposureTimeNs: Long,
+    val memory: ModeExposureMemory,
 )
 
 internal data class RestoredExposureState(
@@ -427,24 +442,31 @@ internal fun restoredExposureState(
  * Retains the photographer's Photo shutter while Video applies its fixed-frame-rate ceiling.
  * [ManualControls.exposureTimeNs] also holds the dormant SPEED value while ANGLE is selected, so it
  * must round-trip even when the active angle itself already fits within one frame.
+ *
+ * The mode being left always records its [ModeExposure] in [memory]. With [separate] on, the mode
+ * being entered gets its own recorded set back (mode, shutter, ISO, EV); until it has one, or with
+ * [separate] off, the set is shared and only the Photo shutter is retained as before.
  */
 internal fun modeExposureState(
     fromMode: CaptureMode,
     toMode: CaptureMode,
     controls: ManualControls,
     rememberedPhotoExposureTimeNs: Long,
+    separate: Boolean,
+    memory: ModeExposureMemory,
 ): ModeExposureState {
-    val remembered = if (fromMode == CaptureMode.PHOTO) {
-        controls.exposureTimeNs
-    } else {
-        rememberedPhotoExposureTimeNs.coerceAtLeast(1L)
+    val saved = memory.of(toMode)?.takeIf { separate && toMode != fromMode }
+    val remembered = when {
+        fromMode == CaptureMode.PHOTO -> controls.exposureTimeNs
+        saved != null && toMode == CaptureMode.PHOTO -> saved.exposureTimeNs
+        else -> rememberedPhotoExposureTimeNs.coerceAtLeast(1L)
     }
-    val targetControls = if (fromMode == CaptureMode.VIDEO && toMode == CaptureMode.PHOTO) {
-        controls.copy(exposureTimeNs = remembered)
-    } else {
-        controls
+    val targetControls = when {
+        saved != null -> controls.withModeExposure(saved)
+        fromMode == CaptureMode.VIDEO && toMode == CaptureMode.PHOTO -> controls.copy(exposureTimeNs = remembered)
+        else -> controls
     }
-    return ModeExposureState(targetControls, remembered)
+    return ModeExposureState(targetControls, remembered, memory.with(fromMode, controls.modeExposure()))
 }
 
 /**

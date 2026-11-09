@@ -2230,6 +2230,8 @@ data class CameraUiState(
     // relaunches, while a fresh install still opens on the 1× main lens with TELE off.
     val preserveLensSelection: Boolean = true,
     val preserveTeleconverter: Boolean = true,
+    // "Separate Photo/Video": each capture mode keeps its own exposure set (ModeExposure).
+    val separateModeExposure: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null means
     // the large reticle has faded, not necessarily that the functional AF/AE point was released.
     val tapPoint: Pair<Float, Float>? = null,

@@ -91,6 +91,7 @@
     <string name="label_remember_settings">Remember Settings</string>
     <string name="label_remember_lens">Remember Lens</string>
     <string name="label_remember_teleconverter">Remember Teleconverter</string>
+    <string name="label_separate_mode_exposure">Separate Photo/Video</string>
     <string name="label_open_gate_43">Open Gate 4:3</string>
     <string name="label_stabilization">Stabilization</string>
     <string name="label_audio">Audio</string>
@@ -636,6 +637,7 @@
     <string name="hint_quick_button">What the side quick button does in this app.</string>
     <string name="hint_remember_lens">Starts on the lens you used last.</string>
     <string name="hint_remember_teleconverter">Starts with TELE on if you left it on.</string>
+    <string name="hint_separate_mode_exposure">Photo and Video each keep their own mode, shutter, ISO and EV.</string>
     <string name="hint_self_timer">Delays the shot so pressing the shutter does not shake the frame.</string>
     <string name="hint_sharpness">In-camera sharpening. Off keeps untouched detail for editing.</string>
     <string name="hint_shutter">Speed reads 1/x s; Angle reads cine degrees (180° = half the frame time).</string>

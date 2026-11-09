@@ -203,6 +203,8 @@ interface CameraActions {
     fun onToggleRememberSettings(enabled: Boolean)
     fun onTogglePreserveLensSelection(enabled: Boolean)
     fun onTogglePreserveTeleconverter(enabled: Boolean)
+    /** "Separate Photo/Video": each capture mode keeps its own mode, shutter, ISO and EV. */
+    fun onToggleSeparateModeExposure(enabled: Boolean)
     /** EXPERIMENTAL vivo maker Log opt-in (Setup, default OFF; camera/MakerLog.kt). */
     fun onToggleVivoMakerLogExperimental(enabled: Boolean)
     fun onSetPhotoFnSlots(slots: List<FnSlot>)

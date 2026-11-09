@@ -87,6 +87,7 @@
     <string name="label_remember_settings">설정 기억</string>
     <string name="label_remember_lens">렌즈 기억</string>
     <string name="label_remember_teleconverter">텔레컨버터 기억</string>
+    <string name="label_separate_mode_exposure">사진/동영상 따로 기억</string>
     <string name="label_open_gate_43">오픈 게이트 4:3</string>
     <string name="label_stabilization">손떨림 보정</string>
     <string name="label_audio">오디오</string>
@@ -592,6 +593,7 @@
     <string name="hint_quick_button">측면 퀵 버튼이 이 앱에서 하는 동작입니다.</string>
     <string name="hint_remember_lens">마지막으로 사용한 렌즈로 시작합니다.</string>
     <string name="hint_remember_teleconverter">텔레를 켜 두었다면 켜진 채로 시작합니다.</string>
+    <string name="hint_separate_mode_exposure">사진과 동영상이 모드, 셔터, ISO, EV를 각각 기억합니다.</string>
     <string name="hint_self_timer">셔터를 누를 때의 흔들림이 담기지 않도록 촬영을 늦춥니다.</string>
     <string name="hint_sharpness">카메라 내 샤프닝입니다. 끄면 편집할 디테일을 그대로 둡니다.</string>
     <string name="hint_shutter">속도는 1/x초, 각도는 시네 셔터 각도(180° = 프레임 시간의 절반)로 표시합니다.</string>

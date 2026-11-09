@@ -23,6 +23,7 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.ModeExposure
 import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhoneModel
@@ -459,6 +460,9 @@ class SettingsStoreTest {
         frameLines = FrameLineType.CINEMA,
         preserveLensSelection = false,
         preserveTeleconverter = false,
+        separateModeExposure = false,
+        photoModeExposure = ModeExposure(ExposureMode.MANUAL, 8_000_000L, ShutterMode.SPEED, 180f, 400, 0),
+        videoModeExposure = ModeExposure(ExposureMode.SHUTTER, 16_666_667L, ShutterMode.ANGLE, 172.8f, 1600, -3),
     )
 
     @Test
@@ -466,6 +470,19 @@ class SettingsStoreTest {
         val store = SettingsStore(FakePrefs())
         store.save(nonDefaultControls, nonDefaultExtras)
         assertEquals(SettingsStore.Loaded(nonDefaultControls, nonDefaultExtras), store.load())
+    }
+
+    @Test
+    fun `an older blob keeps separate exposure ON with no per-mode sets, and a cleared set drops its keys`() {
+        val store = SettingsStore(FakePrefs(mutableMapOf("hasSaved" to true)))
+        val legacy = store.load()?.extras
+        assertEquals(true, legacy?.separateModeExposure)
+        assertEquals(null, legacy?.photoModeExposure)
+        assertEquals(null, legacy?.videoModeExposure)
+        store.save(ManualControls(), nonDefaultExtras)
+        store.save(ManualControls(), nonDefaultExtras.copy(videoModeExposure = null))
+        assertEquals(null, store.load()?.extras?.videoModeExposure)
+        assertEquals(nonDefaultExtras.photoModeExposure, store.load()?.extras?.photoModeExposure)
     }
 
     @Test

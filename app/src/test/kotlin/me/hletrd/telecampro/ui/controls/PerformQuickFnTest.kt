@@ -144,6 +144,7 @@ class PerformQuickFnTest {
         override fun onCameraOverride(id: String?) = hit("onCameraOverride")
         override fun onToggleRememberSettings(enabled: Boolean) = hit("onToggleRememberSettings")
         override fun onTogglePreserveLensSelection(enabled: Boolean) = hit("onTogglePreserveLensSelection")
+        override fun onToggleSeparateModeExposure(enabled: Boolean) = hit("onToggleSeparateModeExposure")
         override fun onTogglePreserveTeleconverter(enabled: Boolean) = hit("onTogglePreserveTeleconverter")
         override fun onToggleVivoMakerLogExperimental(enabled: Boolean) = hit("onToggleVivoMakerLogExperimental")
         override fun onSetPhotoFnSlots(slots: List<FnSlot>) = hit("onSetPhotoFnSlots")

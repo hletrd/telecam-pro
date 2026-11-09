@@ -85,4 +85,31 @@ class SettingsRelaunchRobolectricTest {
         val third = launch()
         assertRestored(third, "third launch")
     }
+
+    // Owner report 2026-11-09: Video at 1/60 s came back as 1/30 s after one visit to Photo.
+    @Test fun `each mode keeps its own exposure across a mode trip and a relaunch`() {
+        val first = launch()
+        first.onStart()
+        first.onExposureMode(ExposureMode.MANUAL)
+        first.onShutterNs(100_000_000L)
+        first.onIso(400)
+        first.onModeChange(CaptureMode.VIDEO)
+        first.onExposureMode(ExposureMode.SHUTTER)
+        first.onShutterNs(16_666_667L)
+        first.onModeChange(CaptureMode.PHOTO)
+        idleFor(1_000)
+        val photo = first.state.value.controls
+        assertEquals("photo mode back", ExposureMode.MANUAL, photo.exposureMode)
+        assertEquals("photo shutter back", 100_000_000L, photo.exposureTimeNs)
+        first.onStop()
+        clear(first)
+
+        val second = launch()
+        second.onStart()
+        second.onModeChange(CaptureMode.VIDEO)
+        idleFor(1_000)
+        val video = second.state.value.controls
+        assertEquals("video mode after relaunch", ExposureMode.SHUTTER, video.exposureMode)
+        assertEquals("video shutter after relaunch", 16_666_667L, video.exposureTimeNs)
+    }
 }
