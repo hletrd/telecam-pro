@@ -1439,7 +1439,8 @@ class CameraViewModel private constructor(
                 // counting here instead of posting keeps the held ticks off the main thread.
                 if (appSideExposureHeldForRecording(s.mode, s.isRecording, s.isRecordingStarting)) {
                     aeTicksHeldDuringTake.incrementAndGet()
-                } else {
+                } else if (!s.controls.aeLock) {
+                    // AE lock holds the loop where it stands, as the take does above.
                     mainHandler.post { applyAutoExposure(h.luma) }
                 }
             }
@@ -5236,6 +5237,8 @@ class CameraViewModel private constructor(
         val s = _state.value
         // A tick posted just before REC began must not swap the request mid-take either.
         if (appSideExposureHeldForRecording(s.mode, s.isRecording, s.isRecordingStarting)) return
+        // A tick posted just before AE lock landed must not step past the locked exposure either.
+        if (s.controls.aeLock) return
         // One row per take: how many ticks the hold absorbed (none in a scene that never moved).
         val heldTicks = aeTicksHeldDuringTake.getAndSet(0)
         if (heldTicks > 0 && me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {

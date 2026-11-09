@@ -151,8 +151,17 @@ internal fun controlAvailability(
             // reading disabled, as it does in MANUAL focus (DeviceProfile, WhiteBalance.kt).
             (caps.facePrioritySceneKeepsManualWb || !wbAppOwned(normalized, wbCap)),
         afLockEnabled = manualFocusAvailable && normalized.focusMode != FocusMode.MANUAL,
-        aeLockEnabled = normalized.exposureMode == ExposureMode.PROGRAM &&
-            !normalized.programAppSide && caps.aeModes.has(normalized.flash.autoAeMetadata),
+        // HAL AE takes CONTROL_AE_LOCK; the app-side loop (S, ISO, photo P) holds its last step while
+        // locked (2026-11-09: AE lock used to exist only in video P, the one HAL-AE program mode).
+        aeLockEnabled = when (normalized.exposureMode) {
+            ExposureMode.MANUAL -> false
+            ExposureMode.SHUTTER, ExposureMode.ISO -> manualAeAvailable
+            ExposureMode.PROGRAM -> if (normalized.programAppSide) {
+                manualAeAvailable
+            } else {
+                caps.aeModes.has(normalized.flash.autoAeMetadata)
+            }
+        },
         awbLockEnabled = normalized.wbMode == WbMode.AUTO &&
             caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
         // A grey-card sample must come from the HAL's live, unlocked AUTO path. Manual/preset/

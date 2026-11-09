@@ -151,6 +151,14 @@ class ControlAvailabilityTest {
         assertFalse(manual.afLockEnabled)
         assertFalse(manual.aeLockEnabled)
         assertFalse(manual.awbLockEnabled)
+        // The app-side loop locks by holding still: S, ISO and photo P now admit AE lock too.
+        for (appSide in listOf(
+            ManualControls(exposureMode = ExposureMode.SHUTTER),
+            ManualControls(exposureMode = ExposureMode.ISO),
+            ManualControls(exposureMode = ExposureMode.PROGRAM, programAppSide = true),
+        )) {
+            assertTrue("${appSide.exposureMode} app-side", controlAvailability(caps, appSide).aeLockEnabled)
+        }
         assertFalse(manual.customWbCaptureEnabled)
         assertEquals(listOf(FlashMode.OFF, FlashMode.TORCH), manual.flashModes)
         manual.flashModes.forEach { mode ->
