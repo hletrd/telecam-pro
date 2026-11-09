@@ -4,9 +4,11 @@ import android.content.Context
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.ControlAvailability
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.controlAvailability
@@ -87,6 +89,9 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         FnSlot.AUDIO_SCENE -> context?.localizedLabel(state.audioScene) ?: audioSceneLabel(state.audioScene)
         FnSlot.GRID -> context?.localizedLabel(state.grid) ?: gridTypeLabel(state.grid)
         FnSlot.LEVEL -> onOff(state.level)
+        FnSlot.AE_LOCK -> onOff(c.aeLock)
+        FnSlot.AF_LOCK -> onOff(c.afLock)
+        FnSlot.AWB_LOCK -> onOff(c.awbLock)
         FnSlot.PUNCH_IN -> onOff(state.punchIn)
         FnSlot.TELECONVERTER -> if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else onOff(false)
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else onOff(false)
@@ -97,6 +102,19 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         FnSlot.AUDIO_INPUT -> context?.localizedLabel(state.audioInputPreference) ?: audioInputPreferenceLabel(state.audioInputPreference)
     }
 }
+
+/**
+ * Whether a lock slot can act: set where the route admits that lock, and always releasable once set
+ * (a lock left on across a mode change must not become a tile that cannot turn it off). Every other
+ * slot answers true; its own gates live in [quickFnEnabled].
+ */
+internal fun lockSlotAvailable(slot: FnSlot, controls: ManualControls, availability: ControlAvailability): Boolean =
+    when (slot) {
+        FnSlot.AE_LOCK -> controls.aeLock || availability.aeLockEnabled
+        FnSlot.AF_LOCK -> controls.afLock || availability.afLockEnabled
+        FnSlot.AWB_LOCK -> controls.awbLock || availability.awbLockEnabled
+        else -> true
+    }
 
 internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
     // Defense in depth for EVERY caller surface (Fn overlay, My Menu, Recent): the visual
@@ -140,6 +158,13 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.AUDIO_SCENE -> actions.onAudioScene(nextAudioScene(state.audioScene))
         FnSlot.GRID -> actions.onGridType(nextGridType(state.grid))
         FnSlot.LEVEL -> actions.onToggleLevel(!state.level)
+        FnSlot.AE_LOCK, FnSlot.AF_LOCK, FnSlot.AWB_LOCK -> if (lockSlotAvailable(slot, state.controls, availability)) {
+            when (slot) {
+                FnSlot.AE_LOCK -> actions.onToggleAeLock(!state.controls.aeLock)
+                FnSlot.AF_LOCK -> actions.onAfLock(!state.controls.afLock)
+                else -> actions.onToggleAwbLock(!state.controls.awbLock)
+            }
+        }
         FnSlot.PUNCH_IN -> actions.onTogglePunchIn(!state.punchIn)
         FnSlot.TELECONVERTER -> actions.onToggleTeleconverter(!state.teleconverterMode)
         FnSlot.OPEN_GATE -> actions.onToggleOpenGate(!state.openGate) // gate lives in quickFnEnabled

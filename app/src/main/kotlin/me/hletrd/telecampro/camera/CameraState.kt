@@ -357,10 +357,16 @@ enum class FnSlot {
     // Full sheet name; the Fn strip tile draws only its icon and value (fnTileReadout).
     TIMER,
     ASPECT,
-    AUDIO_INPUT;
+    AUDIO_INPUT,
+
+    // 2026-11-09 (owner: "AFL and the like sit in the menu, so a change can't be checked on the
+    // camera right away"): the three locks as Fn toggles; the viewfinder stays visible above the tray.
+    AE_LOCK,
+    AF_LOCK,
+    AWB_LOCK;
 
     companion object {
-        val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
+        val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV, AE_LOCK, AF_LOCK)
         val VIDEO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, TRANSFER, STABILIZATION, AUDIO_SCENE)
         val DEFAULT = PHOTO_DEFAULT
         val MY_MENU_DEFAULT = listOf(STABILIZATION, PEAKING, ZEBRA, DRIVE, METERING, TRANSFER)
@@ -415,6 +421,14 @@ internal fun normalizeFnSlots(
     return slots.distinct().take(safeLimit)
         .ifEmpty { fallback.distinct().take(safeLimit) }
 }
+
+/**
+ * A bar saved before the lock tiles existed gets AE and AF lock appended ONCE, where it has room
+ * (2026-11-09): the defaults reach only fresh installs, and the owner's request was to reach the
+ * locks without the menu. A bar that is full, or was saved since, is left exactly as it is.
+ */
+internal fun offerLockSlots(slots: List<FnSlot>, offered: Boolean, limit: Int = 8): List<FnSlot> =
+    if (offered) slots else (slots + listOf(FnSlot.AE_LOCK, FnSlot.AF_LOCK).filterNot { it in slots }).take(limit)
 
 /**
  * Coarse AF-engine state for the tap-AF reticle color (Sony green-on-lock / red-on-fail). Mapped

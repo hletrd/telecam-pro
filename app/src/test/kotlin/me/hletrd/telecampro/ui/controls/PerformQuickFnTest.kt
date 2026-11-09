@@ -61,14 +61,14 @@ class PerformQuickFnTest {
         override fun onFinderBottomClearanceChanged(fraction: Float) = Unit
         override fun onFocusMode(mode: FocusMode) = hit("onFocusMode($mode)")
         override fun onFocusSlider(slider: Float) = hit("onFocusSlider")
-        override fun onAfLock(locked: Boolean) = hit("onAfLock")
+        override fun onAfLock(locked: Boolean) = hit("onAfLock($locked)")
         override fun onTapFocus(nx: Float, ny: Float) = hit("onTapFocus")
         override fun onResetFocusPoint() = hit("onResetFocusPoint")
         override fun onIso(iso: Int) = hit("onIso($iso)")
         override fun onShutterNs(ns: Long) = hit("onShutterNs($ns)")
         override fun onExposureCompensation(ev: Int) = hit("onExposureCompensation($ev)")
         override fun onExposureMode(mode: ExposureMode) = hit("onExposureMode($mode)")
-        override fun onToggleAeLock(locked: Boolean) = hit("onToggleAeLock")
+        override fun onToggleAeLock(locked: Boolean) = hit("onToggleAeLock($locked)")
         override fun onAntibanding(mode: Antibanding) = hit("onAntibanding")
         override fun onShutterMode(mode: ShutterMode) = hit("onShutterMode($mode)")
         override fun onShutterAngle(angle: Float) = hit("onShutterAngle")
@@ -146,6 +146,7 @@ class PerformQuickFnTest {
         override fun onTogglePreserveLensSelection(enabled: Boolean) = hit("onTogglePreserveLensSelection")
         override fun onToggleSeparateModeExposure(enabled: Boolean) = hit("onToggleSeparateModeExposure")
         override fun onToggleManualFocus() = hit("onToggleManualFocus")
+        override fun onLongPressLock(nx: Float, ny: Float) = hit("onLongPressLock")
         override fun onTogglePreserveTeleconverter(enabled: Boolean) = hit("onTogglePreserveTeleconverter")
         override fun onToggleVivoMakerLogExperimental(enabled: Boolean) = hit("onToggleVivoMakerLogExperimental")
         override fun onSetPhotoFnSlots(slots: List<FnSlot>) = hit("onSetPhotoFnSlots")
@@ -261,6 +262,19 @@ class PerformQuickFnTest {
         assertEquals(
             listOf("onMeteringMode(${MeteringMode.MATRIX})"),
             dispatched(FnSlot.METERING, idle),
+        )
+    }
+
+    @Test
+    fun `a lock tile sets only where the route admits it but always releases`() {
+        assertEquals(emptyList<String>(), dispatched(FnSlot.AE_LOCK, CameraUiState()))
+        assertEquals(
+            listOf("onToggleAeLock(false)"),
+            dispatched(FnSlot.AE_LOCK, CameraUiState(controls = ManualControls(aeLock = true))),
+        )
+        assertEquals(
+            listOf("onAfLock(false)"),
+            dispatched(FnSlot.AF_LOCK, CameraUiState(controls = ManualControls(afLock = true))),
         )
     }
 

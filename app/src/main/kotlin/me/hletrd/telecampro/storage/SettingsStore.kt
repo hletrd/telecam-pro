@@ -35,6 +35,7 @@ import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.ModeExposure
+import me.hletrd.telecampro.camera.offerLockSlots
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.WbGains
@@ -439,16 +440,22 @@ class SettingsStore(
                 audioCodec = enumOr(safeString("${prefix}audioCodec", null), ed.audioCodec),
                 audioBitrateKbps = safeInt("${prefix}audioBitrateKbps", ed.audioBitrateKbps).takeIf { it > 0 } ?: ed.audioBitrateKbps,
                 audioChannelMode = enumOr(safeString("${prefix}audioChannelMode", null), ed.audioChannelMode),
-                photoFnSlots = normalizeFnSlots(
-                    enumListOr(
-                        safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
+                photoFnSlots = offerLockSlots(
+                    normalizeFnSlots(
+                        enumListOr(
+                            safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
+                            ed.photoFnSlots,
+                        ),
                         ed.photoFnSlots,
                     ),
-                    ed.photoFnSlots,
+                    offered = safeBoolean("${prefix}fnLocksOffered", false),
                 ),
-                videoFnSlots = normalizeFnSlots(
-                    enumListOr(safeString("${prefix}videoFnSlots", null), ed.videoFnSlots),
-                    ed.videoFnSlots,
+                videoFnSlots = offerLockSlots(
+                    normalizeFnSlots(
+                        enumListOr(safeString("${prefix}videoFnSlots", null), ed.videoFnSlots),
+                        ed.videoFnSlots,
+                    ),
+                    offered = safeBoolean("${prefix}fnLocksOffered", false),
                 ),
                 myMenuSlots = normalizeFnSlots(
                     enumListOr(safeString("${prefix}myMenuSlots", null), ed.myMenuSlots),
@@ -554,6 +561,7 @@ class SettingsStore(
         putString("${prefix}audioChannelMode", e.audioChannelMode.name)
         putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
         putString("${prefix}videoFnSlots", e.videoFnSlots.joinToString(",") { it.name })
+        putBoolean("${prefix}fnLocksOffered", true)
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
         putString("${prefix}halfPressAction", e.halfPressAction.name)

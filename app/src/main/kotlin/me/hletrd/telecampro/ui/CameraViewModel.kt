@@ -1372,6 +1372,7 @@ class CameraViewModel private constructor(
         engine.onAfIndication = { ind ->
             _state.update { it.copy(afIndication = ind) }
             mainHandler.post(focusConfidenceRefreshRunnable)
+            if (pressLockAwaitingAf) mainHandler.post { onPressLockAf(ind) }
         }
         // Face Priority AF frames (camera thread → StateFlow is thread-safe). The controller already
         // throttles to 10 Hz and change-gates; the equality check keeps a repeat clear from emitting.
@@ -2540,9 +2541,90 @@ class CameraViewModel private constructor(
     }
     override fun onAfLock(locked: Boolean) = updateControls(FnSlot.FOCUS) { it.copy(afLock = locked) }
     override fun onTapFocus(nx: Float, ny: Float) {
-        // Queue admission alone is not AF HOLD: the engine publishes the point through
-        // onTapFocusChange only after startPreview actually submits it to Camera2.
-        engine.setTapPoint(nx, ny)
+        // A plain tap lets go of what a long press locked — only that, never a lock set elsewhere —
+        // and focuses at the new point, the stock-camera convention.
+        val press = pressLock?.takeIf { it.committed }
+        cancelPressLock()
+        val c = _state.value.controls
+        focusAt(nx, ny, afterRelease = press != null && releaseLocks(ae = press.ae && c.aeLock, af = press.af && c.afLock))
+    }
+
+    // ---- Long-press AE/AF lock (owner request 2026-11-09: "isn't long-press the usual way to lock?")
+    // Focus and meter at the point, then lock AF and AE once that scan has settled, so the lock holds
+    // what the point measured rather than what the frame held before the press.
+    private class PressLock(val ae: Boolean, val af: Boolean) {
+        var sawScan = false
+        var committed = false
+    }
+    private var pressLock: PressLock? = null
+    @Volatile private var pressLockAwaitingAf = false
+    private val pressLockCommitRunnable = Runnable { commitPressLock() }
+
+    override fun onLongPressLock(nx: Float, ny: Float) {
+        val s = _state.value
+        val availability = controlAvailability(s.caps?.controlCapabilities(), s.controls)
+        cancelPressLock()
+        val press = PressLock(ae = availability.aeLockEnabled, af = availability.afLockEnabled)
+        // A press re-locks at the new point: a held lock would keep AE/AF from measuring there.
+        val released = releaseLocks(ae = press.ae && s.controls.aeLock, af = press.af && s.controls.afLock)
+        if (press.ae || press.af) {
+            pressLock = press
+            pressLockAwaitingAf = press.af
+            mainHandler.postDelayed(pressLockCommitRunnable, PRESS_LOCK_SETTLE_MS)
+        }
+        focusAt(nx, ny, afterRelease = released)
+    }
+
+    private fun onPressLockAf(indication: AfIndication) {
+        val press = pressLock ?: return
+        if (press.committed) return
+        when (indication) {
+            // The press's own scan: SCANNING is published when the tap request is submitted, so a
+            // FOCUSED seen before it is the previous frame's verdict, not this point's.
+            AfIndication.SCANNING -> press.sawScan = true
+            AfIndication.FOCUSED, AfIndication.FAILED -> if (press.sawScan) commitPressLock()
+            AfIndication.IDLE -> Unit
+        }
+    }
+
+    private fun commitPressLock() {
+        val press = pressLock ?: return
+        if (press.committed) return
+        mainHandler.removeCallbacks(pressLockCommitRunnable)
+        pressLockAwaitingAf = false
+        press.committed = true
+        val s = _state.value
+        val availability = controlAvailability(s.caps?.controlCapabilities(), s.controls)
+        if (press.ae && !s.controls.aeLock && availability.aeLockEnabled) onToggleAeLock(true)
+        if (press.af && !s.controls.afLock && availability.afLockEnabled) onAfLock(true)
+    }
+
+    private fun cancelPressLock() {
+        mainHandler.removeCallbacks(pressLockCommitRunnable)
+        pressLockAwaitingAf = false
+        pressLock = null
+    }
+
+    /** Releases the named locks; true when a controls packet carrying the release was staged. */
+    private fun releaseLocks(ae: Boolean, af: Boolean): Boolean {
+        if (ae) onToggleAeLock(false)
+        if (af) onAfLock(false)
+        return ae || af
+    }
+
+    /**
+     * Submits the tap point — after the staged controls packet when a lock was just released: the
+     * packet lands on the 40 ms throttle, and a tap request built while AF lock still held would
+     * keep AF off and lose the scan trigger. Same main queue, later deadline, so it runs second.
+     */
+    private fun focusAt(nx: Float, ny: Float, afterRelease: Boolean) {
+        if (afterRelease) {
+            mainHandler.postDelayed({ if (!cleared) engine.setTapPoint(nx, ny) }, TAP_AFTER_RELEASE_MS)
+        } else {
+            // Queue admission alone is not AF HOLD: the engine publishes the point through
+            // onTapFocusChange only after startPreview actually submits it to Camera2.
+            engine.setTapPoint(nx, ny)
+        }
     }
 
     private fun showTapFocusUi(point: Pair<Float, Float>) {
@@ -5409,6 +5491,11 @@ class CameraViewModel private constructor(
     private companion object {
         const val RECENT_SETTING_LIMIT = 6
         const val FN_SLOT_LIMIT = 8
+        // Long-press lock: commit even if no AF verdict arrives (MF, no AF, a lost result), after AE
+        // has had a moment to meter the point.
+        const val PRESS_LOCK_SETTLE_MS = 2_000L
+        // One controls-throttle period (40 ms) plus margin: see focusAt.
+        const val TAP_AFTER_RELEASE_MS = 48L
         const val HARDWARE_ZOOM_STEP = 1.15f
         // How many recent captures keep their DNG-sibling mapping for whole-shot Delete.
         const val CAPTURE_OUTPUT_HISTORY = 8

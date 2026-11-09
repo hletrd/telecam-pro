@@ -643,7 +643,8 @@ class SettingsStoreTest {
         // load() must fall back to the legacy key.
         val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "fnSlots" to "ISO,WB"))
         val loaded = SettingsStore(prefs).load()
-        assertEquals(listOf(FnSlot.ISO, FnSlot.WB), loaded?.extras?.photoFnSlots)
+        // ...and, saved before the lock tiles existed, gets AE and AF lock offered once (2026-11-09).
+        assertEquals(listOf(FnSlot.ISO, FnSlot.WB, FnSlot.AE_LOCK, FnSlot.AF_LOCK), loaded?.extras?.photoFnSlots)
     }
 
     @Test

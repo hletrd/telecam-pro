@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Iso
 import androidx.compose.material.icons.outlined.Lens
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Loupe
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.ShutterSpeed
@@ -57,6 +58,7 @@ internal fun fnSlotIcon(slot: FnSlot): ImageVector = when (slot) {
     FnSlot.AUDIO_SCENE -> Icons.Outlined.SurroundSound
     FnSlot.GRID -> Icons.Outlined.GridOn
     FnSlot.LEVEL -> Icons.Outlined.Straighten
+    FnSlot.AE_LOCK, FnSlot.AF_LOCK, FnSlot.AWB_LOCK -> Icons.Outlined.Lock
     FnSlot.PUNCH_IN -> Icons.Outlined.Loupe
     FnSlot.TELECONVERTER -> Icons.Outlined.Lens
     FnSlot.OPEN_GATE -> Icons.Outlined.Fullscreen

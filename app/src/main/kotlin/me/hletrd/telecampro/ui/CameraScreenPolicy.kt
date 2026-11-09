@@ -719,6 +719,10 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
             },
         )
         FnSlot.LEVEL -> FnTileReadout(fnTileOnOff(state.level))
+        // The lock's own word, amber while it holds: an OFF beside a lock icon read as "lock off?".
+        FnSlot.AE_LOCK -> FnTileReadout(FnTileText.Word(R.string.osd_ael), manual = state.controls.aeLock)
+        FnSlot.AF_LOCK -> FnTileReadout(FnTileText.Word(R.string.osd_afl), manual = state.controls.afLock)
+        FnSlot.AWB_LOCK -> FnTileReadout(FnTileText.Word(R.string.osd_awl), manual = state.controls.awbLock)
         FnSlot.PUNCH_IN -> FnTileReadout(fnTileOnOff(state.punchIn))
         FnSlot.TELECONVERTER -> FnTileReadout(
             if (state.teleconverterMode) {

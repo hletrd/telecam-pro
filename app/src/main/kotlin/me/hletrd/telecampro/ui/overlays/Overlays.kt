@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.overlays
 
 import me.hletrd.telecampro.R
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -32,6 +33,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -40,6 +42,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.camera.AfIndication
@@ -935,13 +938,25 @@ internal fun statusBarPriorityResetKey(
  * OSD per UX policy ("important states belong in the OSD").
  */
 @Composable
-private fun LockBadge(text: String) {
+private fun LockBadge(text: String, onRelease: (() -> Unit)?) {
+    // A tap releases the lock it names (2026-11-09): the state shows where it is changed. Compose
+    // widens a small pointer target toward 48 dp on its own, so the badge keeps its strip height.
+    val releaseDescription = stringResource(R.string.a11y_release_lock, text)
     Text(
         text,
         color = CameraColors.Background,
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.Bold,
         modifier = Modifier
+            .then(
+                if (onRelease == null) {
+                    Modifier
+                } else {
+                    Modifier
+                        .clickable(role = Role.Button, onClick = onRelease)
+                        .semantics { contentDescription = releaseDescription }
+                },
+            )
             .background(CameraColors.ManualActive, RoundedCornerShape(4.dp))
             .padding(horizontal = 5.dp, vertical = 1.dp),
     )
@@ -992,7 +1007,13 @@ internal fun statusBarFocalLabel(effectiveFocalMm: Float?, teleconverterMode: Bo
  *    is standing information; UI review #7 aligned this doc with the render).
  */
 @Composable
-fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
+fun StatusBar(
+    state: CameraUiState,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    // Releases the lock whose badge was tapped; null draws the badges as plain readouts.
+    onReleaseLock: ((FnSlot) -> Unit)? = null,
+) {
     if (compact && !compactShootingStatusVisible(state)) return
     // PERF: StatusBar takes the WHOLE CameraUiState, so it recomposes at telemetry rate (audio
     // level, roll, REC timer). Both derivations below are keyed remembers for the same reason its
@@ -1029,9 +1050,9 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         // At the tail they were the first tags the strip's own scroll pushed out of view: a full
         // DISP strip on the 411 dp PMA110 ended "... SPOT AEL AWL", and a held-landscape strip is
         // shorter still. A lock is the one state that makes the camera look broken when missed.
-        if (state.controls.aeLock) LockBadge(stringResource(R.string.osd_ael))
-        if (state.controls.awbLock) LockBadge(stringResource(R.string.osd_awl))
-        if (state.controls.afLock) LockBadge(stringResource(R.string.osd_afl))
+        if (state.controls.aeLock) LockBadge(stringResource(R.string.osd_ael), onReleaseLock?.let { { it(FnSlot.AE_LOCK) } })
+        if (state.controls.awbLock) LockBadge(stringResource(R.string.osd_awl), onReleaseLock?.let { { it(FnSlot.AWB_LOCK) } })
+        if (state.controls.afLock) LockBadge(stringResource(R.string.osd_afl), onReleaseLock?.let { { it(FnSlot.AF_LOCK) } })
         focalLabel?.let {
             Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         }

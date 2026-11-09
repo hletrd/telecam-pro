@@ -672,6 +672,21 @@ private fun FnDialChip(
             onClick = { actions.onMeteringMode(nextAvailable(controls.meteringMode, availability.meteringModes)) },
             onLongClick = onOpenFnMenu,
         )
+        FnSlot.AE_LOCK, FnSlot.AF_LOCK, FnSlot.AWB_LOCK -> {
+            val locked = when (slot) {
+                FnSlot.AE_LOCK -> controls.aeLock
+                FnSlot.AF_LOCK -> controls.afLock
+                else -> controls.awbLock
+            }
+            DialChip(
+                label = labelContext.localizedLabel(slot),
+                value = if (locked) onValue else offValue,
+                active = locked,
+                enabled = policyEnabled && lockSlotAvailable(slot, controls, availability),
+                onClick = { performQuickFn(slot, state, actions) },
+                onLongClick = onOpenFnMenu,
+            )
+        }
         FnSlot.PEAKING -> DialChip(
             label = stringResource(R.string.label_peaking),
             value = if (state.focusPeaking) onValue else offValue,

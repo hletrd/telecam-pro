@@ -68,6 +68,8 @@ interface CameraActions {
     fun onShutterNs(ns: Long)
     fun onExposureCompensation(ev: Int)
     fun onExposureMode(mode: ExposureMode)
+    /** Long press on the viewfinder: focus and meter at the point, then lock AE and AF there. */
+    fun onLongPressLock(nx: Float, ny: Float)
     /** AF <-> MF: MF from any AF mode, back to the AF mode in use before from MF. */
     fun onToggleManualFocus()
     fun onToggleAeLock(locked: Boolean)

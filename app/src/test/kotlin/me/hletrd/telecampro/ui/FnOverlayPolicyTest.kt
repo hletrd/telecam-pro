@@ -207,7 +207,8 @@ class FnOverlayPolicyTest {
 
     @Test
     fun `short held lists retain blank cells instead of changing physical rows`() {
-        val slots = FnSlot.PHOTO_DEFAULT
+        // A six-slot bar (the photo default before the lock tiles, 2026-11-09).
+        val slots = listOf(FnSlot.EXPOSURE_MODE, FnSlot.FOCUS, FnSlot.SHUTTER, FnSlot.ISO, FnSlot.WB, FnSlot.EV)
 
         assertEquals(
             listOf(
@@ -232,7 +233,7 @@ class FnOverlayPolicyTest {
 
     @Test
     fun `portrait rows chunk in reading order and pad the last row with blanks`() {
-        val slots = FnSlot.PHOTO_DEFAULT
+        val slots = listOf(FnSlot.EXPOSURE_MODE, FnSlot.FOCUS, FnSlot.SHUTTER, FnSlot.ISO, FnSlot.WB, FnSlot.EV)
 
         assertEquals(
             listOf(

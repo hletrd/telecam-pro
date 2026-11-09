@@ -124,6 +124,7 @@
     <string name="a11y_close_function_menu">기능 메뉴 닫기</string>
     <string name="a11y_close_adjustment">조정 닫기</string>
     <string name="a11y_return_to_af">자동 초점으로 돌아가기</string>
+    <string name="a11y_release_lock">%1$s 해제</string>
     <string name="a11y_switch_camera">카메라 전환</string>
     <string name="a11y_reset_focus_point">초점 지점 초기화</string>
     <string name="a11y_tap_focus_held">탭 초점 고정됨</string>

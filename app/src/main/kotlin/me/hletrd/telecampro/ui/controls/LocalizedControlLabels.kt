@@ -30,6 +30,8 @@ import me.hletrd.telecampro.camera.*
     FnSlot.ZEBRA -> R.string.label_zebra; FnSlot.TRANSFER -> R.string.label_gamma
     FnSlot.AUDIO_SCENE -> R.string.label_directionality; FnSlot.GRID -> R.string.label_grid
     FnSlot.LEVEL -> R.string.label_level; FnSlot.PUNCH_IN -> R.string.label_loupe
+    FnSlot.AE_LOCK -> R.string.label_ae_lock; FnSlot.AF_LOCK -> R.string.label_af_lock
+    FnSlot.AWB_LOCK -> R.string.label_awb_lock
     FnSlot.TELECONVERTER -> R.string.label_tele; FnSlot.OPEN_GATE -> R.string.label_open_gate
     FnSlot.FRAME_LINES -> R.string.label_frame; FnSlot.FLASH -> R.string.label_flash
     FnSlot.TIMER -> R.string.label_self_timer; FnSlot.ASPECT -> R.string.label_aspect

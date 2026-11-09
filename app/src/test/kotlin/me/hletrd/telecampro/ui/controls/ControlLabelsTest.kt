@@ -245,6 +245,9 @@ class ControlLabelsTest {
             FnSlot.TIMER to "Self-Timer",
             FnSlot.ASPECT to "Aspect",
             FnSlot.AUDIO_INPUT to "Mic Input",
+            FnSlot.AE_LOCK to "AE Lock",
+            FnSlot.AF_LOCK to "AF Lock",
+            FnSlot.AWB_LOCK to "AWB Lock",
         ),
         ::fnSlotLabel,
     )

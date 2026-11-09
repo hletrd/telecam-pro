@@ -96,6 +96,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -130,6 +131,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -211,6 +213,7 @@ import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
 import me.hletrd.telecampro.ui.controls.manualDialForFnSlot
 import me.hletrd.telecampro.ui.controls.manualFocusBarPinned
+import me.hletrd.telecampro.ui.controls.lockSlotAvailable
 import me.hletrd.telecampro.ui.controls.manualDialTransition
 import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.controls.performQuickFn
@@ -849,6 +852,7 @@ fun CameraScreen(
             // fingers — the restarted awaitFirstDown never matches already-pressed pointers, so zoom
             // froze for the rest of the pinch and onPinchEnd never fired (review C9).
             val liveFinderVisible by rememberUpdatedState(finderVisible)
+            val haptics = LocalHapticFeedback.current
             val focusActionAvailability = viewfinderFocusActionAvailability(
                 cameraReady = state.cameraReady,
                 maxAfRegions = state.caps?.maxAfRegions ?: 0,
@@ -898,14 +902,52 @@ fun CameraScreen(
                     // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
                     // stationary touch → tap-focus.
                     .pointerInput(Unit) {
+                        // The one point rule for tap and long press: inside the box, and not on the
+                        // Loupe Overview, which is a framing reference, never a focus plane.
+                        fun focusPoint(position: Offset): Offset? {
+                            val w = size.width.toFloat()
+                            val h = size.height.toFloat()
+                            if (w <= 0f || h <= 0f) return null
+                            val onOverview = liveFinderVisible && finderContainsTopLeftPoint(
+                                pointX = position.x,
+                                pointY = position.y,
+                                boxWidth = w,
+                                boxHeight = h,
+                                bottomClearance = h * finderBottomClearanceFraction,
+                            )
+                            return if (onOverview) null else Offset(position.x / w, position.y / h)
+                        }
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var maxPointers = 1
                             var zoomed = false
                             var dragged = false
                             var cancelled = false
+                            // A still finger held past the platform long-press timeout locks AE/AF
+                            // at the point (2026-11-09) and is then no tap. A stationary finger may
+                            // send no events at all, hence the timeout on the wait itself.
+                            val longPressAt = down.uptimeMillis + viewConfiguration.longPressTimeoutMillis
+                            var lastUptime = down.uptimeMillis
+                            var longPressed = false
+                            fun longPress() {
+                                longPressed = true
+                                focusPoint(down.position)?.let {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    currentActions.value.onLongPressLock(it.x, it.y)
+                                }
+                            }
                             while (true) {
-                                val event = awaitPointerEvent()
+                                val awaitingLongPress = !longPressed && maxPointers == 1 && !dragged && !zoomed
+                                val event = if (awaitingLongPress) {
+                                    withTimeoutOrNull((longPressAt - lastUptime).coerceAtLeast(0L)) { awaitPointerEvent() }
+                                } else {
+                                    awaitPointerEvent()
+                                }
+                                if (event == null) {
+                                    longPress()
+                                    continue
+                                }
+                                lastUptime = event.changes.maxOf { it.uptimeMillis }
                                 // Android ACTION_CANCEL and ACTION_UP both collapse to a
                                 // pressed=false PointerInputChange. Retain the raw terminal identity
                                 // so the overlay-defense cancel cannot manufacture a tap action.
@@ -932,6 +974,8 @@ fun CameraScreen(
                                     if (cur != null && (cur - down.position).getDistance() > viewConfiguration.touchSlop) {
                                         dragged = true
                                     }
+                                    // Sub-slop jitter can keep events coming past the deadline.
+                                    if (!longPressed && !dragged && maxPointers == 1 && lastUptime >= longPressAt) longPress()
                                 }
                             }
                             // Report the TRUE pinch boundary (AGG4-14). The ViewModel otherwise has
@@ -941,25 +985,13 @@ fun CameraScreen(
                             // drag — neither of which touched the zoom pipeline — cannot claim to
                             // have ended a pinch.
                             if (zoomed) currentActions.value.onPinchEnd()
-                            // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
+                            // Only a clean single-finger tap (no second finger, no pinch, no drag, not
+                            // a long press) focuses.
                             if (
                                 maxPointers == 1 && !zoomed && !dragged &&
-                                !cancelled
+                                !cancelled && !longPressed
                             ) {
-                                val w = size.width.toFloat()
-                                val h = size.height.toFloat()
-                                if (w > 0f && h > 0f) {
-                                    if (!liveFinderVisible || !finderContainsTopLeftPoint(
-                                            pointX = down.position.x,
-                                            pointY = down.position.y,
-                                            boxWidth = w,
-                                            boxHeight = h,
-                                            bottomClearance = h * finderBottomClearanceFraction,
-                                        )
-                                    ) {
-                                        currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
-                                    }
-                                }
+                                focusPoint(down.position)?.let { currentActions.value.onTapFocus(it.x, it.y) }
                             }
                         }
                     },
@@ -1280,6 +1312,13 @@ fun CameraScreen(
             StatusBar(
                 state = state,
                 compact = !detailsVisible,
+                onReleaseLock = { slot ->
+                    when (slot) {
+                        FnSlot.AE_LOCK -> currentActions.value.onToggleAeLock(false)
+                        FnSlot.AF_LOCK -> currentActions.value.onAfLock(false)
+                        else -> currentActions.value.onToggleAwbLock(false)
+                    }
+                },
                 // The status plate (STEADY/OIS+/MUTE/4:3, the focal readout, the lock tags) now
                 // counter-rotates with the phone like every other readout. It was left screen-fixed
                 // when the only tool was `Modifier.rotate`, a DRAW transform that leaves the
@@ -2727,7 +2766,7 @@ internal fun FnOverlay(
         val manualDial = manualDialForFnSlot(slot)
         quickFnEnabled(slot, state) && when (manualDial) {
             DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
-            null -> true
+            null -> lockSlotAvailable(slot, state.controls, availability)
             else -> quickManualDialEnabled(manualDial, availability)
         }
     }

@@ -622,7 +622,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   app-side for the AE-off cadence was considered and REJECTED for exactly this cost). Device-checked
   2026-10-26: an 18 s S-mode take absorbed 107 loop ticks with the request generation unchanged
   (that dark room had the loop pegged at the ISO ceiling, so it shows the hold engaging, not a
-  correction being held back).
+  correction being held back). **AE lock holds the same loop (2026-11-09):** S, ISO and app-side P
+  now admit AE lock (`aeLockEnabled`), which skips the loop's steps where the REC hold does, so the
+  lock is no longer a video-P-only HAL key. It is reachable without the menu: Fn AEL/AFL/AWL tiles
+  (offered once into saved bars with room, `offerLockSlots`), a tap on a lit OSD badge releases
+  that lock, and a long press on the viewfinder focuses and meters at the point, then locks AE and
+  AF once that point's own AF scan settles (`onLongPressLock`; a later plain tap releases only what
+  the press locked).
 - **White balance uses the route's own colour processing (owner request "WB must
   be fixed", device-measured 2026-10-27, `WhiteBalance.kt`, `docs/FIELD_CHECKS.md` A23).** Isolated
   Camera2 probe + ColorChecker on PMA110, every route (logical photo 0, standalone 2 SDR and native

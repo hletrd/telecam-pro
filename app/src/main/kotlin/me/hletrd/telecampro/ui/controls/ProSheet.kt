@@ -819,7 +819,7 @@ private fun QuickFnRow(
     val manualDial = manualDialForFnSlot(slot)
     val enabled = quickFnEnabled(slot, state) && when (manualDial) {
         DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
-        null -> true
+        null -> lockSlotAvailable(slot, state.controls, availability)
         else -> quickManualDialEnabled(manualDial, availability)
     }
     LabelValueRow(
