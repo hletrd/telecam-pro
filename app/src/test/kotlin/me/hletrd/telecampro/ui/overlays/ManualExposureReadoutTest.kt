@@ -20,21 +20,33 @@ class ManualExposureReadoutTest {
         assertEquals("1/60s   ISO 100", manualExposureReadout(0f, 16_666_667L, 100))
     }
 
+    private fun List<ReadoutToken>.shown() = map { it.text to it.auto }
+
     // UI review 2026-11-09: outside M the compact view showed no exposure at all.
     @Test
     fun `P, S and ISO lead with the mode, dim what the camera chooses, and show a non-zero EV`() {
         val p = exposureReadoutTokens(ExposureMode.PROGRAM, 2.3f, 8_000_000L, 400, 4_000_000L, 800, 0.7f)
         assertEquals(
-            listOf(ReadoutToken("P"), ReadoutToken("F2.3"), ReadoutToken("1/250s", auto = true), ReadoutToken("ISO 800", auto = true), ReadoutToken("+0.7")),
-            p,
+            listOf("P" to false, "F2.3" to false, "1/250s" to true, "ISO 800" to true, "+0.7" to false),
+            p.shown(),
         )
         val s = exposureReadoutTokens(ExposureMode.SHUTTER, null, 1_000_000L, 400, null, 1600, 0f)
-        assertEquals(listOf(ReadoutToken("S"), ReadoutToken("1/1000s"), ReadoutToken("ISO 1600", auto = true)), s)
+        assertEquals(listOf("S" to false, "1/1000s" to false, "ISO 1600" to true), s.shown())
         val iso = exposureReadoutTokens(ExposureMode.ISO, null, 8_000_000L, 200, null, null, -1f)
-        assertEquals(listOf(ReadoutToken("ISO"), ReadoutToken("1/125s", auto = true), ReadoutToken("ISO 200"), ReadoutToken("-1.0")), iso)
+        assertEquals(listOf("ISO" to false, "1/125s" to true, "ISO 200" to false, "-1.0" to false), iso.shown())
         // M keeps its triple and never shows EV (it moves nothing there).
         val m = exposureReadoutTokens(ExposureMode.MANUAL, 2.3f, 16_666_667L, 6400, 33_000_000L, 100, 1f)
-        assertEquals(listOf(ReadoutToken("F2.3"), ReadoutToken("1/60s"), ReadoutToken("ISO 6400")), m)
+        assertEquals(listOf("F2.3" to false, "1/60s" to false, "ISO 6400" to false), m.shown())
+    }
+
+    // UI review 2026-11-09: held sideways each value turns upright as a label over a value.
+    @Test
+    fun `held sideways each value stacks its label over the number, the mode letter alone`() {
+        val p = exposureReadoutTokens(ExposureMode.PROGRAM, 2.3f, 8_000_000L, 400, 4_000_000L, 800, 0.7f)
+        assertEquals(
+            listOf(null to "P", "F" to "2.3", "SS" to "1/250s", "ISO" to "800", "EV" to "+0.7"),
+            p.map { it.stackLabel to it.stackValue },
+        )
     }
 
     @Test

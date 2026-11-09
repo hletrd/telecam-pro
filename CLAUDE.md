@@ -585,8 +585,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   clockwise (right) landscape** — the opposite of the naive "90=right" assumption. So the counter-
   rotation that keeps glyphs upright is `+dev`. A `−dev` sign leaves BOTH landscapes 180° off, which is
   invisible on near-symmetric icons and only shows once text (mode labels, the zoom `×`) rotates. Only
-  compact glyphs + short labels rotate; wide dial pills / the OSD row stay screen-fixed (rotating a wide
-  box 90° pokes it out of its layout slot — `Modifier.rotate` is a draw transform, not a re-layout).
+  compact glyphs + short labels rotate in place; a wide box turned 90° pokes out of its layout slot
+  (`Modifier.rotate` is a draw transform, not a re-layout), so the DISP dial chips and the exposure
+  line restack instead (2026-11-09): held sideways each value draws as a label over a value and turns
+  draw-only inside the SAME slot height (`LocalDialChipRotation`, `ManualExposureReadout`). A turned
+  exposure plate may reach past its 32 dp row into the gap above the rail; the slot never grows,
+  because that height places the preview. The OSD row stays screen-fixed.
   The scopes (histogram/waveform) DO rotate, via a `rotateLayout` modifier that reserves the ROTATED
   bounding box (swaps W/H at 90/270) so a stack of rotated scopes doesn't overlap — the reason plain
   `rotate()` couldn't be used and they were screen-fixed before.

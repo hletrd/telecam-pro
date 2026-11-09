@@ -87,6 +87,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import me.hletrd.telecampro.camera.ExposureMode
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.wrapContentHeight
+import me.hletrd.telecampro.ui.theme.hudGlyph
 
 /**
  * Small HUD text must remain readable over a white frame. At 82% black, opaque secondary text
@@ -1546,8 +1550,16 @@ internal fun manualExposureReadout(apertureF: Float?, exposureNs: Long, iso: Int
     exposureReadoutTokens(ExposureMode.MANUAL, apertureF, exposureNs, iso, null, null, 0f)
         .joinToString(READOUT_GAP) { it.text }
 
-/** One readout field; [auto] marks a value the camera is choosing, drawn dim. */
-internal data class ReadoutToken(val text: String, val auto: Boolean = false)
+/**
+ * One readout field; [auto] marks a value the camera is choosing, drawn dim. Held sideways the field
+ * draws as [stackLabel] over [stackValue], turned upright (ManualExposureReadout).
+ */
+internal data class ReadoutToken(
+    val text: String,
+    val auto: Boolean = false,
+    val stackLabel: String? = null,
+    val stackValue: String = text,
+)
 
 private const val READOUT_GAP = "   "
 
@@ -1569,20 +1581,63 @@ internal fun exposureReadoutTokens(
     val shutterAuto = mode == ExposureMode.PROGRAM || mode == ExposureMode.ISO
     val isoAuto = mode == ExposureMode.PROGRAM || mode == ExposureMode.SHUTTER
     if (mode != ExposureMode.MANUAL) add(ReadoutToken(me.hletrd.telecampro.ui.controls.exposureModeLetter(mode)))
-    if (apertureF != null && apertureF > 0f) add(ReadoutToken("F" + "%.1f".format(java.util.Locale.US, apertureF)))
-    add(
-        ReadoutToken(
-            me.hletrd.telecampro.ui.controls.formatShutterSpeed(if (shutterAuto) liveExposureNs ?: exposureNs else exposureNs),
-            auto = shutterAuto,
-        ),
-    )
-    add(ReadoutToken("ISO ${if (isoAuto) liveIso ?: iso else iso}", auto = isoAuto))
-    if (mode != ExposureMode.MANUAL && evStops != 0f) add(ReadoutToken(me.hletrd.telecampro.ui.controls.formatEvComp(evStops)))
+    if (apertureF != null && apertureF > 0f) {
+        val f = "%.1f".format(java.util.Locale.US, apertureF)
+        add(ReadoutToken("F$f", stackLabel = "F", stackValue = f))
+    }
+    val shutter = me.hletrd.telecampro.ui.controls.formatShutterSpeed(if (shutterAuto) liveExposureNs ?: exposureNs else exposureNs)
+    add(ReadoutToken(shutter, auto = shutterAuto, stackLabel = "SS"))
+    val isoValue = "${if (isoAuto) liveIso ?: iso else iso}"
+    add(ReadoutToken("ISO $isoValue", auto = isoAuto, stackLabel = "ISO", stackValue = isoValue))
+    if (mode != ExposureMode.MANUAL && evStops != 0f) {
+        add(ReadoutToken(me.hletrd.telecampro.ui.controls.formatEvComp(evStops), stackLabel = "EV"))
+    }
 }
 
-/** Screen-fixed (a wide row, like the OSD — CLAUDE.md glyph rules), centred above the focal rail. */
+/** The readout row's one height, upright and held sideways, so turning the phone moves nothing. */
+private val READOUT_ROW_HEIGHT = 32.dp
+
+/**
+ * Centred above the focal rail. Upright it is one line on one plate. Held sideways (UI review
+ * 2026-11-09: it was the one readout left sideways) each field is a small label-over-value plate
+ * turned upright DRAW-ONLY: the row keeps its height, so the bottom cluster — and the preview and
+ * rail placed from it — does not move when the phone turns.
+ */
 @Composable
-internal fun ManualExposureReadout(tokens: List<ReadoutToken>, modifier: Modifier = Modifier) {
+internal fun ManualExposureReadout(tokens: List<ReadoutToken>, glyphRotation: Float, modifier: Modifier = Modifier) {
+    if (glyphRotation % 180f != 0f) {
+        Row(
+            modifier = modifier.fillMaxWidth().height(READOUT_ROW_HEIGHT),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            tokens.forEach { token ->
+                // The DIAL chips' type (hudGlyph, 1.2 line height): the theme's 24 sp body line height
+                // left the value a few dp of the 32 dp row. Turned, a plate's drawn height is its
+                // laid-out width, so a long value reaches past the row into the gap above the rail.
+                Column(
+                    modifier = Modifier
+                        .wrapContentHeight(unbounded = true)
+                        .graphicsLayer { rotationZ = glyphRotation }
+                        .background(HudPlate, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    token.stackLabel?.let {
+                        Text(it, color = CameraColors.TextSecondary, style = hudGlyph(9.sp, FontWeight.Medium), maxLines = 1, softWrap = false)
+                    }
+                    Text(
+                        token.stackValue,
+                        color = if (token.auto) CameraColors.TextSecondary else Color.White,
+                        style = hudGlyph(12.sp),
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+        return
+    }
     val text = remember(tokens) {
         buildAnnotatedString {
             tokens.forEachIndexed { index, token ->
@@ -1595,7 +1650,7 @@ internal fun ManualExposureReadout(tokens: List<ReadoutToken>, modifier: Modifie
             }
         }
     }
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Box(modifier = modifier.fillMaxWidth().height(READOUT_ROW_HEIGHT), contentAlignment = Alignment.Center) {
         Text(
             text = text,
             color = Color.White,

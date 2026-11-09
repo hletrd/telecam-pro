@@ -1631,6 +1631,7 @@ fun CameraScreen(
                                 liveIso = state.liveIso,
                                 evStops = evCompStops(state),
                             ),
+                            glyphRotation = overlayRotation,
                         )
                     }
                     Box(modifier = Modifier.fillMaxWidth()) {

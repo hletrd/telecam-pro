@@ -265,6 +265,39 @@ class LandscapeHoldLayoutComposeTest {
         }
     }
 
+    private fun Rect.turned() = height > width
+
+    // UI review 2026-11-09: held sideways the exposure line and the DISP chips were the two readouts
+    // still reading sideways. They turn draw-only, so nothing under them may move.
+    @Test fun `held sideways the exposure line turns upright and the rail stays put`() {
+        show(ready.copy(liveIso = 9100, liveExposureNs = 8_000_000L), details = false)
+        val fn = context.getString(R.string.a11y_open_function_menu)
+        hold(0)
+        val rail = described(fn).top
+        for (orientation in listOf(90, 270)) {
+            hold(orientation)
+            val shutter = textBounds("1/125s")
+            assertTrue("shutter turned at $orientation: $shutter", shutter.isNotEmpty() && shutter.all { it.turned() })
+            assertEquals("rail at $orientation", rail, described(fn).top, 0.5f)
+        }
+    }
+
+    @Test fun `held sideways the dial chips turn upright in the same slots`() {
+        val manual = ready.controls.copy(exposureMode = ExposureMode.MANUAL, exposureTimeNs = 1_000_000L)
+        show(ready.copy(controls = manual), details = true)
+        val mode = context.getString(R.string.label_mode)
+        hold(0)
+        val upright = slot(mode)
+        assertTrue("upright chip reads across", textBounds("1/1000s").none { it.turned() })
+        for (orientation in listOf(90, 270)) {
+            hold(orientation)
+            val held = slot(mode)
+            assertEquals("chip slot top at $orientation", upright.top, held.top, 0.5f)
+            assertEquals("chip slot height at $orientation", upright.height, held.height, 0.5f)
+            assertTrue("chip value turned at $orientation", textBounds("1/1000s").any { it.turned() })
+        }
+    }
+
     @Test fun `AF lock stays on screen in a full strip, upright and sideways`() {
         show(busyVideo, details = true)
         for (orientation in listOf(0, 90, 270)) {

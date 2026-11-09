@@ -127,6 +127,8 @@ import me.hletrd.telecampro.ui.theme.hudGlyph
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.graphics.graphicsLayer
 
 /**
  * The six quick "Fn" manual dials (focus/shutter/ISO/WB/EV/zoom) — the signature element of the
@@ -404,7 +406,10 @@ private fun DialChipRow(
     val fnScroll = rememberScrollState()
     // This row is portrait-window camera geometry: Start/End come from the held-device policy, not
     // the locale's reading direction. Unicode bidi still shapes localized Text content correctly.
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+    CompositionLocalProvider(
+        LocalLayoutDirection provides LayoutDirection.Ltr,
+        LocalDialChipRotation provides glyphRotation,
+    ) {
         Row(
             modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -808,6 +813,12 @@ private fun FnDialChip(
 // ProSheet/CameraScreen so the cycle orders can't drift between surfaces. The verbatim private
 // copies that used to sit here were the drift hazard the review flagged.)
 
+/**
+ * The held-sideways glyph rotation for the dial chips, provided by [DialChipRow] so the 28 chip call
+ * sites need not each carry it. 0 upright (and everywhere a chip is used outside that row).
+ */
+internal val LocalDialChipRotation = compositionLocalOf { 0f }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun DialChip(
@@ -891,24 +902,29 @@ internal fun DialChip(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Row(
-            modifier = Modifier
-                // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
-                // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
-                .defaultMinSize(minWidth = 64.dp)
-                .clip(RoundedCornerShape(50))
-                .background(bg)
-                .then(
-                    if (!active) Modifier.border(1.dp, CameraColors.Hairline, RoundedCornerShape(50)) else Modifier,
-                )
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        // Held sideways (UI review 2026-11-09: these pills read sideways while every other readout
+        // turned) the chip stacks its label over its value and turns upright DRAW-ONLY: about as
+        // tall as it is wide, it fits the same 48 dp slot, so the row — and the cluster under the
+        // preview — keeps its height when the phone turns.
+        val rotation = LocalDialChipRotation.current
+        val held = rotation % 180f != 0f
+        val shape = if (held) RoundedCornerShape(10.dp) else RoundedCornerShape(50)
+        val plate = Modifier
+            .then(if (held) Modifier.graphicsLayer { rotationZ = rotation } else Modifier)
+            // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
+            // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
+            .defaultMinSize(minWidth = if (held) 40.dp else 64.dp)
+            .clip(shape)
+            .background(bg)
+            .then(if (!active) Modifier.border(1.dp, CameraColors.Hairline, shape) else Modifier)
+            .padding(horizontal = if (held) 6.dp else 12.dp, vertical = if (held) 3.dp else 6.dp)
+        val content: @Composable () -> Unit = {
             Text(
                 label,
                 color = fg,
                 style = hudGlyph(11.sp, FontWeight.Medium),
+                maxLines = 1,
+                softWrap = false,
             )
             // NOT dimmed further on the idle chip: the plate underneath is a translucent pill over
             // the LIVE preview (the bottom cluster's gradient is transparent at its top edge, where
@@ -932,7 +948,18 @@ internal fun DialChip(
                 },
                 color = valueColor,
                 style = hudGlyph(11.sp, FontWeight.SemiBold),
+                maxLines = 1,
+                softWrap = false,
             )
+        }
+        if (held) {
+            Column(modifier = plate, horizontalAlignment = Alignment.CenterHorizontally) { content() }
+        } else {
+            Row(
+                modifier = plate,
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) { content() }
         }
     }
 }
