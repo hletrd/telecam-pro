@@ -233,6 +233,19 @@ class LandscapeHoldLayoutComposeTest {
         assertEquals(ChromeSlot.ABSENT, chromeSlot(drawn = false, touched = true, compact = false))
     }
 
+    // UI review 2026-11-09: the fixed recording spec led the strip and pushed the state tags off it
+    // ("... HEVC 39|" with STAB, LOUPE and OVERVIEW scrolled out of view).
+    @Test fun `with the shooting info open the state tags fit before the recording spec`() {
+        show(busyVideo.copy(teleFinder = true), details = true)
+        hold(0)
+        val tags = listOf(
+            context.getString(R.string.osd_stabilization_standard),
+            context.getString(R.string.osd_loupe),
+            context.getString(R.string.osd_overview),
+        )
+        tags.forEach { tag -> assertTrue("$tag drawn", textBounds(tag).any(::visible)) }
+    }
+
     /** Layout bounds, not the clipped [bounds]: a chip the rail covers still has its full slot. */
     private fun slot(description: String): Rect =
         compose.onAllNodes(hasContentDescription(description), useUnmergedTree = true)

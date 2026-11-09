@@ -6,6 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1013,6 +1014,8 @@ fun StatusBar(
     compact: Boolean = false,
     // Releases the lock whose badge was tapped; null draws the badges as plain readouts.
     onReleaseLock: ((FnSlot) -> Unit)? = null,
+    // Wrap onto further lines instead of scrolling (the upright DISP strip).
+    wrap: Boolean = false,
 ) {
     if (compact && !compactShootingStatusVisible(state)) return
     // PERF: StatusBar takes the WHOLE CameraUiState, so it recomposes at telemetry rate (audio
@@ -1035,17 +1038,7 @@ fun StatusBar(
     // who is inspecting the tail; any leading tag transition immediately returns priority.
     val priorityResetKey = statusBarPriorityResetKey(state, focalLabel, compact)
     LaunchedEffect(priorityResetKey) { scrollState.scrollTo(0) }
-    Row(
-        modifier = modifier
-            .background(HudPlate, RoundedCornerShape(8.dp))
-            // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
-            // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
-            .edgeFadeScrollHint(scrollState)
-            .horizontalScroll(scrollState)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    val tags: @Composable () -> Unit = {
         // Locks LEAD the strip as filled badges (owner request 2026-11-08, "make AFL easy to see").
         // At the tail they were the first tags the strip's own scroll pushed out of view: a full
         // DISP strip on the 411 dp PMA110 ended "... SPOT AEL AWL", and a held-landscape strip is
@@ -1080,24 +1073,6 @@ fun StatusBar(
             Text(stringResource(R.string.osd_external), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
-            if (!compact) {
-                val spec = remember(
-                    state.encodedVideoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
-                ) {
-                    val encodedSize = state.encodedVideoResolution
-                    val mbps = videoBitRate(
-                        encodedSize.width, encodedSize.height,
-                        state.videoFrameRate.encoderRate,
-                        me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
-                    ) / 1_000_000
-                    // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
-                    // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
-                    // two registers on purpose, both now correct.
-                    "${videoResolutionLabel(encodedSize)} ${videoFrameRateLabel(state.videoFrameRate)}p " +
-                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
-                }
-                Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-            }
             if (!compact || state.transfer != ColorTransfer.SDR) {
                 // The token, not a second blue: this tag used to be a raw 0xFF4C9AFF while the zoom
                 // pill, TAP AF chip and Fn glyph rode CameraColors.Accent (#8AB4F8) — two blues 40
@@ -1129,7 +1104,9 @@ fun StatusBar(
                 // here said "the level scale", which was never one of them; that gauge is 0.4.)
                 Text(stringResource(R.string.osd_assist), color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             }
-            if (state.openGate) {
+            // With the shooting info open the spec says "4:3" itself ("4K 4:3 ..."); compact has no
+            // spec, so the tag is how it shows Open Gate.
+            if (state.openGate && compact) {
                 Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!state.recordAudio) {
@@ -1242,6 +1219,53 @@ fun StatusBar(
         ) {
             Text(stringResource(R.string.osd_overview), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
+        // The recording spec reads LAST (UI review 2026-11-09): it is the longest tag and never
+        // changes mid-shoot, and ahead of the state tags it pushed STAB/LOUPE/OVERVIEW off a 411 dp
+        // strip ("... 98M 709 4:3 STAB O|" under the battery pill on PMA110).
+        if (state.mode == CaptureMode.VIDEO && !compact) {
+            val spec = remember(
+                state.encodedVideoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
+            ) {
+                val encodedSize = state.encodedVideoResolution
+                val mbps = videoBitRate(
+                    encodedSize.width, encodedSize.height,
+                    state.videoFrameRate.encoderRate,
+                    me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+                ) / 1_000_000
+                // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
+                // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
+                // two registers on purpose, both now correct.
+                "${videoResolutionLabel(encodedSize)} ${videoFrameRateLabel(state.videoFrameRate)}p " +
+                    "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
+            }
+            Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+    if (wrap) {
+        // Upright with the shooting info open, the strip WRAPS (Sony's two top lines) instead of
+        // scrolling (UI review 2026-11-09): a busy take (three locks, transfer, STAB, metering, LOUPE,
+        // OVERVIEW, the spec) does not fit 411 dp, and a scroll is not something done while shooting.
+        FlowRow(
+            modifier = modifier
+                .background(HudPlate, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) { tags() }
+    } else {
+        Row(
+            modifier = modifier
+                .background(HudPlate, RoundedCornerShape(8.dp))
+                // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/
+                // LOUPE/…) trailing tags would run off-screen, so scroll keeps every tag reachable —
+                // compact, and held sideways, where the turned strip runs along a bounded lane.
+                .edgeFadeScrollHint(scrollState)
+                .horizontalScroll(scrollState)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) { tags() }
     }
 }
 

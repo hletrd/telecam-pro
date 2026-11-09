@@ -1268,7 +1268,7 @@ fun CameraScreen(
         var bottomClusterTopPx by remember { mutableIntStateOf(Int.MAX_VALUE) }
         val exposureMeterShown = !fnOverlayVisible &&
             shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)
-        val infoPillShown = detailsVisible && (state.batteryPct >= 0 || state.freeBytes > 0)
+        val infoPillShown = detailsVisible && (state.batteryPct in 0..LOW_BATTERY_PCT || state.freeBytes > 0)
         // A rail section the seam rule lifted onto the image is the top of the bottom chrome.
         val bottomChromeTopPx = minOf(
             bottomClusterTopPx,
@@ -1314,6 +1314,7 @@ fun CameraScreen(
             StatusBar(
                 state = state,
                 compact = !detailsVisible,
+                wrap = detailsVisible && !landscapeHeld,
                 onReleaseLock = { slot ->
                     when (slot) {
                         FnSlot.AE_LOCK -> currentActions.value.onToggleAeLock(false)
@@ -2631,7 +2632,7 @@ private fun DispButton(infoHidden: Boolean, onClick: () -> Unit, modifier: Modif
  */
 @Composable
 private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) {
-    if (state.batteryPct < 0 && state.freeBytes <= 0) return
+    if (state.batteryPct !in 0..LOW_BATTERY_PCT && state.freeBytes <= 0) return
     // remember(): the bitrate/remaining derivation re-ran on every recomposition (~10-25 Hz from
     // telemetry ticks) though its real inputs change on the 10 s info tick or a settings change
     // (PERF4-2).
@@ -2685,10 +2686,12 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state.batteryPct >= 0) {
+        // Battery shows only when low (UI review 2026-11-09): the system status bar already carries
+        // it, and the pill shares the OSD strip's row, whose tags it was cutting off. Still spoken.
+        if (state.batteryPct in 0..LOW_BATTERY_PCT) {
             Text(
                 "${state.batteryPct}%",
-                color = if (state.batteryPct <= 15) CameraColors.AlarmText else CameraColors.TextPrimary,
+                color = CameraColors.AlarmText,
                 style = MaterialTheme.typography.labelSmall,
             )
         }
@@ -3908,3 +3911,6 @@ internal fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Mod
         }
     }
 }
+
+/** At or under this the info pill draws the battery, in the alarm colour. */
+private const val LOW_BATTERY_PCT = 15
