@@ -21,6 +21,7 @@
     <string name="label_ae_lock">AE Lock</string>
     <string name="label_flicker">Flicker</string>
     <string name="label_shutter">Shutter</string>
+    <string name="label_shutter_type">Shutter Type</string>
     <string name="label_step">Step</string>
     <string name="label_metering">Metering</string>
     <string name="label_kelvin">Kelvin</string>
@@ -633,7 +634,6 @@
     <string name="hint_gamma_disp_assist">Shows log footage at normal contrast on screen; the file stays log.</string>
     <string name="hint_half_press">What a light press of the camera key does.</string>
     <string name="hint_input">Which microphone records: the phone, wired, USB or Bluetooth.</string>
-    <string name="hint_iso">Sensitivity in ISO and M modes. Higher is brighter but noisier.</string>
     <string name="hint_kelvin">Match the light: about 3200K for tungsten, 5600K for daylight.</string>
     <string name="hint_metering">Matrix reads the whole frame, Center weights the middle, Spot reads where you tap.</string>
     <string name="hint_nr">In-camera noise reduction. Off keeps fine grain and texture.</string>

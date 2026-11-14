@@ -21,7 +21,6 @@ import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MIN_SECONDS
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.camera.declaredPresetEquivMm
 
-import android.util.Range
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
@@ -92,7 +91,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.AfSpotSize
-import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.ExposureStep
 import me.hletrd.telecampro.camera.AspectRatio
@@ -506,7 +504,15 @@ internal fun ProSheet(
                                 },
                             )
                             ProSheetTab.SHOOTING -> ShootingTab(state, actions)
-                            ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
+                            ProSheetTab.EXPOSURE -> ExposureColorTab(
+                                state,
+                                actions,
+                                // Dismiss first, as My Menu does: the ruler opens on the viewfinder.
+                                openDial = { dial ->
+                                    onDismiss()
+                                    onSelectManualDial(dial)
+                                },
+                            )
                             ProSheetTab.FOCUS -> FocusTab(state, actions)
                             ProSheetTab.LENS -> LensTab(state, actions)
                             ProSheetTab.VIDEO -> VideoTab(state, actions)
@@ -1164,7 +1170,7 @@ internal fun TimelapseIntervalSlider(intervalSec: Int, onIntervalSec: (Int) -> U
 }
 
 @Composable
-private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
+private fun ExposureColorTab(state: CameraUiState, actions: CameraActions, openDial: (DialType) -> Unit) {
     val labelContext = LocalContext.current
     val controls = state.controls
     val caps = state.caps
@@ -1184,8 +1190,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onExposureMode,
         enabled = availability.exposureModes.size > 1,
     )
+    // The three exposure VALUES, each opening the viewfinder ruler the Fn tile and My Menu open (UI
+    // review 2026-11-14): the tab had an ISO slider but no shutter speed or EV, and in P that slider
+    // showed the stored ISO while the camera ran another. The rows read what the camera is using.
+    QuickFnRow(FnSlot.SHUTTER, state, actions, availability, openDial)
+    QuickFnRow(FnSlot.ISO, state, actions, availability, openDial)
+    QuickFnRow(FnSlot.EV, state, actions, availability, openDial)
     SegmentedSelector(
-        label = stringResource(R.string.label_shutter),
+        label = stringResource(R.string.label_shutter_type),
         hint = stringResource(R.string.hint_shutter),
         options = ShutterMode.entries,
         selected = controls.shutterMode,
@@ -1201,30 +1213,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         labelFor = { "${exposureStepLabel(it)} EV" },
         onSelect = actions::onExposureStep,
         enabled = availability.shutterDialEnabled,
-    )
-    val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
-    // The same stop marks as the Fn ISO ruler (isoStops, at the Step setting — 1/3 EV by default),
-    // indexed, not a linear ISO axis: a linear 50–12800 slider moved hundreds of ISO per pixel at the
-    // top and could not land a standard value by touch (owner, 2026-10-25).
-    val isoMarks = remember(isoRange.lower, isoRange.upper, controls.exposureStep) {
-        isoStops(isoRange.lower, isoRange.upper, controls.exposureStep.ev)
-    }
-    val isoIndex = isoMarks.indices.minByOrNull { kotlin.math.abs(isoMarks[it] - controls.iso) } ?: 0
-    LabeledSlider(
-        label = stringResource(R.string.label_iso),
-        hint = stringResource(R.string.hint_iso),
-        valueLabel = controls.iso.toString(),
-        value = isoIndex.toFloat(),
-        onValueChange = { raw ->
-            val mark = isoMarks[raw.roundToInt().coerceIn(0, isoMarks.lastIndex)]
-            if (mark != controls.iso) actions.onIso(mark)
-        },
-        valueRange = 0f..(isoMarks.lastIndex.coerceAtLeast(1)).toFloat(),
-        keyboardStep = 1f,
-        // Enabled only in ISO and M, i.e. only as a manual sensitivity: amber, as the viewfinder.
-        manual = true,
-        enabled = availability.isoDialEnabled && isoMarks.size > 1 &&
-            (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
     ToggleRow(
         label = stringResource(R.string.label_separate_mode_exposure),

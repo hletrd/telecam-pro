@@ -17,6 +17,7 @@
     <string name="label_ae_lock">AE 잠금</string>
     <string name="label_flicker">플리커</string>
     <string name="label_shutter">셔터</string>
+    <string name="label_shutter_type">셔터 방식</string>
     <string name="label_step">스텝</string>
     <string name="label_metering">측광</string>
     <string name="label_kelvin">켈빈</string>
@@ -583,7 +584,6 @@
     <string name="hint_gamma_disp_assist">로그 영상을 화면에서만 일반 대비로 보여 줍니다. 파일은 로그 그대로입니다.</string>
     <string name="hint_half_press">카메라 버튼을 살짝 눌렀을 때의 동작입니다.</string>
     <string name="hint_input">녹음할 마이크를 휴대폰, 유선, USB, 블루투스 중 선택합니다.</string>
-    <string name="hint_iso">ISO 및 M 모드의 감도입니다. 높을수록 밝지만 노이즈가 늘어납니다.</string>
     <string name="hint_kelvin">조명에 맞추세요. 텅스텐은 약 3200K, 태양광은 약 5600K입니다.</string>
     <string name="hint_metering">다분할은 화면 전체를, 중앙은 중앙 위주로, 스팟은 탭한 지점을 측광합니다.</string>
     <string name="hint_nr">카메라 내 노이즈 감소입니다. 끄면 미세한 입자와 질감을 유지합니다.</string>
