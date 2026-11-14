@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -236,7 +237,18 @@ private val Inter = FontFamily(
  * the layout width, the exact wiggle pro camera bodies avoid with fixed-advance digits. Inter's
  * tnum only affects digit advance, so prose is untouched.
  */
-private fun TextStyle.withInter(): TextStyle = copy(fontFamily = Inter, fontFeatureSettings = "tnum")
+private fun TextStyle.withInter(): TextStyle =
+    copy(fontFamily = Inter, fontFeatureSettings = "tnum", lineBreak = WordWrap)
+
+/**
+ * Korean wraps between words, not between syllables. Compose resolves an unset line break to
+ * [LineBreak.Simple], whose default word break is the platform's NONE: Hangul then breaks between
+ * ANY two syllables, and the settings captions read "늘/어납니다", "고정합니/다." (UI review
+ * 2026-11-14). Phrase is `LINE_BREAK_WORD_STYLE_PHRASE` (API 33, this app's minSdk), which wraps
+ * Korean at word boundaries; on API 35+ it is what the platform's own AUTO picks for Korean.
+ * Simple's strategy and strictness are kept, so Latin wraps exactly as before.
+ */
+internal val WordWrap: LineBreak = LineBreak.Simple.copy(wordBreak = LineBreak.WordBreak.Phrase)
 
 /**
  * Compact HUD/chrome glyph metrics. [MaterialTheme] wraps its content in
@@ -258,6 +270,7 @@ internal fun hudGlyph(size: TextUnit, weight: FontWeight = FontWeight.SemiBold):
         lineHeight = size * 1.2f,
         letterSpacing = 0.sp,
         fontWeight = weight,
+        lineBreak = WordWrap,
     )
 
 /**
@@ -294,6 +307,7 @@ private fun TextStyle.camera(
     lineHeight = lineHeight,
     letterSpacing = tracking,
     fontWeight = weight,
+    lineBreak = WordWrap,
 )
 
 private val TeleTypography = Typography().run {
