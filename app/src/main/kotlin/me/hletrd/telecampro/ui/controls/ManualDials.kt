@@ -129,6 +129,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
 
 /**
  * The six quick "Fn" manual dials (focus/shutter/ISO/WB/EV/zoom) — the signature element of the
@@ -318,6 +319,9 @@ fun ManualDialCluster(
     SideEffect { if (shownDial != null) lastOpenDial = shownDial }
     val displayedDial = shownDial ?: lastOpenDial
 
+    // The rulers' readouts, the Speed/Angle switch and the corner keys turn with the chips (UI review
+    // 2026-11-14: held sideways the MF focus number, "1/500s" and "AF" still read sideways).
+    CompositionLocalProvider(LocalDialChipRotation provides glyphRotation) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AnimatedVisibility(
             visible = dialOpen,
@@ -384,6 +388,7 @@ fun ManualDialCluster(
                 glyphRotation = glyphRotation,
             )
         }
+    }
     }
 }
 
@@ -496,6 +501,7 @@ internal fun CompactFnButton(
 @Composable
 private fun DialCornerButton(glyph: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val activate = onClick
+    val rotation = LocalDialChipRotation.current
     Box(
         modifier = modifier
             .size(48.dp)
@@ -518,7 +524,13 @@ private fun DialCornerButton(glyph: String, description: String, onClick: () -> 
                 .border(1.dp, CameraColors.AffordanceEdge, RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(glyph, color = CameraColors.TextPrimary, style = hudGlyph(if (glyph == "×") 16.sp else 12.sp, FontWeight.Normal))
+            Text(
+                glyph,
+                color = CameraColors.TextPrimary,
+                style = hudGlyph(if (glyph == "×") 16.sp else 12.sp, FontWeight.Normal),
+                // The disc is round, so only the glyph turns.
+                modifier = Modifier.graphicsLayer { rotationZ = rotation },
+            )
         }
     }
 }
@@ -814,10 +826,26 @@ private fun FnDialChip(
 // copies that used to sit here were the drift hazard the review flagged.)
 
 /**
- * The held-sideways glyph rotation for the dial chips, provided by [DialChipRow] so the 28 chip call
- * sites need not each carry it. 0 upright (and everywhere a chip is used outside that row).
+ * The held-sideways glyph rotation for the dial chips and the open ruler, provided by
+ * [ManualDialCluster] (and [DialChipRow]) so the call sites need not each carry it. 0 upright, and
+ * everywhere these controls are used outside the cluster (the settings sheet's Speed/Angle switch).
  */
 internal val LocalDialChipRotation = compositionLocalOf { 0f }
+
+/**
+ * Turns a one-line ruler glyph upright DRAW-ONLY while the phone is held sideways, growing UPWARD
+ * from its slot: the slot keeps its height (the cluster's height places the preview), and the ruler
+ * under it stays clear because the turned length rises over the image instead of over the ticks.
+ */
+private fun Modifier.heldUpright(rotation: Float): Modifier =
+    if (rotation % 180f == 0f) {
+        this
+    } else {
+        graphicsLayer {
+            rotationZ = rotation
+            translationY = -(size.width - size.height).coerceAtLeast(0f) / 2f
+        }
+    }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -913,7 +941,7 @@ internal fun DialChip(
             .then(if (held) Modifier.graphicsLayer { rotationZ = rotation } else Modifier)
             // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
             // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
-            .defaultMinSize(minWidth = if (held) 40.dp else 64.dp)
+            .defaultMinSize(minWidth = if (held) 48.dp else 64.dp)
             .clip(shape)
             .background(bg)
             .then(if (!active) Modifier.border(1.dp, CameraColors.Hairline, shape) else Modifier)
@@ -979,6 +1007,9 @@ internal fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
     return if (f <= 0.005f) "∞" else "∞+${(f * 100).roundToInt()}"
 }
 
+/** Test handle for the ruler's decorative readout pill (its semantics are otherwise cleared). */
+internal const val RULER_READOUT_TAG = "ruler-readout"
+
 @Composable
 private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue: Boolean = false) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1005,6 +1036,8 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
             color = CameraColors.ManualActive,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
+                .heldUpright(LocalDialChipRotation.current)
+                .testTag(RULER_READOUT_TAG)
                 // The adjustable ruler immediately below owns the complete stable name, live
                 // value, progress range, and set action. This visible mirror is decorative so the
                 // same changing value is not announced at two consecutive accessibility stops.
@@ -1101,6 +1134,7 @@ private fun ShutterRuler(
 /** Small Speed⇄Angle segmented switch on the shutter ruler (also mirrored in the settings sheet). */
 @Composable
 internal fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (ShutterMode) -> Unit) {
+    val rotation = LocalDialChipRotation.current
     val selectedDescription = stringResource(R.string.a11y_selected)
     val notSelectedDescription = stringResource(R.string.a11y_not_selected)
     Row(
@@ -1139,10 +1173,17 @@ internal fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Sh
                     },
                 contentAlignment = Alignment.Center,
             ) {
+                // Picking one of two is a white fill, as in every other exclusive selector (it was the
+                // manual amber here alone, UI review 2026-11-14); the other side keeps an edge so the
+                // pair reads as a switch over a dark scene.
                 Box(
                     modifier = Modifier
+                        .heldUpright(rotation)
                         .clip(RoundedCornerShape(50))
-                        .background(if (on) CameraColors.ManualActive else HudPlate)
+                        .background(if (on) CameraColors.TextPrimary else HudPlate)
+                        .then(
+                            if (on) Modifier else Modifier.border(1.dp, CameraColors.AffordanceEdge, RoundedCornerShape(50)),
+                        )
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(

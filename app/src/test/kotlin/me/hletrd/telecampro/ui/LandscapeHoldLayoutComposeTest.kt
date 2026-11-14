@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -21,6 +22,7 @@ import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.ui.controls.RULER_READOUT_TAG
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -194,6 +196,23 @@ class LandscapeHoldLayoutComposeTest {
             "no bar in AF",
             compose.onAllNodes(hasContentDescription(bar), useUnmergedTree = true).fetchSemanticsNodes().isEmpty(),
         )
+    }
+
+    // UI review 2026-11-14: held sideways the ruler's own readout ("∞+39" on the pinned MF bar) kept
+    // reading sideways. It turns upright draw-only and grows upward, so the ruler under it stays clear.
+    @Test fun `held sideways the ruler readout turns upright above its ruler`() {
+        val mfCaps = ViewModelTestAccess.caps().copy(minFocusDistanceDiopters = 10f, afModes = intArrayOf(0, 1, 4))
+        show(ready.copy(caps = mfCaps, controls = ready.controls.copy(focusMode = FocusMode.MANUAL)), details = false)
+        val bar = context.getString(R.string.a11y_focus_distance)
+        fun readout() = compose.onNode(hasTestTag(RULER_READOUT_TAG), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        hold(0)
+        assertTrue("upright readout reads across", !readout().turned())
+        for (orientation in listOf(90, 270)) {
+            hold(orientation)
+            val turned = readout()
+            assertTrue("readout turned at $orientation: $turned", turned.turned())
+            assertTrue("readout over its ruler at $orientation", turned.bottom <= described(bar).top + 0.5f)
+        }
     }
 
     // UI review 2026-11-09: DISP moved Fn up into the dial-chip row, about 56 dp above where it sat.
