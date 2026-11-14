@@ -209,6 +209,21 @@ class LandscapeHoldLayoutComposeTest {
         assertEquals("Fn side", compact.left, fnNodes.single().boundsInRoot.left, 0.5f)
     }
 
+    // UI review 2026-11-14: the shooting info hid the exposure line on the promise that the dial chips
+    // repeat it, but only about four chips fit and EV sat off-screen, so DISP showed less than compact.
+    @Test fun `opening the shooting info keeps the exposure line and EV in place`() {
+        show(ready.copy(controls = ready.controls.copy(exposureCompensation = 4)), details = false)
+        // Upright the line is one Text, so match within it.
+        fun evBounds() = compose.onAllNodes(hasText("+1.3", substring = true), useUnmergedTree = true)
+            .fetchSemanticsNodes().map { it.boundsInRoot }
+        val ev = evBounds().single()
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_show_shooting_info)).performClick()
+        compose.waitForIdle()
+        // The EV dial chip may carry the same text off-screen; the LINE must still be in its row.
+        val held = evBounds()
+        assertTrue("exposure line EV left its row: $ev vs $held", held.any { kotlin.math.abs(it.top - ev.top) < 0.5f && visible(it) })
+    }
+
     // UI review 2026-11-09: compact packed the visible toggles left, so Grid sat at 12 dp there and
     // 124 dp with DISP on, and a toggle cycled back to its default vanished under the thumb.
     @Test fun `compact top-bar toggles keep their DISP slots and stay once touched`() {

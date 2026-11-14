@@ -1617,10 +1617,11 @@ fun CameraScreen(
                         .offset { IntOffset(0, railSeamOffsetPx) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // The exposure line shows in every mode (UI review 2026-11-09; it was M-only); with
-                    // the info overlay open the Fn chips already carry the same values, so the line
-                    // would only duplicate them.
-                    if (!detailsVisible) {
+                    // The exposure line shows in every mode (UI review 2026-11-09; it was M-only), with
+                    // the shooting info open too: the dial chips mirror the operator's Fn bar, only
+                    // about four of eight fit at 411 dp, and EV sat off-screen, so the detailed view
+                    // showed LESS exposure state than the compact one (UI review 2026-11-14).
+                    run {
                         ManualExposureReadout(
                             tokens = exposureReadoutTokens(
                                 mode = state.controls.exposureMode,
