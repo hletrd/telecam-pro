@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.outlined.Check
@@ -77,6 +76,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
+import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -274,10 +276,53 @@ internal fun pixelChipBorder(
  * visual chip/button stays exactly as compact as before.
  */
 @Composable
-internal fun MinTouchTarget48(content: @Composable () -> Unit) {
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 48.dp)) {
+internal fun MinTouchTarget48(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(contentAlignment = Alignment.Center, modifier = modifier.heightIn(min = 48.dp)) {
         content()
     }
+}
+
+/**
+ * The span one chip occupies inside a horizontally scrolling chip row, in the row's CONTENT pixels
+ * (scroll does not move it). Fed by [chipSpanIn] on the row's direct child, read by
+ * [revealChipSpan].
+ *
+ * This replaces `BringIntoViewRequester`, whose request also scrolls every scrollable ANCESTOR: each
+ * selector asked for its selected chip on first composition, the settings page obeyed every one,
+ * and the page came to rest on the LAST selector of the tab (UI review 2026-11-14 — Exposure opened
+ * on its WB row with Mode and Shutter above the top edge; Setup opened at its bottom).
+ */
+@androidx.compose.runtime.Stable
+internal class ChipSpan {
+    var span by mutableStateOf<IntRange?>(null)
+}
+
+/** Records this row child's content span into [target] while [active]. */
+internal fun Modifier.chipSpanIn(target: ChipSpan, active: Boolean): Modifier =
+    if (!active) {
+        this
+    } else {
+        onPlaced { coordinates ->
+            val left = coordinates.positionInParent().x.roundToInt()
+            target.span = left..(left + coordinates.size.width)
+        }
+    }
+
+/**
+ * Scrolls only this row so [span] (content pixels) is fully inside the viewport, moving the least
+ * distance. RTL maps the visible window from the far end: `horizontalScroll` places the content
+ * mirrored, so scroll 0 shows the logical START at the right.
+ */
+internal suspend fun ScrollState.revealChipSpan(span: IntRange, rtl: Boolean) {
+    val viewport = viewportSize
+    if (viewport <= 0) return
+    val visibleLeft = if (rtl) maxValue - value else value
+    val newLeft = when {
+        span.first < visibleLeft -> span.first
+        span.last > visibleLeft + viewport -> span.last - viewport
+        else -> return
+    }
+    scrollTo((if (rtl) maxValue - newLeft else newLeft).coerceIn(0, maxValue))
 }
 
 /** Non-exported test probes mirroring the two draw conditions of [edgeFadeScrollHint]. */
@@ -381,10 +426,14 @@ private fun <T> SegmentedSelectorCore(
         // The CURRENT value must never sit past the scroll edge: Gamma's default (SDR) is declared
         // last in its enum, so a fresh open showed a selector with NO visible selected chip — the
         // trailing fade hints "more options", not "your setting is hidden" (UI review #1). The
-        // requester scrolls the selected chip into view on open and whenever the value changes
+        // row scrolls the selected chip into view on open and whenever the value changes
         // externally (MR recall, capability reconciliation); a user's own tap is already in view.
-        val selectedIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
-        LaunchedEffect(selected) { selectedIntoView.bringIntoView() }
+        // Only THIS row moves — never the page (see [ChipSpan]).
+        val selectedSpan = remember { ChipSpan() }
+        val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+        LaunchedEffect(selected, selectedSpan.span, rtl) {
+            selectedSpan.span?.let { optionScroll.revealChipSpan(it, rtl) }
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -405,7 +454,7 @@ private fun <T> SegmentedSelectorCore(
                 // unnamed chip announced a bare value ("Off") with nothing saying what is off — and
                 // "Sharpness" and "NR" draw the SAME three values back to back in the Image tab.
                 val optionName = segmentedOptionName(label, labelFor(option))
-                MinTouchTarget48 {
+                MinTouchTarget48(modifier = Modifier.chipSpanIn(selectedSpan, active = isSelected)) {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(option) },
@@ -420,14 +469,7 @@ private fun <T> SegmentedSelectorCore(
                                 // is one exclusive choice. Preserve the chip visuals while exposing
                                 // the same radio-button model as the surrounding selectableGroup.
                                 role = Role.RadioButton
-                            }
-                            .then(
-                                if (isSelected) {
-                                    Modifier.bringIntoViewRequester(selectedIntoView)
-                                } else {
-                                    Modifier
-                                },
-                            ),
+                            },
                         // labelMedium binds the chip to the SAME size as the row label naming it.
                         // Material's FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp),
                         // so an unbound chip rendered LARGER than that label and larger than the
@@ -464,12 +506,13 @@ private fun OutputFormatChip(
     modifier: Modifier = Modifier,
 ) {
     val outputLabel = stringResource(R.string.label_output)
-    MinTouchTarget48 {
+    // [modifier] lands on the row's direct child, where [chipSpanIn] measures content position.
+    MinTouchTarget48(modifier = modifier) {
         FilterChip(
             selected = selected,
             onClick = onToggle,
             enabled = enabled,
-            modifier = modifier.semantics {
+            modifier = Modifier.semantics {
                 contentDescription = segmentedOptionName(outputLabel, name)
                 // Unlike the exclusive selectors, output formats are genuinely independent and
                 // may be enabled together. Pin that distinction even if Material chip defaults
@@ -1190,20 +1233,22 @@ internal fun PhotoFormatToggles(
     )
     val shown = model.displayed
     val optionScroll = rememberScrollState()
-    val heifIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
-    val jpegIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
-    val dngIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
     // More than one format may be selected, so the trailing-most selected format owns automatic
     // visibility. That preserves the row's multi-select truth while ensuring DNG/JPEG restored by
     // settings or enabled through another surface cannot sit beyond a narrow viewport. A direct
     // tap is already visible; this edge is for initial/external state and constrained-font reflow.
-    val selectedIntoView = when {
-        shown.dngRaw -> dngIntoView
-        shown.jpeg -> jpegIntoView
-        shown.heif -> heifIntoView
+    // Only this row scrolls, never the settings page ([ChipSpan]).
+    val revealed = when {
+        shown.dngRaw -> PhotoFormatAxis.DNG
+        shown.jpeg -> PhotoFormatAxis.JPEG
+        shown.heif -> PhotoFormatAxis.HEIF
         else -> null
     }
-    LaunchedEffect(shown, selectedIntoView) { selectedIntoView?.bringIntoView() }
+    val revealedSpan = remember { ChipSpan() }
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    LaunchedEffect(shown, revealedSpan.span, rtl) {
+        revealedSpan.span?.let { optionScroll.revealChipSpan(it, rtl) }
+    }
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // No `enabled` axis on this row: each format chip carries its own availability, so the label
         // itself is never the thing that is unavailable.
@@ -1231,21 +1276,21 @@ internal fun PhotoFormatToggles(
                     selected = shown.heif,
                     enabled = model.heifEnabled,
                     onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.HEIF)) },
-                    modifier = Modifier.bringIntoViewRequester(heifIntoView),
+                    modifier = Modifier.chipSpanIn(revealedSpan, active = revealed == PhotoFormatAxis.HEIF),
                 )
                 OutputFormatChip(
                     name = "JPEG",
                     selected = shown.jpeg,
                     enabled = model.jpegEnabled,
                     onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.JPEG)) },
-                    modifier = Modifier.bringIntoViewRequester(jpegIntoView),
+                    modifier = Modifier.chipSpanIn(revealedSpan, active = revealed == PhotoFormatAxis.JPEG),
                 )
                 OutputFormatChip(
                     name = "DNG",
                     selected = shown.dngRaw,
                     enabled = model.dngEnabled,
                     onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.DNG)) },
-                    modifier = Modifier.bringIntoViewRequester(dngIntoView),
+                    modifier = Modifier.chipSpanIn(revealedSpan, active = revealed == PhotoFormatAxis.DNG),
                 )
             }
             model.caption?.let { caption ->
