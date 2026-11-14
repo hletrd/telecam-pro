@@ -20,7 +20,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -673,15 +679,77 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     }
 }
 
+/** Bottom of the meter's dB scale: the RMS quantization step (1/256 of full scale) is −48 dBFS. */
+internal const val AUDIO_METER_FLOOR_DB = -48f
+
+/** The scale marks drawn across the meter, in dBFS: the usual dialogue and peak-headroom guides. */
+internal val AUDIO_METER_TICKS_DB = listOf(-20f, -12f)
+
+internal const val AUDIO_METER_PEAK_HOLD_MS = 1_500L
+internal const val AUDIO_METER_CLIP_LATCH_MS = 2_000L
+
+/** Where a dBFS value sits along the meter, 0 at [AUDIO_METER_FLOOR_DB] and 1 at full scale. */
+internal fun audioMeterDbFraction(db: Float): Float =
+    ((db - AUDIO_METER_FLOOR_DB) / -AUDIO_METER_FLOOR_DB).coerceIn(0f, 1f)
+
+/** A linear RMS level (0..1 of full scale) placed on the meter's dB scale. */
+internal fun audioMeterFraction(rms: Float): Float =
+    if (!rms.isFinite() || rms <= 0f) 0f else audioMeterDbFraction(20f * kotlin.math.log10(rms))
+
 /**
- * Thin horizontal audio input-level meter — ONE BAR PER CHANNEL (each 0..1), stacked.
+ * Per-channel peak hold and clip latch the meter draws. A held mark rises at once and falls back to
+ * the live level once it is [AUDIO_METER_PEAK_HOLD_MS] old; a clip lights the channel's end lamp for
+ * [AUDIO_METER_CLIP_LATCH_MS] after the last full-scale frame, so a transient that the 10 Hz bar
+ * never shows still reads as a clip.
+ */
+internal data class AudioMeterHold(
+    val peaks: List<Float> = emptyList(),
+    val peakAtMs: List<Long> = emptyList(),
+    val clipAtMs: List<Long?> = emptyList(),
+) {
+    fun clipLit(channel: Int, nowMs: Long): Boolean =
+        clipAtMs.getOrNull(channel)?.let { nowMs - it < AUDIO_METER_CLIP_LATCH_MS } == true
+}
+
+internal fun nextAudioMeterHold(
+    previous: AudioMeterHold,
+    fractions: List<Float>,
+    overloads: List<me.hletrd.telecampro.video.AudioOverloadState>,
+    nowMs: Long,
+): AudioMeterHold {
+    // A channel-count change (mono to stereo mic) starts over rather than carrying another
+    // channel's marks.
+    val prior = previous.takeIf { it.peaks.size == fractions.size } ?: AudioMeterHold(
+        peaks = List(fractions.size) { 0f },
+        peakAtMs = List(fractions.size) { nowMs },
+        clipAtMs = List(fractions.size) { null },
+    )
+    val peaks = ArrayList<Float>(fractions.size)
+    val peakAt = ArrayList<Long>(fractions.size)
+    val clips = ArrayList<Long?>(fractions.size)
+    fractions.forEachIndexed { i, level ->
+        val reset = level >= prior.peaks[i] || nowMs - prior.peakAtMs[i] >= AUDIO_METER_PEAK_HOLD_MS
+        peaks += if (reset) level else prior.peaks[i]
+        peakAt += if (reset) nowMs else prior.peakAtMs[i]
+        clips += if (overloads.getOrNull(i) == me.hletrd.telecampro.video.AudioOverloadState.CLIPPING) {
+            nowMs
+        } else {
+            prior.clipAtMs[i]
+        }
+    }
+    return AudioMeterHold(peaks, peakAt, clips)
+}
+
+/**
+ * Thin horizontal audio input-level meter — ONE BAR PER CHANNEL, stacked.
  *
  * Per-channel rather than one averaged bar because that average is exactly what hides the failure an
  * input meter exists to catch: on a stereo or multi-capsule external mic, one dead channel still
- * leaves the average moving (2026-08-02). Fill colour shifts green -> yellow -> red per channel as
- * it approaches clipping. Bar fill remains the stable RMS signal-strength view; the non-live
- * accessibility state separately consumes held per-channel peaks so “clipping” means a real
- * full-scale sample rather than an almost-square RMS waveform.
+ * leaves the average moving (2026-08-02). The bar is RMS on a dB scale from −48 dBFS, with −20 and
+ * −12 dB marks; it was linear until 2026-11-14, where dialogue at −20 dBFS filled a tenth of it.
+ * Fill colour shifts green -> yellow -> red per channel from −12 and −6 dB. Each channel carries a
+ * held peak mark and a red end lamp that latches on a real full-scale sample (UI review 2026-11-14:
+ * the overload truth used to reach only TalkBack, so a clipping transient could read green).
  *
  * The overall footprint is held constant: the bar height splits between channels, so a stereo mic
  * does not push the OSD around relative to a mono one.
@@ -714,6 +782,25 @@ fun AudioMeter(
             stringResource(R.string.a11y_audio_channel_state, index + 1, stateLabel)
         }.joinToString(", ")
     }
+    val fractions = levels.map(::audioMeterFraction)
+    val currentFractions by rememberUpdatedState(fractions)
+    var hold by remember { mutableStateOf(AudioMeterHold()) }
+    // Read only while drawing, so the 4 Hz expiry tick redraws the canvas without recomposing.
+    val nowMs = remember { mutableLongStateOf(android.os.SystemClock.uptimeMillis()) }
+    LaunchedEffect(fractions, overloads) {
+        val now = android.os.SystemClock.uptimeMillis()
+        hold = nextAudioMeterHold(hold, fractions, overloads, now)
+        nowMs.longValue = now
+    }
+    // Levels are deduplicated upstream, so a quiet room can stop emitting: this lets a held mark and
+    // a clip lamp expire on time anyway.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(250L)
+            nowMs.longValue = android.os.SystemClock.uptimeMillis()
+            if (hold.peaks.isNotEmpty()) hold = nextAudioMeterHold(hold, currentFractions, emptyList(), nowMs.longValue)
+        }
+    }
     Box(
         modifier = modifier
             .size(width = 120.dp, height = 8.dp)
@@ -726,21 +813,44 @@ fun AudioMeter(
             },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
+            val now = nowMs.longValue
             val gapPx = gap.toPx()
-            val totalGap = gapPx * (levels.size - 1).coerceAtLeast(0)
-            val barHeight = ((size.height - totalGap) / levels.size).coerceAtLeast(1f)
-            levels.forEachIndexed { index, level ->
-                val fill = level.coerceIn(0f, 1f)
-                if (fill <= 0f) return@forEachIndexed
-                val fillColor = when {
-                    fill < 0.6f -> Color(0xFF4CD964)
-                    fill < 0.85f -> CameraColors.ManualActive
-                    else -> CameraColors.Record
+            val totalGap = gapPx * (fractions.size - 1).coerceAtLeast(0)
+            val barHeight = ((size.height - totalGap) / fractions.size).coerceAtLeast(1f)
+            val lampWidth = 3.dp.toPx()
+            val scaleWidth = size.width - lampWidth - 1.dp.toPx()
+            fractions.forEachIndexed { index, fill ->
+                val top = index * (barHeight + gapPx)
+                if (fill > 0f) {
+                    val fillColor = when {
+                        fill < audioMeterDbFraction(-12f) -> Color(0xFF4CD964)
+                        fill < audioMeterDbFraction(-6f) -> CameraColors.ManualActive
+                        else -> CameraColors.Record
+                    }
+                    drawRect(color = fillColor, topLeft = Offset(0f, top), size = Size(scaleWidth * fill, barHeight))
                 }
+                val peak = hold.peaks.getOrNull(index) ?: 0f
+                if (peak > fill && peak > 0f) {
+                    drawRect(
+                        color = CameraColors.TextPrimary,
+                        topLeft = Offset((scaleWidth * peak - 1.dp.toPx()).coerceAtLeast(0f), top),
+                        size = Size(1.dp.toPx(), barHeight),
+                    )
+                }
+                if (hold.clipLit(index, now)) {
+                    drawRect(
+                        color = CameraColors.Record,
+                        topLeft = Offset(size.width - lampWidth, top),
+                        size = Size(lampWidth, barHeight),
+                    )
+                }
+            }
+            AUDIO_METER_TICKS_DB.forEach { db ->
+                val x = scaleWidth * audioMeterDbFraction(db)
                 drawRect(
-                    color = fillColor,
-                    topLeft = Offset(0f, index * (barHeight + gapPx)),
-                    size = Size(size.width * fill, barHeight),
+                    color = CameraColors.TextSecondary,
+                    topLeft = Offset(x, 0f),
+                    size = Size(1.dp.toPx() / 2f, size.height),
                 )
             }
         }
