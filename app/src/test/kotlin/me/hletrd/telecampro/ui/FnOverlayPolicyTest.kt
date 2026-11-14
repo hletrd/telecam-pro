@@ -331,7 +331,7 @@ class FnOverlayPolicyTest {
         assertEquals(lit("AF-C"), fnTileReadout(FnSlot.FOCUS, locked(FocusMode.CONTINUOUS, FnSlot.PHOTO_DEFAULT)))
         assertEquals(word(R.string.osd_afl, manual = true), fnTileReadout(FnSlot.AF_LOCK, locked(FocusMode.CONTINUOUS, FnSlot.PHOTO_DEFAULT)))
 
-        assertEquals(lit("AWB"), fnTileReadout(FnSlot.WB, controls { copy(wbMode = WbMode.AUTO) }))
+        assertEquals(word(R.string.fn_tile_auto), fnTileReadout(FnSlot.WB, controls { copy(wbMode = WbMode.AUTO) }))
         assertEquals(
             lit("5200K", manual = true),
             fnTileReadout(FnSlot.WB, controls { copy(wbMode = WbMode.MANUAL, wbKelvin = 5200) }),

@@ -25,7 +25,7 @@
     <string name="label_spot_size">스팟 크기</string>
     <string name="label_af_lock">AF 잠금</string>
     <string name="label_face_priority_af">얼굴 우선 AF</string>
-    <string name="caption_face_priority_af">자동 및 연속 AF에서 감지한 얼굴에 초점을 맞춥니다</string>
+    <string name="caption_face_priority_af">AF-S 및 AF-C에서 감지한 얼굴에 초점을 맞춥니다</string>
     <string name="caption_face_priority_af_unavailable">이 카메라에서는 사용할 수 없습니다</string>
     <string name="label_tap_focus">탭 초점</string>
     <string name="label_peaking">피킹</string>
@@ -92,7 +92,6 @@
     <string name="label_stabilization">손떨림 보정</string>
     <string name="label_audio">오디오</string>
     <string name="label_frame">프레임</string>
-    <string name="label_meter">측광</string>
     <string name="label_timer">타이머</string>
     <string name="label_tele">텔레</string>
     <string name="label_flash">플래시</string>
@@ -454,7 +453,7 @@
     <string name="fn_tile_grid_golden">황금비</string>
     <string name="fn_tile_grid_square">정사각</string>
     <string name="fn_tile_torch">지속광</string>
-    <string name="fn_tile_mic_phone">내장</string>
+    <string name="fn_tile_mic_phone">휴대폰</string>
     <string name="fn_tile_mic_wired">유선</string>
     <string name="fn_tile_seconds">%1$d초</string>
     <string name="fn_tile_focal_mm">%1$dmm</string>
@@ -538,9 +537,9 @@
     <string name="a11y_hours_minutes_join">%1$s %2$s</string>
     <string name="a11y_saturated_hours_minutes_remaining">%1$s %2$s 이상 남음</string>
     <string name="a11y_status_join">%1$s, %2$s</string>
-    <string name="osd_stabilization_standard">표준 보정</string>
-    <string name="osd_stabilization_steady">액티브 보정</string>
-    <string name="osd_stabilization_off">보정 꺼짐</string>
+    <string name="osd_stabilization_standard">손떨림 표준</string>
+    <string name="osd_stabilization_steady">손떨림 액티브</string>
+    <string name="osd_stabilization_off">손떨림 꺼짐</string>
     <string name="osd_drive_burst">연속 촬영</string>
     <string name="osd_metering_spot">스팟</string>
     <string name="osd_metering_center">중앙</string>

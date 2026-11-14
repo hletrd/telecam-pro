@@ -670,7 +670,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.METERING -> DialChip(
-            label = stringResource(R.string.label_meter),
+            label = stringResource(R.string.label_metering),
             value = labelContext.localizedLabel(controls.meteringMode),
             active = controls.meteringMode != MeteringMode.MATRIX,
             enabled = policyEnabled && availability.meteringModes.size > 1,

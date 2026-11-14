@@ -29,7 +29,7 @@
     <string name="label_spot_size">Spot Size</string>
     <string name="label_af_lock">AF Lock</string>
     <string name="label_face_priority_af">Face Priority AF</string>
-    <string name="caption_face_priority_af">Focuses on detected faces in Auto and Continuous AF</string>
+    <string name="caption_face_priority_af">Focuses on detected faces in AF-S and AF-C</string>
     <string name="caption_face_priority_af_unavailable">Not available on this camera</string>
     <string name="label_tap_focus">Tap Focus</string>
     <string name="label_peaking">Peaking</string>
@@ -96,7 +96,6 @@
     <string name="label_stabilization">Stabilization</string>
     <string name="label_audio">Audio</string>
     <string name="label_frame">Frame</string>
-    <string name="label_meter">Meter</string>
     <string name="label_timer">Timer</string>
     <string name="label_tele">Tele</string>
     <string name="label_flash">Flash</string>

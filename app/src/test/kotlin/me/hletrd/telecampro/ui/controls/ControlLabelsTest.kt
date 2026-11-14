@@ -230,7 +230,7 @@ class ControlLabelsTest {
             FnSlot.ZOOM to "Zoom",
             FnSlot.STABILIZATION to "Stabilization",
             FnSlot.DRIVE to "Drive",
-            FnSlot.METERING to "Meter",
+            FnSlot.METERING to "Metering",
             FnSlot.PEAKING to "Peaking",
             FnSlot.ZEBRA to "Zebra",
             FnSlot.TRANSFER to "Gamma",

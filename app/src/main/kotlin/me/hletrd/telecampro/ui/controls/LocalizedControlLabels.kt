@@ -26,7 +26,7 @@ import me.hletrd.telecampro.camera.*
     FnSlot.SHUTTER -> R.string.label_shutter; FnSlot.ISO -> R.string.label_iso
     FnSlot.WB -> R.string.label_wb; FnSlot.EV -> R.string.label_ev; FnSlot.ZOOM -> R.string.label_zoom
     FnSlot.STABILIZATION -> R.string.label_stabilization; FnSlot.DRIVE -> R.string.label_drive
-    FnSlot.METERING -> R.string.label_meter; FnSlot.PEAKING -> R.string.label_peaking
+    FnSlot.METERING -> R.string.label_metering; FnSlot.PEAKING -> R.string.label_peaking
     FnSlot.ZEBRA -> R.string.label_zebra; FnSlot.TRANSFER -> R.string.label_gamma
     FnSlot.AUDIO_SCENE -> R.string.label_directionality; FnSlot.GRID -> R.string.label_grid
     FnSlot.LEVEL -> R.string.label_level; FnSlot.PUNCH_IN -> R.string.label_loupe

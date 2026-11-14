@@ -591,7 +591,7 @@ internal fun fnOverlayGridRows(slots: List<FnSlot>, deviceOrientation: Int): Lis
  */
 internal sealed interface FnTileText {
     /**
-     * Printed verbatim in every locale: exposure-mode letters, AF-C / AF-S / MF, AWB, Kelvin and ISO
+     * Printed verbatim in every locale: exposure-mode letters, AF-C / AF-S / MF, Kelvin and ISO
      * numbers, shutter fractions, EV, zoom, aspect ratios, curve names. These are the glyphs a Korean
      * camera body prints in Latin too, the same rule the `translatable="false"` ISO / WB / EV labels
      * follow.
@@ -681,7 +681,8 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
             else -> FnTileReadout(FnTileText.Literal(c.iso.toString()), manual = true)
         }
         FnSlot.WB -> when (c.wbMode) {
-            WbMode.AUTO -> FnTileReadout(FnTileText.Literal("AWB"))
+            // AUTO, like the WB chip's and the menu's "Auto": "AWB" here alone named one value twice.
+            WbMode.AUTO -> FnTileReadout(FN_TILE_AUTO)
             WbMode.MANUAL -> FnTileReadout(FnTileText.Literal("${c.wbKelvin}K"), manual = true)
             WbMode.INCANDESCENT -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_tungsten), manual = true)
             WbMode.FLUORESCENT -> FnTileReadout(FnTileText.Word(R.string.fn_tile_wb_fluorescent), manual = true)

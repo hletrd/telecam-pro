@@ -314,7 +314,7 @@ internal fun fnSlotLabel(slot: FnSlot): String = when (slot) {
     FnSlot.ZOOM -> "Zoom"
     FnSlot.STABILIZATION -> "Stabilization"
     FnSlot.DRIVE -> "Drive"
-    FnSlot.METERING -> "Meter"
+    FnSlot.METERING -> "Metering"
     FnSlot.PEAKING -> "Peaking"
     FnSlot.ZEBRA -> "Zebra"
     FnSlot.TRANSFER -> "Gamma"
