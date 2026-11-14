@@ -48,6 +48,19 @@ internal fun attemptExternalLaunch(start: () -> Unit): ExternalLaunchOutcome = t
     ExternalLaunchOutcome.SECURITY_BLOCKED
 }
 
+/**
+ * Hands one of this app's own captures to the phone's viewer, with read access for that one URI.
+ * The type is the family ("image/" or "video/"), not a query: the provider round trip for the exact
+ * type would run on the main thread at the tap, and every gallery resolves the wildcard.
+ */
+internal fun launchMediaViewer(context: Context, uri: Uri, video: Boolean): ExternalLaunchOutcome {
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, if (video) "video/*" else "image/*")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    return attemptExternalLaunch { context.startActivity(intent) }
+}
+
 internal fun launchExternal(
     context: Context,
     target: ExternalNavigationTarget,

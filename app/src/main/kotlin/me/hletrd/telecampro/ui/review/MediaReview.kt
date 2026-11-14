@@ -35,7 +35,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -106,6 +109,8 @@ import me.hletrd.telecampro.ui.theme.CameraColors
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import me.hletrd.telecampro.ui.ExternalLaunchOutcome
+import me.hletrd.telecampro.ui.launchMediaViewer
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -1152,6 +1157,7 @@ fun MediaReviewOverlay(
     }
     var mediaState by mediaStateHolder
     var metadata by remember(uri, provenance) { mutableStateOf<ReviewMetadata?>(null) }
+    var galleryUnavailable by remember(uri) { mutableStateOf(false) }
     fun replaceMediaState(next: ReviewMediaState) {
         val previous = mediaStateHolder.value
         mediaStateHolder.value = next.transferToComposition()
@@ -1907,6 +1913,57 @@ fun MediaReviewOverlay(
             // 1.375x scale carries the stroke weight up with it. `fontWeight = SemiBold` is NOT an
             // alternative here — titleMedium already carries SemiBold(600).
             Text("×", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
+        }
+
+        // Open in the phone's gallery, beside Delete (UI review 2026-11-14). Review shows the newest
+        // capture only, so a burst's, AEB's or timelapse's earlier frames — and anything older — are
+        // reached through the viewer the phone already has rather than a second gallery in here.
+        if (mediaState is ReviewMediaState.Ready) {
+            val openGalleryLabel = stringResource(R.string.a11y_open_in_gallery)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    // Delete's 12 dp inset + its 48 dp disc + a 12 dp gap.
+                    .padding(top = 12.dp, end = 72.dp)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(HudPlate)
+                    .semantics {
+                        contentDescription = openGalleryLabel
+                        role = Role.Button
+                    }
+                    .clickable {
+                        val video = mediaState is ReviewMediaState.Ready.Video
+                        galleryUnavailable = launchMediaViewer(context, uri, video) != ExternalLaunchOutcome.LAUNCHED
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.PhotoLibrary,
+                    contentDescription = null,
+                    tint = CameraColors.TextPrimary,
+                    modifier = Modifier.size(20.dp).rotate(overlayRotation),
+                )
+            }
+            if (galleryUnavailable) {
+                LaunchedEffect(Unit) {
+                    delay(3_000L)
+                    galleryUnavailable = false
+                }
+                Text(
+                    stringResource(R.string.status_no_media_viewer),
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .statusBarsPadding()
+                        .padding(top = 68.dp, end = 12.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(HudPlate)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
         }
 
         // Delete button, top-right. Scrim rides the tested HUD contrast floor (05486cb): the red trash

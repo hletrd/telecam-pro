@@ -133,6 +133,8 @@
     <string name="a11y_loupe_overview">루페 오버뷰</string>
     <string name="a11y_take_photo_while_recording">녹화 중 사진 촬영</string>
     <string name="a11y_close_review">보기 닫기</string>
+    <string name="a11y_open_in_gallery">갤러리에서 열기</string>
+    <string name="status_no_media_viewer">이 촬영물을 열 수 있는 앱이 없습니다</string>
     <string name="a11y_photo_review">사진 보기</string>
     <string name="a11y_video_review">동영상 보기</string>
     <string name="a11y_raw_dng_capture">RAW DNG 촬영</string>

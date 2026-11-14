@@ -146,6 +146,8 @@
     <string name="a11y_loupe_overview">Loupe overview</string>
     <string name="a11y_take_photo_while_recording">Take photo while recording</string>
     <string name="a11y_close_review">Close review</string>
+    <string name="a11y_open_in_gallery">Open in Gallery</string>
+    <string name="status_no_media_viewer">No app can open this capture</string>
     <string name="a11y_photo_review">Photo review</string>
     <string name="a11y_video_review">Video review</string>
     <string name="a11y_raw_dng_capture">RAW DNG capture</string>
