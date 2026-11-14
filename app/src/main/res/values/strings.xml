@@ -377,7 +377,7 @@
     <string name="action_add">Add</string>
     <string name="fn_editor_full">Full (%1$d/%2$d). Remove one to add another.</string>
     <string name="label_add_setting">Add a Setting</string>
-    <string name="action_show_count" translatable="false">%1$d/%2$d</string>
+    <string name="action_show_count">%1$d/%2$d</string>
     <string name="action_hide">Hide</string>
     <string name="action_move_up">Move %1$s up</string>
     <string name="action_move_down">Move %1$s down</string>
