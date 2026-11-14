@@ -3,8 +3,8 @@ package me.hletrd.telecampro.ui.controls
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.AspectRatio
-import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.Deblur
+import androidx.compose.material.icons.outlined.Exposure
 import androidx.compose.material.icons.outlined.BurstMode
 import androidx.compose.material.icons.outlined.CenterFocusStrong
 import androidx.compose.material.icons.outlined.CropFree
@@ -12,7 +12,7 @@ import androidx.compose.material.icons.outlined.FilterCenterFocus
 import androidx.compose.material.icons.outlined.FlashOn
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.GridOn
-import androidx.compose.material.icons.outlined.Iso
+import androidx.compose.material.icons.outlined.Grain
 import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Loupe
@@ -41,11 +41,13 @@ internal fun fnSlotIcon(slot: FnSlot): ImageVector = when (slot) {
     FnSlot.EXPOSURE_MODE -> Icons.Outlined.Tune
     FnSlot.FOCUS -> Icons.Outlined.CenterFocusStrong
     FnSlot.SHUTTER -> Icons.Outlined.ShutterSpeed
-    FnSlot.ISO -> Icons.Outlined.Iso
+    // Grain, not Iso: Material's Iso is the boxed plus/minus photographers read as exposure
+    // compensation (UI review 2026-11-14). Sensitivity is what trades for grain; the tile prints ISO.
+    FnSlot.ISO -> Icons.Outlined.Grain
     FnSlot.WB -> Icons.Outlined.WbSunny
-    // Contrast, not Exposure: Iso and Exposure are near-identical plus/minus-diagonal glyphs, and a
-    // custom list holding both ISO and EV wore the same icon twice at 14 dp (UI review #38).
-    FnSlot.EV -> Icons.Outlined.Contrast
+    // The plus/minus glyph belongs to EV. It used to be Contrast because ISO wore Iso, the same
+    // plus/minus diagonal, and a list holding both showed it twice (UI review #38); ISO moved instead.
+    FnSlot.EV -> Icons.Outlined.Exposure
     FnSlot.ZOOM -> Icons.Outlined.ZoomIn
     FnSlot.STABILIZATION -> Icons.Outlined.VideoStable
     FnSlot.DRIVE -> Icons.Outlined.BurstMode

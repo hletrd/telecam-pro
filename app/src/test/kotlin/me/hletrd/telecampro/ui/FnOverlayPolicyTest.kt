@@ -33,7 +33,8 @@ import org.junit.Test
 
 class FnOverlayPolicyTest {
 
-    private fun lit(text: String, manual: Boolean = false) = FnTileReadout(FnTileText.Literal(text), manual)
+    private fun lit(text: String, manual: Boolean = false, auto: Boolean = false) =
+        FnTileReadout(FnTileText.Literal(text), manual, auto)
     private fun word(res: Int, manual: Boolean = false) = FnTileReadout(FnTileText.Word(res), manual)
     private fun controls(transform: ManualControls.() -> ManualControls) =
         CameraUiState(controls = ManualControls().transform())
@@ -256,12 +257,18 @@ class FnOverlayPolicyTest {
         }
 
         // P: the camera owns both. S: it owns ISO. ISO-priority: it owns the shutter. A camera-owned
-        // value is AUTO on the tile; the live number lives in the info line and the spoken state.
+        // value prints what the camera chose, badged "A" (UI review 2026-11-14: two bare AUTO tiles
+        // differed only by icon); AUTO stands in until the first live value arrives.
         val auto = word(R.string.fn_tile_auto)
-        assertEquals(auto, fnTileReadout(FnSlot.SHUTTER, controls { copy(exposureMode = ExposureMode.PROGRAM) }))
-        assertEquals(auto, fnTileReadout(FnSlot.ISO, controls { copy(exposureMode = ExposureMode.PROGRAM) }))
-        assertEquals(auto, fnTileReadout(FnSlot.ISO, controls { copy(exposureMode = ExposureMode.SHUTTER) }))
-        assertEquals(auto, fnTileReadout(FnSlot.SHUTTER, controls { copy(exposureMode = ExposureMode.ISO) }))
+        assertEquals(auto, fnTileReadout(FnSlot.SHUTTER, CameraUiState(controls = ManualControls(exposureMode = ExposureMode.PROGRAM))))
+        assertEquals(auto, fnTileReadout(FnSlot.ISO, CameraUiState(controls = ManualControls(exposureMode = ExposureMode.PROGRAM))))
+        val live = CameraUiState(controls = ManualControls(exposureMode = ExposureMode.PROGRAM), liveIso = 640, liveExposureNs = 4_000_000L)
+        assertEquals(lit("1/250", auto = true), fnTileReadout(FnSlot.SHUTTER, live))
+        assertEquals(lit("640", auto = true), fnTileReadout(FnSlot.ISO, live))
+        val shutterPriority = controls { copy(exposureMode = ExposureMode.SHUTTER, iso = 1250) }
+        assertEquals(lit("1250", auto = true), fnTileReadout(FnSlot.ISO, shutterPriority))
+        val isoPriority = controls { copy(exposureMode = ExposureMode.ISO, exposureTimeNs = 8_000_000L) }
+        assertEquals(lit("1/125", auto = true), fnTileReadout(FnSlot.SHUTTER, isoPriority))
 
         // The operator's values are printed as a camera body prints them, in the manual amber.
         val manual = controls {
@@ -298,7 +305,8 @@ class FnOverlayPolicyTest {
                 val state = controls { copy(exposureMode = mode, shutterMode = shutterMode) }
                 listOf(FnSlot.SHUTTER, FnSlot.ISO).forEach { slot ->
                     val spokenAuto = fnSlotValue(slot, state).startsWith("Auto ")
-                    val drawnAuto = fnTileReadout(slot, state).text == FnTileText.Word(R.string.fn_tile_auto)
+                    val readout = fnTileReadout(slot, state)
+                    val drawnAuto = readout.auto || readout.text == FnTileText.Word(R.string.fn_tile_auto)
                     assertEquals("$slot in $mode/$shutterMode", spokenAuto, drawnAuto)
                     assertEquals("$slot in $mode/$shutterMode", !drawnAuto, fnTileReadout(slot, state).manual)
                 }
@@ -312,19 +320,16 @@ class FnOverlayPolicyTest {
         assertEquals(lit("AF-S"), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.AUTO) }))
         assertEquals(lit("AF-C"), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.CONTINUOUS) }))
         assertEquals(word(R.string.fn_tile_macro), fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.MACRO) }))
-        // AF Lock outranks the mode it froze, highlighted like a manual value; MF owns the lens.
-        assertEquals(
-            word(R.string.osd_afl, manual = true),
-            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.CONTINUOUS, afLock = true) }),
-        )
-        assertEquals(
-            word(R.string.osd_afl, manual = true),
-            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.AUTO, afLock = true) }),
-        )
-        assertEquals(
-            lit("MF", manual = true),
-            fnTileReadout(FnSlot.FOCUS, controls { copy(focusMode = FocusMode.MANUAL, afLock = true) }),
-        )
+        // AF Lock outranks the mode it froze, highlighted like a manual value; MF owns the lens. A bar
+        // with its own AF Lock tile leaves that word to it (UI review 2026-11-14: two AFL tiles).
+        val noLockTile = FnSlot.PHOTO_DEFAULT - FnSlot.AF_LOCK
+        fun locked(mode: FocusMode, slots: List<FnSlot> = noLockTile) =
+            CameraUiState(controls = ManualControls(focusMode = mode, afLock = true), photoFnSlots = slots)
+        assertEquals(word(R.string.osd_afl, manual = true), fnTileReadout(FnSlot.FOCUS, locked(FocusMode.CONTINUOUS)))
+        assertEquals(word(R.string.osd_afl, manual = true), fnTileReadout(FnSlot.FOCUS, locked(FocusMode.AUTO)))
+        assertEquals(lit("MF", manual = true), fnTileReadout(FnSlot.FOCUS, locked(FocusMode.MANUAL)))
+        assertEquals(lit("AF-C"), fnTileReadout(FnSlot.FOCUS, locked(FocusMode.CONTINUOUS, FnSlot.PHOTO_DEFAULT)))
+        assertEquals(word(R.string.osd_afl, manual = true), fnTileReadout(FnSlot.AF_LOCK, locked(FocusMode.CONTINUOUS, FnSlot.PHOTO_DEFAULT)))
 
         assertEquals(lit("AWB"), fnTileReadout(FnSlot.WB, controls { copy(wbMode = WbMode.AUTO) }))
         assertEquals(

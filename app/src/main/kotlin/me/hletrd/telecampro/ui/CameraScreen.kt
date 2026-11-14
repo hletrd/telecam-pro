@@ -147,6 +147,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
@@ -3184,7 +3185,17 @@ internal fun FnOverlayTile(
                 modifier = Modifier.size(16.dp),
             )
             Text(
-                glyph,
+                if (readout.auto) {
+                    buildAnnotatedString {
+                        // The dial chip's qualifier badge, two-thirds size and dimmer.
+                        withStyle(SpanStyle(fontSize = 8.sp, color = CameraColors.TextSecondary.copy(alpha = foregroundAlpha))) {
+                            append("A ")
+                        }
+                        append(glyph)
+                    }
+                } else {
+                    AnnotatedString(glyph)
+                },
                 color = valueInk.copy(alpha = foregroundAlpha),
                 style = hudGlyph(12.sp),
                 maxLines = 1,

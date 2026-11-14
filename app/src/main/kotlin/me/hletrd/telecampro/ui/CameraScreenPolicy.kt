@@ -613,12 +613,20 @@ internal sealed interface FnTileText {
  * shutter, MF, any non-auto white balance): the tile draws it in `CameraColors.ManualActive`, the
  * amber the dial rulers and the manual chips already use for "the camera is not choosing this".
  */
-internal data class FnTileReadout(val text: FnTileText, val manual: Boolean = false)
+internal data class FnTileReadout(
+    val text: FnTileText,
+    val manual: Boolean = false,
+    // A camera-chosen value: the tile prints the small "A" badge before it, as the dial chip does.
+    val auto: Boolean = false,
+)
 
 private fun fnTileOnOff(on: Boolean): FnTileText =
     FnTileText.Word(if (on) R.string.fn_tile_on else R.string.fn_tile_off)
 
 private val FN_TILE_AUTO = FnTileText.Word(R.string.fn_tile_auto)
+
+private fun autoTile(value: String?): FnTileReadout =
+    if (value == null) FnTileReadout(FN_TILE_AUTO) else FnTileReadout(FnTileText.Literal(value), auto = true)
 
 /**
  * A shutter fraction drops its unit ("1/250", as camera bodies print it); a whole or decimal second
@@ -643,7 +651,9 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
             // AF Lock outranks the mode it froze (owner request 2026-11-08): the tile is where the
             // operator looks for focus state, and "AF-C" over a locked lens claims a hunt that is
             // not happening. MF owns the lens, so the lock is inert there and the tile says MF.
-            c.afLock && c.focusMode != FocusMode.MANUAL ->
+            // Not when the bar has its own AF Lock tile, which already says AFL in amber: two AFL
+            // tiles side by side read as two locks (UI review 2026-11-14).
+            c.afLock && c.focusMode != FocusMode.MANUAL && FnSlot.AF_LOCK !in state.activeFnSlots ->
                 FnTileReadout(FnTileText.Word(R.string.osd_afl), manual = true)
             c.focusMode == FocusMode.MANUAL -> FnTileReadout(FnTileText.Literal("MF"), manual = true)
             // AUTO is the one-shot scan (CONTROL_AF_MODE_AUTO): what every body prints as AF-S.
@@ -653,14 +663,21 @@ internal fun fnTileReadout(slot: FnSlot, state: CameraUiState): FnTileReadout {
         }
         // Same branch order as fnSlotValue, so the tile and its spoken state can never disagree on
         // whether the value is the camera's or the operator's.
+        // An auto value prints what the camera chose, badged "A", like the dial chip ("A 1/250"):
+        // a bare AUTO on both the Shutter and ISO tiles left them told apart by their icons alone
+        // (UI review 2026-11-14). AUTO stays until the first live value arrives.
         FnSlot.SHUTTER -> when {
-            c.exposureMode == ExposureMode.PROGRAM || c.autoShutterDriven -> FnTileReadout(FN_TILE_AUTO)
+            c.exposureMode == ExposureMode.PROGRAM || c.autoShutterDriven -> autoTile(
+                (if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs)?.let(::fnTileShutter),
+            )
             c.shutterMode == ShutterMode.ANGLE ->
                 FnTileReadout(FnTileText.Literal("%.0f°".format(Locale.US, c.shutterAngle)), manual = true)
             else -> FnTileReadout(FnTileText.Literal(fnTileShutter(c.exposureTimeNs)), manual = true)
         }
         FnSlot.ISO -> when {
-            c.exposureMode == ExposureMode.PROGRAM || c.autoIsoDriven -> FnTileReadout(FN_TILE_AUTO)
+            c.exposureMode == ExposureMode.PROGRAM || c.autoIsoDriven -> autoTile(
+                (if (c.autoExposure) state.liveIso else c.iso)?.toString(),
+            )
             else -> FnTileReadout(FnTileText.Literal(c.iso.toString()), manual = true)
         }
         FnSlot.WB -> when (c.wbMode) {
