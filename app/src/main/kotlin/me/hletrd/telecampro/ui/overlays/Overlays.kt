@@ -625,13 +625,26 @@ fun FocusResultLiveRegion(
     )
 }
 
-/** Red recording dot + elapsed mm:ss, shown while [me.hletrd.telecampro.camera.CameraUiState.isRecording] is true. */
+/**
+ * The REC timecode: MM:SS, then H:MM:SS from the first hour. Minutes alone ran on to "62:03"
+ * (UI review 2026-11-14), which no camera body prints.
+ */
+internal fun recordingTimecode(elapsedMs: Long): String {
+    val totalSeconds = elapsedMs.coerceAtLeast(0L) / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = totalSeconds / 60L % 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(Locale.US, hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(Locale.US, minutes, seconds)
+    }
+}
+
+/** Red recording dot + elapsed timecode, shown while [me.hletrd.telecampro.camera.CameraUiState.isRecording] is true. */
 @Composable
 fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
-    val totalSeconds = elapsedMs / 1000L
-    val minutes = totalSeconds / 60L
-    val seconds = totalSeconds % 60L
-    val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
+    val timeLabel = recordingTimecode(elapsedMs)
     val recordingDescription = stringResource(R.string.a11y_recording)
     Row(
         modifier = modifier
