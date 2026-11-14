@@ -560,7 +560,7 @@ class LocalizedSelectorTest(unittest.TestCase):
             "Zoom": "label_zoom",
             "Stabilization": "label_stabilization",
             "Drive": "label_drive",
-            "Meter": "label_meter",
+            "Metering": "label_metering",
             "Peaking": "label_peaking",
             "Zebra": "label_zebra",
             "Gamma": "label_gamma",

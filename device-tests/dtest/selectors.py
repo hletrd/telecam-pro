@@ -150,7 +150,7 @@ FN_TILES = {
     "Zoom": selector("fn_zoom", "Zoom", "줌"),
     "Stabilization": selector("fn_stabilization", "Stabilization", "손떨림 보정"),
     "Drive": selector("fn_drive", "Drive", "드라이브"),
-    "Meter": selector("fn_meter", "Meter", "측광"),
+    "Metering": selector("fn_metering", "Metering", "측광"),
     "Peaking": selector("fn_peaking", "Peaking", "피킹"),
     "Zebra": selector("fn_zebra", "Zebra", "제브라"),
     "Gamma": GAMMA,

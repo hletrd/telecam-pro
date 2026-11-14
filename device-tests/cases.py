@@ -71,7 +71,7 @@ SETTINGS_TAB_BY_LABEL = dict(zip(SETTINGS_TABS, SETTINGS_TAB_SELECTORS, strict=T
 SETTINGS_TITLES = tuple(selector.labels_for("en")[0] for selector in SETTINGS_PAGE_TITLE_SELECTORS)
 FN_TILE_LABELS = {
     "AE", "Focus", "Shutter", "ISO", "WB", "EV", "Zoom", "Stabilization", "Drive",
-    "Meter", "Peaking", "Zebra", "Gamma", "Directionality", "Grid", "Level", "Loupe", "Tele",
+    "Metering", "Peaking", "Zebra", "Gamma", "Directionality", "Grid", "Level", "Loupe", "Tele",
     "Open Gate", "Frame",
 }
 FN_SELECTOR_BY_LABEL = {label: FN_TILES[label] for label in FN_TILE_LABELS}
