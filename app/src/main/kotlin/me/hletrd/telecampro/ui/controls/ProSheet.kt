@@ -2210,9 +2210,12 @@ private fun AdvancedTab(
     )
 }
 
+/** How many slots one Fn bar or My Menu holds: the 4x2 Fn strip. */
+internal const val FN_SLOT_CAPACITY = 8
+
 @Composable
 private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (List<FnSlot>) -> Unit) {
-    val normalized = selected.distinct().take(8)
+    val normalized = selected.distinct().take(FN_SLOT_CAPACITY)
     if (normalized.isNotEmpty()) {
         normalized.forEachIndexed { index, slot ->
             FnSlotOrderRow(
@@ -2235,6 +2238,30 @@ private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (Lis
             )
         }
     }
+    // The candidates stay folded behind one row (UI review 2026-11-14): all of them listed under
+    // each of the three editors made Setup ~74 rows, and under a full bar 31 of them were greyed
+    // "Add" rows with nothing saying why. A full bar says so in one line instead.
+    if (normalized.size >= FN_SLOT_CAPACITY) {
+        Text(
+            stringResource(R.string.fn_editor_full, normalized.size, FN_SLOT_CAPACITY),
+            color = CameraColors.TextSecondary,
+            style = settingCaptionStyle(),
+            modifier = Modifier.padding(start = 34.dp),
+        )
+        return
+    }
+    var adding by rememberSaveable { mutableStateOf(false) }
+    LabelValueRow(
+        label = stringResource(R.string.label_add_setting),
+        valueLabel = stringResource(
+            if (adding) R.string.action_hide else R.string.action_show_count,
+            normalized.size,
+            FN_SLOT_CAPACITY,
+        ),
+        onClick = { adding = !adding },
+        modifier = Modifier.padding(start = 34.dp),
+    )
+    if (!adding) return
     // A null [mode] means "no shooting mode owns this list" (My Menu) and offers everything.
     val available = FnSlot.entries.filterNot { it in normalized }
         .filter { mode == null || fnSlotAppliesTo(it, mode) }
@@ -2245,14 +2272,10 @@ private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (Lis
         LabelValueRow(
             label = LocalContext.current.localizedLabel(slot),
             valueLabel = stringResource(R.string.action_add),
-            enabled = normalized.size < 8,
-            onClick = { if (normalized.size < 8) onSet(normalized + slot) },
-            // One list, one left edge: FnSlotOrderRow's 26 dp index column + 8 dp gap indents the
-            // ordered names 34 dp, so the available rows directly beneath started at 0 dp and the
-            // editor read as two stacked lists. LabelValueRow applies `modifier.fillMaxWidth()`
-            // before its clickable, so the row narrows and shifts right with its 48 dp sizeIn and
-            // its whole (narrower) surface still tappable.
-            modifier = Modifier.padding(start = 34.dp),
+            onClick = { onSet(normalized + slot) },
+            // The candidates sit one step further in than the ordered list and the Add row above
+            // them, so the folded list reads as that row's contents.
+            modifier = Modifier.padding(start = 48.dp),
         )
     }
 }
