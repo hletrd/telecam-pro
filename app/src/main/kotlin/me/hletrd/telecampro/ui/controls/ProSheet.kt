@@ -1407,6 +1407,45 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onPeakingColor,
         enabled = state.focusPeaking,
     )
+
+    // The loupe sits with peaking (UI review 2026-11-14), as Sony keeps Focus Magnifier beside
+    // Peaking Display: both are how manual focus is judged, and they were split across two tabs.
+    // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
+    ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn, hint = stringResource(R.string.hint_loupe))
+    // NO section header here (UI review #9): the overview stopped being teleconverter-specific
+    // when the zoom floor qualified any lens (2026-07-29) — the old "Teleconverter" header was the
+    // stale claim the caption below already refutes — and the row's parent GATE is the Loupe toggle
+    // directly above, the Zebra → Zebra Level adjacency model.
+    // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
+    // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
+    // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
+    // The magnification clause is NOT "Teleconverter" any more: the finder is offered at 3× on any
+    // lens, because what it depends on is magnifying past the delivered field, not the accessory.
+    // Says what the aid IS, not the four gates it passes through. The dotted condition list read
+    // like the predicate printed out, and it went stale the moment video qualified (2026-07-29) —
+    // a caption that enumerates its own preconditions has to be re-edited every time one moves.
+    Captioned(stringResource(R.string.loupe_overview_caption)) {
+        // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
+        // Exact predicate: enabled + active punch-in + (TELE or past the zoom floor), and in PHOTO
+        // also 4:3. Default remains off.
+        //
+        // Gated on the LOUPE specifically, the same way Zebra Level is gated on Zebra: the loupe is
+        // this row's parent FEATURE (cycle 4 made it the gate axis — at a steady zoom the overview
+        // duplicates the main view ~1:1, so without magnification there is nothing for it to show),
+        // and its switch sat under a DIFFERENT section header until 2026-11-14, which hid the
+        // dependency. Ungated, this row would report "On" while provably drawing nothing and saying
+        // nothing about why — the caption alone is passive and easy to read past.
+        // Deliberately NOT gated on Photo/4:3/Teleconverter as well: those three are transient
+        // shooting states, so gating on them would flicker the row in and out mid-shoot and block
+        // pre-arming a persisted preference. The caption carries those; the switch carries the
+        // parent.
+        ToggleRow(
+            label = stringResource(R.string.label_loupe_overview),
+            checked = state.teleFinder,
+            onCheckedChange = actions::onToggleTeleFinder,
+            enabled = state.punchIn,
+        )
+    }
 }
 
 @Composable
@@ -2019,45 +2058,6 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onGridType,
     )
     ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel)
-    SectionHeader(stringResource(R.string.section_focus_aids))
-    // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
-    ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn, hint = stringResource(R.string.hint_loupe))
-    // NO section header here (UI review #9): the overview stopped being teleconverter-specific
-    // when the zoom floor qualified any lens (2026-07-29) — the old "Teleconverter" header was the
-    // stale claim the caption below already refutes — and the row's parent GATE is the Loupe toggle
-    // directly above, the Zebra → Zebra Level adjacency model.
-    // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
-    // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
-    // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
-    // The magnification clause is NOT "Teleconverter" any more: the finder is offered at 3× on any
-    // lens, because what it depends on is magnifying past the delivered field, not the accessory.
-    // Same rule as the header four lines up: the caption's other three tokens are menu names, so the
-    // sole borrowed OSD tag spelled itself out too.
-    // Says what the aid IS, not the four gates it passes through. The dotted condition list read
-    // like the predicate printed out, and it went stale the moment video qualified (2026-07-29) —
-    // a caption that enumerates its own preconditions has to be re-edited every time one moves.
-    Captioned(stringResource(R.string.loupe_overview_caption)) {
-        // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
-        // Exact predicate: enabled + active punch-in + (TELE or past the zoom floor), and in PHOTO
-        // also 4:3. Default remains off.
-        //
-        // Gated on the LOUPE specifically, the same way Zebra Level is gated on Zebra: the loupe is
-        // this row's parent FEATURE (cycle 4 made it the gate axis — at a steady zoom the overview
-        // duplicates the main view ~1:1, so without magnification there is nothing for it to show),
-        // and its switch lives under a DIFFERENT section header, which is what makes the dependency
-        // invisible from here. Ungated, this row would report "On" while provably drawing nothing
-        // and saying nothing about why — the caption alone is passive and easy to read past.
-        // Deliberately NOT gated on Photo/4:3/Teleconverter as well: those three are transient
-        // shooting states, so gating on them would flicker the row in and out mid-shoot and block
-        // pre-arming a persisted preference. The caption carries those; the switch carries the
-        // parent.
-        ToggleRow(
-            label = stringResource(R.string.label_loupe_overview),
-            checked = state.teleFinder,
-            onCheckedChange = actions::onToggleTeleFinder,
-            enabled = state.punchIn,
-        )
-    }
 }
 
 @Composable

@@ -1994,7 +1994,7 @@ change is host-built only; the PMA110 was offline when it landed.
 
 - Install the immutable debug build that carries the 2026-11-08 change.
 - Mount the converter, enter TELE photo mode, enable **Loupe** and **Loupe Overview** (Menu →
-  Assist), and activate the punch-in loupe against a scene with an unmistakable top and bottom and
+  Focus), and activate the punch-in loupe against a scene with an unmistakable top and bottom and
   left and right (legible text works).
 - Tap the main view well off centre (upper-left, say) so the loupe moves there.
 

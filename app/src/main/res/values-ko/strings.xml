@@ -319,7 +319,6 @@
     <string name="section_processing">이미지 처리</string>
     <string name="section_monitor">모니터</string>
     <string name="section_exposure_aids">노출 보조</string>
-    <string name="section_focus_aids">초점 보조</string>
     <string name="section_app">앱</string>
     <string name="section_legal">법적 고지</string>
     <string name="section_startup">시작 설정</string>

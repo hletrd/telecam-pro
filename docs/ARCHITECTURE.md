@@ -891,7 +891,7 @@ landing on drag end; the ruler's own canvas still follows the finger per event).
 
 ### Loupe Overview (same-stream assist)
 
-The `Loupe Overview` Assist toggle (default OFF, persisted) draws a bottom-right corner viewport re-drawing the FULL
+The `Loupe Overview` toggle (Focus tab, under MF Assist; default OFF, persisted) draws a bottom-right corner viewport re-drawing the FULL
 current camera frame while the main view is magnified, with an iPhone-style rectangle inside it
 marking WHERE the magnified view is pointing (`loupeHintRect` in `CameraState.kt`, pure and
 unit-tested; drawn as four scissored clears so the hint needs no shader, no VBO and no texture unit
@@ -909,7 +909,7 @@ frame by. In TELE the corner box is therefore flipped exactly like the main view
 2026-11-08 it took the window term alone and showed the converter-fed stream upside down beside the
 corrected main view; that rule and its device A/B are superseded. The new orientation is not yet
 device-verified (`FIELD_CHECKS.md` C2).
-Since the row is a sub-option of the loupe, the Assist toggle is DISABLED while the loupe is off
+Since the row is a sub-option of the loupe, the toggle is DISABLED while the loupe is off
 (same shape as Zebra Level under Zebra) — ungated it reported "On" while provably drawing nothing,
 with its parent switch under a different section header. **Single-stream honesty**: the HAL's
 `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP can only be wider than
@@ -1710,14 +1710,15 @@ The fixed settings panel has nine left-rail tabs:
    size; dormant on PMA110).
 3. **Exposure** — PASM-like mode, AE lock, flicker, shutter mode/step, ISO, metering, WB/custom WB,
    and AWB lock. EV remains on the quick Fn surface.
-4. **Focus** — AF/MF mode, tap-AF spot size/lock, Face Priority AF, and peaking level/color.
+4. **Focus** — AF/MF mode, tap-AF spot size/lock, Face Priority AF, peaking level/color, and the
+   punch-in loupe with its Loupe Overview (beside peaking since 2026-11-14).
    Manual focus distance remains on the quick Fn dial rather than this tab.
 5. **Lens** — device-enumerated lens presets (0.6x/1x/3x/10x on PMA110), TELE mode, the phone +
    teleconverter declaration (two dropdowns, the converter list narrowed to that phone, plus the
    custom magnification field and converter-host captions), stabilization mode, and OIS.
 6. **Video** — codec, transfer, resolution, FPS, bitrate, Open Gate, and audio.
 7. **Image** — edge sharpness, noise reduction, and color-effect processing.
-8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, punch-in, and Loupe Overview.
+8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, and level.
 9. **Setup** — privacy, persistence, Fn/My Menu customization, hardware-key assignments, and the
    diagnostic camera override reset when one is active.
 

@@ -15,7 +15,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Pins the Assist tab's Loupe Overview gate by RENDERING the sheet, not by re-reading the flag.
+ * Pins the Focus tab's Loupe Overview gate by RENDERING the sheet, not by re-reading the flag.
  *
  * This class owns only the settings-row dependency: the child switch is disabled unless its parent
  * punch-in Loupe is enabled. It does not re-test the runtime route/visibility matrix, which is owned
@@ -57,7 +57,7 @@ class LoupeOverviewGateTest {
                     state = state,
                     actions = actions,
                     onDismiss = {},
-                    initialTab = ProSheetTab.ASSISTS,
+                    initialTab = ProSheetTab.FOCUS,
                 )
             }
         }
